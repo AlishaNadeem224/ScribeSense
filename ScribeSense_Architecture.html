@@ -1,0 +1,543 @@
+<title>ScribeSense Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Lexend:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column with wide bands for the flow, owners grid and diagram; typography from the project's own font shortlist */
+:root{
+  --bg:#f5f6f8; --surface:#ffffff; --fg:#1b2130; --muted:#5b6476; --line:#dde1e8;
+  --accent:#2f5bd3; --accent-soft:#e6ecfb;
+  --o1:#0f7d6f; --o1-bg:#e3f4f1;
+  --o2:#2f5bd3; --o2-bg:#e6ecfb;
+  --o3:#a3620a; --o3-bg:#fbefdc;
+  --o4:#b4335a; --o4-bg:#f9e4ea;
+  --ok:#1e7a3c; --warn:#a3620a; --bad:#b4335a;
+  --display:"Lexend", "Atkinson Hyperlegible", system-ui, sans-serif;
+  --body:"Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono:"JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#12151c; --surface:#1a1f29; --fg:#e7eaf0; --muted:#9aa3b5; --line:#2c3341;
+    --accent:#8aa6ff; --accent-soft:#1f2a47;
+    --o1:#5cc9b8; --o1-bg:#13302c;
+    --o2:#8aa6ff; --o2-bg:#1f2a47;
+    --o3:#e7a94c; --o3-bg:#352712;
+    --o4:#f08aa8; --o4-bg:#3a1a25;
+    --ok:#6ccf8d; --warn:#e7a94c; --bad:#f08aa8;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#12151c; --surface:#1a1f29; --fg:#e7eaf0; --muted:#9aa3b5; --line:#2c3341;
+  --accent:#8aa6ff; --accent-soft:#1f2a47;
+  --o1:#5cc9b8; --o1-bg:#13302c;
+  --o2:#8aa6ff; --o2-bg:#1f2a47;
+  --o3:#e7a94c; --o3-bg:#352712;
+  --o4:#f08aa8; --o4-bg:#3a1a25;
+  --ok:#6ccf8d; --warn:#e7a94c; --bad:#f08aa8;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:17px;line-height:1.6}
+.wrap{max-width:1080px;margin:0 auto;padding-inline:20px;padding-block:40px 80px;display:flex;flex-direction:column;gap:56px}
+h1,h2,h3{font-family:var(--display);line-height:1.2;text-wrap:balance;margin:0}
+h1{font-size:clamp(2rem,5vw,3rem);font-weight:700;letter-spacing:.01em}
+h2{font-size:1.6rem;font-weight:600}
+h3{font-size:1.1rem;font-weight:600}
+p{margin:0;max-width:68ch}
+.eyebrow{font-family:var(--mono);font-size:.75rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.lead{font-size:1.2rem;max-width:62ch}
+section{display:flex;flex-direction:column;gap:20px}
+.sec-head{display:flex;flex-direction:column;gap:8px}
+.muted{color:var(--muted)}
+code,.id{font-family:var(--mono);font-size:.85em}
+.id{color:var(--muted)}
+
+/* hero */
+.hero{display:flex;flex-direction:column;gap:18px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.facts{display:flex;flex-wrap:wrap;gap:8px;padding:0;margin:4px 0 0;list-style:none}
+.facts li{font-size:.85rem;padding:4px 12px;border:1px solid var(--line);border-radius:999px;background:var(--surface)}
+.facts li b{font-weight:700}
+
+/* tables */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:.95rem}
+th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:0}
+
+/* status pills */
+.pill{display:inline-block;font-family:var(--mono);font-size:.72rem;padding:2px 8px;border-radius:999px;border:1px solid currentColor;white-space:nowrap}
+.pill.ok{color:var(--ok)} .pill.warn{color:var(--warn)} .pill.bad{color:var(--bad)} .pill.na{color:var(--muted)}
+
+/* preset demo */
+.demo{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px}
+.presets{display:flex;flex-wrap:wrap;gap:8px}
+.presets button{font:inherit;font-size:.9rem;padding:6px 14px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer}
+.presets button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--surface)}
+.presets button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.sample{font-family:"Lexend",var(--body);font-size:1.1rem;max-width:60ch;transition:letter-spacing .25s,word-spacing .25s,line-height .25s}
+.values{font-family:var(--mono);font-size:.8rem;color:var(--muted)}
+@media (prefers-reduced-motion:reduce){.sample{transition:none}}
+
+/* flow */
+.flow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.phase{display:flex;flex-direction:column;gap:10px;min-width:0}
+.phase h3{font-size:.95rem;padding-bottom:6px;border-bottom:2px solid var(--accent)}
+.steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;counter-reset:none}
+.steps li{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:.9rem;display:flex;flex-direction:column;gap:4px}
+.steps li .n{font-family:var(--mono);font-size:.72rem;color:var(--muted)}
+.steps li .who{font-family:var(--mono);font-size:.72rem}
+.fail{font-size:.8rem;color:var(--bad)}
+@media (max-width:860px){.flow{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:520px){.flow{grid-template-columns:minmax(0,1fr)}}
+
+/* owners */
+.owners{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.owner{border-radius:12px;padding:18px 20px;display:flex;flex-direction:column;gap:12px;border:1px solid var(--line);background:var(--surface);min-width:0}
+.owner header{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.owner .tag{font-family:var(--mono);font-weight:600;font-size:.85rem;padding:2px 10px;border-radius:6px}
+.o1 .tag{background:var(--o1-bg);color:var(--o1)} .o2 .tag{background:var(--o2-bg);color:var(--o2)}
+.o3 .tag{background:var(--o3-bg);color:var(--o3)} .o4 .tag{background:var(--o4-bg);color:var(--o4)}
+.o1{border-top:4px solid var(--o1)} .o2{border-top:4px solid var(--o2)} .o3{border-top:4px solid var(--o3)} .o4{border-top:4px solid var(--o4)}
+.mods{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:minmax(0,1fr);gap:4px;font-size:.92rem}
+.mods li{display:flex;gap:10px;align-items:baseline}
+.mods .id{min-width:3.6em}
+.flag{font-family:var(--mono);font-size:.68rem;padding:1px 6px;border-radius:4px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.flag.core{color:var(--o4);border-color:var(--o4)}
+.flag.help{color:var(--ok);border-color:var(--ok)}
+.heavy{font-size:.85rem;color:var(--muted)}
+@media (max-width:760px){.owners{grid-template-columns:minmax(0,1fr)}}
+
+/* diagram */
+.diagram{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px}
+.diagram svg{display:block;min-width:680px;width:100%;height:auto}
+.d-box1{fill:var(--o1-bg);stroke:var(--o1)} .d-box2{fill:var(--o2-bg);stroke:var(--o2)}
+.d-box3{fill:var(--o3-bg);stroke:var(--o3)} .d-box4{fill:var(--o4-bg);stroke:var(--o4)}
+.d-title{font-family:var(--display);font-weight:600;font-size:17px;fill:var(--fg)}
+.d-sub{font-family:var(--body);font-size:13px;fill:var(--muted)}
+.d-arrow{stroke:var(--fg);stroke-width:1.6;fill:none}
+.d-dash{stroke:var(--muted);stroke-width:1.4;fill:none;stroke-dasharray:5 4}
+.d-label{font-family:var(--mono);font-size:12px;fill:var(--fg)}
+.d-head{fill:var(--fg)}
+
+/* contracts */
+.contracts{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+.k{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.k .top{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.k b{font-family:var(--display);font-weight:600}
+.k .owner-mini{font-family:var(--mono);font-size:.72rem}
+.k p{font-size:.88rem;color:var(--muted)}
+.c1{color:var(--o1)} .c2{color:var(--o2)} .c3{color:var(--o3)} .c4{color:var(--o4)}
+.key-callout{border-left:4px solid var(--o4);padding:4px 0 4px 14px}
+
+/* safety rules */
+.rules{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;list-style:none;margin:0;padding:0}
+.rules li{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:.93rem}
+
+/* open questions */
+.open-top{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.oq{background:var(--surface);border:1px solid var(--warn);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:6px}
+.oq .id{color:var(--warn);font-weight:600}
+.oq p{font-size:.9rem}
+details{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 16px}
+summary{cursor:pointer;font-weight:700}
+summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px;border-radius:4px}
+.olist{columns:2 320px;column-gap:28px;margin:12px 0 0;padding-left:0;list-style:none;font-size:.92rem}
+.olist li{break-inside:avoid;padding:4px 0}
+
+/* doc map */
+.docmap{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.dm{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:4px}
+.dm .id{font-weight:600;color:var(--accent)}
+.dm p{font-size:.88rem;color:var(--muted)}
+.readers{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.readers div{background:var(--accent-soft);border-radius:10px;padding:12px 14px;font-size:.92rem;min-width:0}
+@media (max-width:700px){.readers{grid-template-columns:minmax(0,1fr)}}
+
+footer{font-size:.85rem;color:var(--muted);border-top:1px solid var(--line);padding-top:16px}
+</style>
+
+<div class="wrap">
+
+<header class="hero">
+  <span class="eyebrow">Graphic Era · PBL · architecture draft</span>
+  <h1>ScribeSense</h1>
+  <p class="lead">A Linux tool that makes text easier to read for people with dyslexia by changing letter, word and line spacing across the whole desktop: browsers, documents and apps. It does this by generating spaced-out fonts and pointing every app it can reach at them, with a pop-up reader for anything it can't reach.</p>
+  <ul class="facts">
+    <li><b>Platform</b> Hyprland on Linux</li>
+    <li><b>Language</b> English (Latin letters)</li>
+    <li><b>Built in</b> Python · extension in JavaScript</li>
+    <li><b>MVP deadline</b> 20 October</li>
+    <li><b>Team</b> 4 owners, O1–O4</li>
+    <li><b>Status</b> design drafted · mentor review pending</li>
+  </ul>
+</header>
+
+<section id="changed">
+  <div class="sec-head">
+    <span class="eyebrow">For the mentor</span>
+    <h2>What changed since the approved proposal</h2>
+    <p class="muted">Talking to readers showed they read mostly in web browsers, and that line spacing helps most. The team changed direction to meet them there.</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Approved proposal</th><th>Now</th></tr></thead>
+    <tbody>
+      <tr><td>A separate reading window; text is copied into it</td><td><b>System-wide:</b> text changes in the apps themselves. The reading window becomes the fallback</td></tr>
+      <tr><td>Guided A/B calibration finds each reader's settings</td><td><b>Presets plus manual adjustment</b></td></tr>
+      <tr><td>Hardest part: getting text out of other apps</td><td>Hardest part: <b>changing other apps safely</b>, so every change can be undone</td></tr>
+      <tr><td>Research instruments built into the MVP</td><td><b>MVP first;</b> research and a recommender come after</td></tr>
+      <tr><td>Contribution: the calibration method</td><td>Contribution: <b>spacing applied to the entire desktop,</b> including word spacing Linux itself does not offer. Prior-art search still to be done</td></tr>
+      <tr><td>Planned as a Flatpak</td><td><b>Normal install.</b> A sandboxed Flatpak cannot change system font settings, which is the whole product</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="idea">
+  <div class="sec-head">
+    <span class="eyebrow">The core idea</span>
+    <h2>Spacing lives inside the font</h2>
+    <p>Linux lets you change the font and the text size, but not the spacing. So ScribeSense builds the spacing into a new font file: wider letters give letter spacing, a wider space character gives word spacing, and taller line metrics give line spacing. Then it tells the system and each app to use that font. Each preset gets two fonts: a <b>reading</b> font with full line height, and a <b>UI</b> font with smaller line height, because tall line spacing cut off text in Qt menus during testing.</p>
+  </div>
+  <div class="demo" aria-label="Preset preview">
+    <div class="presets" role="group" aria-label="Choose a preset">
+      <button type="button" id="p-original" data-l="0" data-w="0" data-h="1.4" data-v="Original · no changes" aria-pressed="false">Original</button>
+      <button type="button" id="p-default" data-l="0.12" data-w="0.16" data-h="1.5" data-v="Default · letter 0.12 em · word +0.16 em · line 1.5×" aria-pressed="true">Default</button>
+      <button type="button" id="p-reading" data-l="0.12" data-w="0.125" data-h="1.8" data-v="Reading · letter 0.12 em · word 1.5× · line 1.8×" aria-pressed="false">Reading</button>
+      <button type="button" id="p-high" data-l="0.20" data-w="0.375" data-h="1.6" data-v="High Separation · letter 0.20 em · word 2.5× · line 1.6×" aria-pressed="false">High Separation</button>
+    </div>
+    <p class="sample" id="sample">Reading is easier when letters have room to breathe. Some readers need more space between words, others need more space between lines, and the right amount differs from person to person. ScribeSense lets each reader choose, then applies that choice everywhere they read.</p>
+    <span class="values" id="values">Default · letter 0.12 em · word +0.16 em · line 1.5×</span>
+    <span class="muted" style="font-size:.82rem">An approximate preview drawn with CSS in your browser. ScribeSense itself puts these values into the font. Preset values are drafts.</span>
+  </div>
+</section>
+
+<section id="flow">
+  <div class="sec-head">
+    <span class="eyebrow">How it works</span>
+    <h2>What happens when the user presses Apply</h2>
+    <p class="muted">Fourteen steps in four phases. Switching presets with the keybind runs the same sequence. Choosing "Original" undoes everything.</p>
+  </div>
+  <div class="flow">
+    <div class="phase">
+      <h3>1 · Choose</h3>
+      <ol class="steps">
+        <li><span class="n">Step 1</span>Pick a preset, adjust it, see the preview<span class="who c2">O2 · M2.5</span></li>
+        <li><span class="n">Step 2</span>Values checked and rounded to fixed steps<span class="who c1">O1 · M1.1</span></li>
+      </ol>
+    </div>
+    <div class="phase">
+      <h3>2 · Build</h3>
+      <ol class="steps">
+        <li><span class="n">Step 3</span>Reading and UI fonts built, measured and installed, or taken from the cache<span class="who c1">O1 · M1.8</span><span class="fail">Fails → stop, nothing changed</span></li>
+        <li><span class="n">Step 4</span>Preflight: permissions, disk space, no other apply running<span class="who c2">O2 · M2.1</span></li>
+      </ol>
+    </div>
+    <div class="phase">
+      <h3>3 · Apply safely</h3>
+      <ol class="steps">
+        <li><span class="n">Step 5</span>Transaction opened and locked<span class="who c4">O4 · M4.10</span></li>
+        <li><span class="n">Step 6</span>Installed apps and browser profiles detected<span class="who c4">O4 · adapters</span></li>
+        <li><span class="n">Step 7</span>Old value of every setting recorded <b>before</b> any change<span class="who c4">O4 · journal</span></li>
+        <li><span class="n">Step 8</span>System font rule applied first<span class="who c4">O4 · M4.2</span><span class="fail">Fails → stop and undo</span></li>
+        <li><span class="n">Step 9</span>GTK, Flatpak, Qt, Firefox, Chromium applied<span class="who c4">O4 · M4.3–M4.7</span><span class="fail">One fails → that app "not covered"</span></li>
+        <li><span class="n">Step 10</span>Each app checked: which font it picks and draws<span class="who c4">O4 · M4.13</span><span class="fail">Check fails → undo that app only</span></li>
+      </ol>
+    </div>
+    <div class="phase">
+      <h3>4 · Confirm</h3>
+      <ol class="steps">
+        <li><span class="n">Step 11</span>User told which open apps to restart<span class="who c2">O2 · M2.2</span></li>
+        <li><span class="n">Step 12</span>ScribeSense reopens in the new font: "Can you read this?" 30 s countdown<span class="who c2">O2 · M2.3</span></li>
+        <li><span class="n">Step 13</span>Keep → done. No answer → everything undone<span class="who c4">O4 · M4.11</span></li>
+        <li><span class="n">Step 14</span>Report: covered, not covered, pending, restart needed<span class="who c2">O2 · M2.6</span></li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section id="coverage">
+  <div class="sec-head">
+    <span class="eyebrow">What it reaches</span>
+    <h2>How each kind of app gets the new font</h2>
+    <p class="muted">Each app reads its font from a different place, so each needs its own small "adapter". Statuses come from tests on the development machine.</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Apps</th><th>How ScribeSense reaches them</th><th>Tested</th></tr></thead>
+    <tbody>
+      <tr><td>Everything that asks the system for a font</td><td>A font rule that points system fonts at the generated ones</td><td><span class="pill ok">works</span></td></tr>
+      <tr><td>GTK / GNOME apps</td><td>System font settings, plus text size</td><td><span class="pill ok">works</span></td></tr>
+      <tr><td>LibreOffice</td><td>Picks up the system font rule</td><td><span class="pill ok">works</span></td></tr>
+      <tr><td>Flatpak apps</td><td>One permission per app so it can see the font rule</td><td><span class="pill ok">works</span></td></tr>
+      <tr><td>Qt apps</td><td>Qt's own config file, only if the session already uses qt6ct</td><td><span class="pill warn">windows work · menus need the UI font</span></td></tr>
+      <tr><td>Firefox, Zen</td><td>A user stylesheet in every profile</td><td><span class="pill ok">works</span></td></tr>
+      <tr><td>Brave, Chrome</td><td>Default fonts in the browser's settings file, plus our own small extension for web pages</td><td><span class="pill warn">defaults work · extension not built</span></td></tr>
+      <tr><td>Google Docs, PDFs</td><td>Drawn as images, can't be restyled → copy the text into the pop-up reader</td><td><span class="pill na">reader instead</span></td></tr>
+      <tr><td>Terminals, code editors</td><td>Never changed on purpose. Spacing would break code alignment</td><td><span class="pill na">excluded</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="team">
+  <div class="sec-head">
+    <span class="eyebrow">Who builds what</span>
+    <h2>Four owners, 43 modules</h2>
+    <p class="muted">Each module has a full specification card in <code>ARCHITECTURE.md</code>. O4 has the largest area, so other owners who finish early can pick up the cards marked <span class="flag help">helper</span>. Cards marked <span class="flag core">O4 only</span> are where a mistake can break the desktop.</p>
+  </div>
+  <div class="owners">
+    <article class="owner o1">
+      <header><span class="tag">O1</span><h3>Configuration &amp; Fonts</h3></header>
+      <ul class="mods">
+        <li><span class="id">M1.1</span>Settings: units, ranges, steps</li>
+        <li><span class="id">M1.2</span>Presets</li>
+        <li><span class="id">M1.3</span>Which fonts may be changed</li>
+        <li><span class="id">M1.4</span>Font patcher <span class="flag">core algorithm</span></li>
+        <li><span class="id">M1.5</span>Reading + UI variants, naming</li>
+        <li><span class="id">M1.6</span>Measure the font before use</li>
+        <li><span class="id">M1.7</span>Install fonts, refresh cache</li>
+        <li><span class="id">M1.8</span>Generator entry point</li>
+      </ul>
+      <p class="heavy">Heaviest part: the font patcher.</p>
+    </article>
+    <article class="owner o2">
+      <header><span class="tag">O2</span><h3>User Experience</h3></header>
+      <ul class="mods">
+        <li><span class="id">M2.1</span>Apply controller (runs the 14 steps)</li>
+        <li><span class="id">M2.2</span>Restart notice</li>
+        <li><span class="id">M2.3</span>Reopen + 30 s confirm</li>
+        <li><span class="id">M2.4</span>App window</li>
+        <li><span class="id">M2.5</span>Presets, adjust, preview</li>
+        <li><span class="id">M2.6</span>Coverage report</li>
+        <li><span class="id">M2.7</span>Settings screen</li>
+        <li><span class="id">M2.8</span>Tray icon <span class="flag">optional</span></li>
+        <li><span class="id">M2.9</span>Pop-up reader</li>
+        <li><span class="id">M2.10</span>Text capture (4 ways in)</li>
+        <li><span class="id">M2.11</span>Commands for keybinds <span class="flag">owner open</span></li>
+      </ul>
+      <p class="heavy">Heaviest part: the apply controller and confirm flow.</p>
+    </article>
+    <article class="owner o3">
+      <header><span class="tag">O3</span><h3>Data &amp; Platform</h3></header>
+      <ul class="mods">
+        <li><span class="id">M3.1</span>Database</li>
+        <li><span class="id">M3.2</span>Clean up old records</li>
+        <li><span class="id">M3.3</span>Test sandbox <span class="flag">needed before helpers start</span></li>
+        <li><span class="id">M3.4</span>"Which font is drawn" checks</li>
+        <li><span class="id">M3.5</span>Full tests in a VM</li>
+        <li><span class="id">M3.6</span>Manual checklist</li>
+        <li><span class="id">M3.7</span>Doctor (missing dependencies)</li>
+        <li><span class="id">M3.8</span>Install and uninstall</li>
+        <li><span class="id">M3.9</span>Automated test runs</li>
+      </ul>
+      <p class="heavy">Heaviest part: the VM test setup.</p>
+    </article>
+    <article class="owner o4">
+      <header><span class="tag">O4</span><h3>System Integration &amp; Safety</h3></header>
+      <ul class="mods">
+        <li><span class="id">M4.1</span>Adapter rules <span class="flag core">O4 only</span></li>
+        <li><span class="id">M4.2</span>System font rule <span class="flag core">O4 only</span></li>
+        <li><span class="id">M4.3</span>GTK <span class="flag help">helper</span></li>
+        <li><span class="id">M4.4</span>Flatpak <span class="flag help">helper</span></li>
+        <li><span class="id">M4.5</span>Qt <span class="flag help">helper</span></li>
+        <li><span class="id">M4.6</span>Firefox <span class="flag help">helper</span></li>
+        <li><span class="id">M4.7</span>Chromium settings <span class="flag help">helper</span></li>
+        <li><span class="id">M4.8</span>Browser CSS <span class="flag help">helper</span></li>
+        <li><span class="id">M4.9</span>Browser extension (JS) <span class="flag help">helper</span></li>
+        <li><span class="id">M4.10</span>Change journal <span class="flag core">O4 only</span></li>
+        <li><span class="id">M4.11</span>Undo <span class="flag core">O4 only</span></li>
+        <li><span class="id">M4.12</span>Recovery <span class="flag core">O4 only</span></li>
+        <li><span class="id">M4.13</span>Check each app</li>
+        <li><span class="id">M4.14</span>Keybind writer <span class="flag">owner open</span></li>
+        <li><span class="id">M4.15</span>Privacy-safe logging</li>
+      </ul>
+      <p class="heavy">Heaviest part: the journal, undo and recovery.</p>
+    </article>
+  </div>
+</section>
+
+<section id="connections">
+  <div class="sec-head">
+    <span class="eyebrow">How the parts link</span>
+    <h2>Contracts between owners</h2>
+    <p>A <b>contract</b> is a shared definition everyone codes against, for example "what a configuration contains" or "what every adapter must do". The team agrees on all eleven before splitting up and then freezes them. If everyone builds to the same contracts, the pieces fit when they are joined.</p>
+  </div>
+  <div class="diagram" role="img" aria-label="Diagram: O1 sends fonts and configuration to O2 and O4; O2 drives O4's adapters and journal; O1, O2 and O4 store data through O3; O3's sandbox runs every test.">
+    <svg viewBox="0 0 860 400" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="d-head" d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+      <path class="d-arrow" d="M120,70 C120,22 740,22 740,70" marker-end="url(#ah)"/>
+      <text class="d-label" x="430" y="30" text-anchor="middle">K7 fonts to apply</text>
+
+      <rect class="d-box1" x="20" y="70" width="200" height="110" rx="10" stroke-width="2"/>
+      <text class="d-title" x="40" y="104">O1</text>
+      <text class="d-sub" x="40" y="128">Configuration &amp; Fonts</text>
+      <text class="d-sub" x="40" y="150">K1 config · K2 presets</text>
+
+      <rect class="d-box2" x="330" y="70" width="200" height="110" rx="10" stroke-width="2"/>
+      <text class="d-title" x="350" y="104">O2</text>
+      <text class="d-sub" x="350" y="128">User Experience</text>
+      <text class="d-sub" x="350" y="150">runs the apply · K6 · K10</text>
+
+      <rect class="d-box4" x="640" y="70" width="200" height="110" rx="10" stroke-width="2"/>
+      <text class="d-title" x="660" y="104">O4</text>
+      <text class="d-sub" x="660" y="128">Integration &amp; Safety</text>
+      <text class="d-sub" x="660" y="150">adapters · journal · undo</text>
+
+      <path class="d-arrow" d="M220,125 L328,125" marker-end="url(#ah)"/>
+      <text class="d-label" x="274" y="116" text-anchor="middle">K1 · K7</text>
+
+      <path class="d-arrow" d="M530,125 L638,125" marker-end="url(#ah)"/>
+      <text class="d-label" x="584" y="108" text-anchor="middle">K3 adapters</text>
+      <text class="d-label" x="584" y="146" text-anchor="middle">K4 · K5 journal</text>
+
+      <rect class="d-box3" x="20" y="290" width="820" height="90" rx="10" stroke-width="2"/>
+      <text class="d-title" x="40" y="324">O3</text>
+      <text class="d-sub" x="40" y="348">Data &amp; Platform · K8 paths · K9 database</text>
+      <text class="d-sub" x="500" y="324">Test sandbox runs every test</text>
+      <text class="d-sub" x="500" y="348">and never touches the real desktop</text>
+
+      <path class="d-arrow" d="M120,180 L120,288" marker-end="url(#ah)"/>
+      <text class="d-label" x="130" y="240">font records</text>
+      <path class="d-arrow" d="M430,180 L430,288" marker-end="url(#ah)"/>
+      <text class="d-label" x="440" y="240">presets · coverage</text>
+      <path class="d-arrow" d="M740,180 L740,288" marker-end="url(#ah)"/>
+      <text class="d-label" x="750" y="240">change records</text>
+      <path class="d-dash" d="M840,300 C860,230 860,200 842,180"/>
+    </svg>
+  </div>
+  <div class="contracts">
+    <div class="k"><div class="top"><b>K1 Configuration</b><span class="owner-mini c1">O1</span></div><p>The settings, their units, ranges and steps</p></div>
+    <div class="k"><div class="top"><b>K2 Presets</b><span class="owner-mini c1">O1</span></div><p>Default, Reading, High Separation, user presets, Original</p></div>
+    <div class="k key-callout"><div class="top"><b>K3 Adapter</b><span class="owner-mini c4">O4</span></div><p>Every adapter can detect, record, apply, check and undo. The most important contract</p></div>
+    <div class="k"><div class="top"><b>K4 Journal</b><span class="owner-mini c4">O4</span></div><p>What was changed, its old value, and how to undo it</p></div>
+    <div class="k"><div class="top"><b>K5 Transaction states</b><span class="owner-mini c4">O4</span></div><p>Created → … → Completed, so a crash at any point can be recovered</p></div>
+    <div class="k"><div class="top"><b>K6 Coverage status</b><span class="owner-mini c2">O2</span></div><p>Covered · not covered · pending · restart needed</p></div>
+    <div class="k"><div class="top"><b>K7 Font generator</b><span class="owner-mini c1">O1</span></div><p>Configuration in → two installed fonts, or a clear refusal</p></div>
+    <div class="k"><div class="top"><b>K8 Paths &amp; error codes</b><span class="owner-mini c3">O3</span></div><p>Where files live; error codes that never contain user text</p></div>
+    <div class="k"><div class="top"><b>K9 Database</b><span class="owner-mini c3">O3</span></div><p>How every module saves and loads its data</p></div>
+    <div class="k"><div class="top"><b>K10 Commands</b><span class="owner-mini muted">open</span></div><p>Commands the keybinds and installer call (reset, preset next, read)</p></div>
+    <div class="k"><div class="top"><b>K11 Extension messages</b><span class="owner-mini c4">O4 + O2</span></div><p>How the browser extension talks to the app</p></div>
+  </div>
+</section>
+
+<section id="safety">
+  <div class="sec-head">
+    <span class="eyebrow">Promises every module keeps</span>
+    <h2>Safety and privacy rules</h2>
+    <p class="muted">ScribeSense edits other programs' settings, and its users already find reading hard. A mistake must never leave someone with a screen they can't read.</p>
+  </div>
+  <ul class="rules">
+    <li>Nothing is changed before its old value is recorded.</li>
+    <li>After applying: 30 seconds to confirm, or everything is undone.</li>
+    <li>A crash or reboot before confirming is undone at the next login.</li>
+    <li>Recovery keybind <code>Ctrl+Alt+Shift+Super+Backspace</code> works without the app window.</li>
+    <li>If the user changed a setting after us, undo skips it and says so.</li>
+    <li>Apps are never closed or restarted by ScribeSense. The user is asked.</li>
+    <li>Text from the reader stays in memory for the session only. Never saved, never logged.</li>
+    <li>No network: no servers, no downloaded fonts.</li>
+    <li>Monospace and icon fonts are never changed.</li>
+    <li>Uninstall undoes everything and keeps the user's presets unless they ask to delete them.</li>
+  </ul>
+</section>
+
+<section id="open">
+  <div class="sec-head">
+    <span class="eyebrow">Not decided yet</span>
+    <h2>20 open questions</h2>
+    <p class="muted">Each has a suggested default so work isn't blocked, but the team must confirm them before the contracts are frozen. These four matter most:</p>
+  </div>
+  <div class="open-top">
+    <div class="oq"><span class="id">A15 · safety</span><p>If the reopened window never appears, what enforces the 30-second undo?</p></div>
+    <div class="oq"><span class="id">A13</span><p>Which font, reading or UI, do generic families such as "sans-serif" get?</p></div>
+    <div class="oq"><span class="id">A14</span><p>Which "is the font really drawn" checks run on users' machines, and which only in tests?</p></div>
+    <div class="oq"><span class="id">A9</span><p>The Default preset's word spacing is in em, but the setting is "× space width", which differs per font.</p></div>
+  </div>
+  <details>
+    <summary>All 20 open questions</summary>
+    <ol class="olist">
+      <li><span class="id">A1</span> How the app stays running for the session</li>
+      <li><span class="id">A2</span> Recovery must not load the app window</li>
+      <li><span class="id">A3</span> How the login check starts</li>
+      <li><span class="id">A4</span> Which Python libraries to use</li>
+      <li><span class="id">A5</span> How to preview a font that isn't active yet</li>
+      <li><span class="id">A6</span> Extension format and its link to the app</li>
+      <li><span class="id">A7</span> Who owns the command-line entry points</li>
+      <li><span class="id">A8</span> Database tables</li>
+      <li><span class="id">A9</span> Default preset word-spacing unit</li>
+      <li><span class="id">A10</span> Presets' base font, UI line height, text size</li>
+      <li><span class="id">A11</span> Text size range and step</li>
+      <li><span class="id">A12</span> Limits for UI line height</li>
+      <li><span class="id">A13</span> Reading vs UI font per font family</li>
+      <li><span class="id">A14</span> Drawn-font checks in production vs tests</li>
+      <li><span class="id">A15</span> Who enforces the 30 s timeout</li>
+      <li><span class="id">A16</span> How the extension learns the current style</li>
+      <li><span class="id">A17</span> Reader text size limit</li>
+      <li><span class="id">A18</span> Who owns the keybind writer</li>
+      <li><span class="id">A19</span> Names of the generated fonts</li>
+      <li><span class="id">A20</span> Minimum Python version</li>
+    </ol>
+  </details>
+</section>
+
+<section id="doc">
+  <div class="sec-head">
+    <span class="eyebrow">The detailed document</span>
+    <h2>What's inside ARCHITECTURE.md</h2>
+    <p class="muted">This page is the overview. <code>ARCHITECTURE.md</code> is the full build specification, precise enough for AI agents and for anyone building a module.</p>
+  </div>
+  <div class="docmap">
+    <div class="dm"><span class="id">§0 How to read</span><p>Status tags and the 16-field card format</p></div>
+    <div class="dm"><span class="id">§1 Scope</span><p>Every decided rule in one place</p></div>
+    <div class="dm"><span class="id">§2 Overview</span><p>Owners and the 14-step apply sequence</p></div>
+    <div class="dm"><span class="id">§3 Open questions</span><p>A1–A20 with suggested defaults</p></div>
+    <div class="dm"><span class="id">§4 Conventions</span><p>Rules every module follows</p></div>
+    <div class="dm"><span class="id">§5 Contracts</span><p>K1–K11, written out exactly</p></div>
+    <div class="dm"><span class="id">§6 Seams</span><p>13 links between modules and their handshake rules</p></div>
+    <div class="dm"><span class="id">§7 Module cards</span><p>43 cards: purpose, inputs, outputs, failures, tests, "done when"</p></div>
+    <div class="dm"><span class="id">§8 Helpers</span><p>Which O4 cards others may take, and how</p></div>
+    <div class="dm"><span class="id">§9 Order</span><p>What must exist before what. Not a schedule</p></div>
+  </div>
+  <div class="readers">
+    <div><b>Mentor</b><br>This page down to "Who builds what", plus the open questions.</div>
+    <div><b>Team member</b><br>This whole page, then your own cards in §7.</div>
+    <div><b>Helper on an O4 card</b><br>§5 contracts, §8 rules, then the card itself.</div>
+  </div>
+</section>
+
+<section id="later">
+  <div class="sec-head">
+    <span class="eyebrow">After the MVP</span>
+    <h2>Later</h2>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Item</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td>Recommender</td><td>Learns from the user's own adjustments. Opt-in data only, never screen contents</td></tr>
+      <tr><td>Voice assistant</td><td>Text-to-speech support</td></tr>
+      <tr><td>GNOME</td><td>Behaves differently from Hyprland; needs its own testing</td></tr>
+      <tr><td>Electron apps, shadow mode, drift detection</td><td>Deferred to keep the MVP achievable</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>Draft generated from the team's recorded decisions (<code>PLAN_v2.md</code>) and the build specification (<code>ARCHITECTURE.md</code>). Values marked as drafts are not final.</footer>
+</div>
+
+<script>
+(function(){
+  var buttons=document.querySelectorAll('.presets button');
+  var sample=document.getElementById('sample');
+  var values=document.getElementById('values');
+  function set(b){
+    buttons.forEach(function(x){x.setAttribute('aria-pressed', x===b ? 'true':'false');});
+    sample.style.letterSpacing=b.dataset.l+'em';
+    sample.style.wordSpacing=b.dataset.w+'em';
+    sample.style.lineHeight=b.dataset.h;
+    values.textContent=b.dataset.v;
+  }
+  buttons.forEach(function(b){b.addEventListener('click',function(){set(b);});});
+  set(document.getElementById('p-default'));
+})();
+</script>
