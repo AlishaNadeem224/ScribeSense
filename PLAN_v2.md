@@ -671,3 +671,51 @@ plan's Flatpak route is dropped; MVP installs natively (an RPM can come later).
 - ✅ Assist preconditions: contracts frozen · O3 isolated harness ready · helper's own area tested + reviewed.
 - ✅ Module card template: 16 fields (see `ARCHITECTURE.md` §0).
 - ✅ `ARCHITECTURE.md` rebuilt from recorded decisions only; undiscussed choices listed as A1–A20 (§3).
+
+---
+
+## Decisions (2026-10-08) — A1–A20 closed
+
+- ✅ All twenty open architecture items decided (team proposals + six reviewed amendments).
+  Full text in `ARCHITECTURE.md` §3.
+- ✅ Amendments:
+  1. Confirmation runs as a **fresh process** `scribesense confirm <tx>` (bypasses single-instance);
+     the background service is the watchdog until the tx ends. Added `confirm` + `quit` to K10.
+  2. Browser boundary: Chromium = extension (styling + right-click); Firefox/Zen = CSS file +
+     selection keybind. Flatpak native messaging = feasibility test.
+  3. Presets store **intent** (word spacing `target_em` or `multiplier`); `resolve()` produces the
+     one concrete Configuration. K2 rewritten.
+  4. Font key includes **every input** that changes the generated files (incl. both line heights).
+  5. Python 3.11 = core-logic compatibility only; GUI validated on system Python (3.14).
+  6. M2.3 owns startup deadline, readiness signal, heartbeat and failure tests; O4 reviews.
+- ⚠️ PBL date now possibly **14 October** (tentative, unconfirmed) — down from 20 October.
+- ▶ Next: freeze K1–K11.
+
+## Decisions (2026-10-09) — contracts
+
+- ✅ K1–K8, K10, K11 **frozen** (details in `ARCHITECTURE.md` §5). K9 = draft, **O3 review required**.
+- Key changes: K1 canonical rounding + `NOT_ON_STEP` guard · K2 preset intent + bundled fonts + UUID ids ·
+  K3 `plan()`/`apply()` split (write-ahead intent), `revert(item, backup)`, atomic writes, per-operation timeouts ·
+  K4 cross-process `flock`, intent before every write, idempotent revert, Unix-socket IPC (same user, ≤1 MiB),
+  `reset` never "busy" (pidfd-verified takeover) · K5 `FAILED_CLEAN` vs `REVERT_FAILED` ·
+  K6 context-based coverage mapping · K7 private preview build + live-reference cleanup ·
+  K8 ErrorCode list v1 (add-only) · K10 exit codes · K11 versioned replies + pinned extension key.
+- ✅ Follow-up fixes (2026-10-09): K4 `items()` returns `JournalItem` incl. intent; revert rule defines
+  absent originals (`existed=False`) and uses baseline + latest intent for revert-all · K5/M2.1: a failed
+  per-adapter revert stops the apply and rolls back the whole tx · ErrorCode v1 approved (add-only):
+  `BUNDLED_FONT_MISSING`, `ADAPTER_COMMAND_FAILED` added · K9 review checklist for O3.
+
+## Decisions (2026-10-09) — recovery review R2
+
+- ✅ Applied to `ARCHITECTURE.md` (§3 "Recovery review R2", K3–K11 marked "amended R2"):
+  permanent `LocationRecord` (baseline + managed) · recovery = finish unfinished txs, then baselines ·
+  `CONFIRMED` removed, atomic `Journal.keep()` · named lock owners, 60 s wait, pidfd + process-group takeover ·
+  canonical `State` / `read_state()` · `run_cmd()` + default timeouts · bubblewrap-enforced tests ·
+  extension revisions, reconnect, local Disable · durability wording · partial font styles ·
+  `CHANGED_DURING_APPLY`, `PLAN_CONFLICT` · 7 recovery scenarios before any real adapter.
+- ⏳ Proposed, awaiting confirmation: R2-8 (`dconf read` for settings state) · R2-9 (keep referenced fonts
+  on uninstall — **reverses F10**).
+- ✅ K9 store written (2026-10-09) as **draft for O3 sign-off**: records, settings list, signatures, journal-only
+  tables, busy/error/migration/pruning/delete-all rules, 12 acceptance tests. K4 gains `prune_history()` +
+  `no_obligations()`; K8 gains 9 store/font codes; M4.12 postcondition reworded.
+- ▶ Implementation starts now for modules not blocked by K9. R2-8 (Gio vs dconf) and R2-9 still open.

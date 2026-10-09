@@ -74,7 +74,7 @@ for K3/K4, and the contract owner + one other owner for the rest.
 | 10 | Verify each target; failed verify → revert that adapter only | M4.13 + adapters | K3 |
 | 11 | Restart notice for running affected apps | M2.2 | K6 |
 | 12 | ScribeSense relaunches its own window with new fonts; 30 s countdown | M2.3 | K5 |
-| 13 | Confirm → COMPLETED · timeout/close → revert | M2.3 → M4.11 | K4, K5 |
+| 13 | Keep → `Journal.keep()` (atomic) → COMPLETED · timeout/close → revert | M2.3 → M4.10 / M4.11 | K4, K5 |
 | 14 | Coverage report shown | M2.6 | K6 |
 
 Preset switching by keybind runs the **same sequence**. [D]
@@ -92,32 +92,54 @@ Preset switching by keybind runs the **same sequence**. [D]
 
 ---
 
-## 3. Open architecture decisions
+## 3. Architecture decisions A1–A20 — DECIDED (2026-10-08)
 
-Each has a proposed default **[P]** so work is not blocked, but the team must confirm.
+All twenty were reviewed and decided by the team (proposals + six amendments). Tagged **[D Ax]** below.
 
-| # | Question | Proposed default | Affects |
-|---|---|---|---|
-| A1 | How does a process stay alive for the session (needed for session-only reader text and keybind actions)? | The GUI app is single-instance and stays running in the background | M2.4, M2.9, M2.11 |
-| A2 | Must the recovery path avoid loading GUI code? | Yes — `reset`, login recovery and uninstall import no UI modules (follows the "screen may be unreadable" rule) | M4.12, M3.9 |
-| A3 | Login auto-revert mechanism | Hyprland `exec-once` running the recovery command (alternative: systemd user service) | M4.12, M3.8 |
-| A4 | Libraries | fontTools (fonts) · PyGObject with GTK4 + libadwaita (UI) · sqlite3 (store) · pytest (tests) | all |
-| A5 | How the preview shows a font that is not activated yet | [V] load the generated file directly into the preview widget; fallback: render an image with `pango-view` | M2.5 |
-| A6 | Extension: manifest version and channel to the app | Manifest V3 [V]; native messaging to the running app | M4.9, M2.10 |
-| A7 | Who owns `cli.py` | O2 | M2.11 |
-| A8 | Database tables | as listed in M3.1 | M3.1 |
-| A9 | Default preset says word spacing "≈ 0.16 em", but the unit is "× space width" (font-dependent) | Convert per base font at build time (store the ×-value that equals +0.16 em for that font) | M1.2, M1.4 |
-| A10 | Presets don't state base font, UI line height or text size | Noto Sans · UI line 1.2× · text size 1.0 | M1.2 |
-| A11 | `text_scale` range and step | 1.0–2.0, step 0.05 | M1.1, M4.3 |
-| A12 | Absolute bounds for UI line height (warning above 1.3× is decided) | 1.0–2.0, step 0.1 | M1.1 |
-| A13 | Which font goes where: reading vs UI variant for generic families (`sans-serif`, `serif`) and named UI fonts | generic families → reading variant · named UI fonts (from gsettings `font-name`) → UI variant | M4.2 |
-| A14 | Which "drawn font" checks run in production vs only in the test harness | Production: chosen-font check per target + Pango drawn check; Qt and browser drawn checks harness-only | M4.13, M3.4 |
-| A15 | Who enforces the 30 s timeout if the relaunched window never appears or hangs | The process that started the apply keeps a watchdog until the new window confirms it is alive | M2.3 |
-| A16 | How the extension learns the current font name and line height | Asks the running app over the same native-messaging channel | M4.9, M4.8 |
-| A17 | Reader text size limit | 200 000 characters, with an explicit message | M2.10 |
-| A18 | Who owns the Hyprland keybind writer (used by install and recovery) | O4 (safety) | M4.14, M3.8 |
-| A19 | Names of generated families and files | `AccessSans-<key>` (reading, decided name) and `AccessSansUI-<key>` (UI, proposed) | M1.5 |
-| A20 | Minimum Python version | 3.11 (carried over from the old plan, not re-confirmed) | M3.7 |
+| # | Decision | Affects |
+|---|---|---|
+| A1 | **Single-instance background service.** Closing the window doesn't quit; explicit Quit (UI + `scribesense quit`) exits safely; further launches forward to the running instance — **except `confirm`** (A15). | M2.4, M2.9, M2.11 |
+| A2 | **Recovery works without the GUI** and without loading the newly generated font. `reset`, `recover --login`, `uninstall`, `doctor` import no UI modules (CI-enforced, M3.9). | M4.12, M3.8, M3.9 |
+| A3 | **Login recovery via Hyprland `exec-once` → `scribesense recover --login`.** Reverts only unfinished/unconfirmed transactions, never a confirmed configuration; idempotent; completes before any new Apply (journal lock). [V] test interrupted tx + startup ordering in the VM. | M4.12, M3.8 |
+| A4 | **Libraries:** fontTools · PyGObject (GTK4 + libadwaita, from system packages, not pip) · sqlite3 (stdlib) · pytest. No other dependency without team approval. Extension: plain JavaScript, no libraries. | all |
+| A5 | **Interactive preview before Apply:** shortlist dropdown, built-in sample passage, optional user-entered text (memory only, never logged), then adjust spacing. Options described as choices, not clinical recommendations. Approach: [V] load the generated font into the preview only; fallback: rendered image, with accessible text and controls kept. | M2.5 |
+| A6 | **Manifest V3 + native messaging**, Chromium family only. Path *extension → native-messaging host → running instance* verified early. Unsupported browser / host missing / app stopped → clear failure. [V] Flatpak browsers: feasibility test, not assumed. | M4.9, M2.10, K11 |
+| A7 | **O2 owns CLI dispatch** (K10). O4 provides the recovery and safe-writing operations the commands call. CLI and GUI share the same application logic. | M2.11 |
+| A8 | **Tables of M3.1 adopted as the starting schema.** Relationships, validation, deletion rules and transaction boundaries defined before implementation. Recommendation tables optional — core works without them. | M3.1 |
+| A9 | **Word spacing: preset stores intent, configuration stores the resolved value.** Default preset = target "+0.16 em", converted at resolve time using the base font's **Regular** space width, rounded to the 0.25 step, validated, labelled "≈". Modes: `target_em` (recalculate on font change) vs `multiplier` (keep the user's explicit value). See K2. | M1.1, M1.2, K2 |
+| A10 | **Every resolved configuration has all six fields.** Built-ins define all six (base Noto Sans · UI line 1.2 · text scale 1.0, plus K2 table values). Edits keep untouched fields. "Original" (restore pre-ScribeSense state) is not a ScribeSense default. | M1.2, K2 |
+| A11 | **`text_scale` 1.0–2.0, step 0.05**, one shared range (K1 `RANGES`). Apps that ignore it (e.g. Qt) are documented, not promised. | M1.1, M4.3 |
+| A12 | **`ui_line` 1.0–2.0, step 0.1**, warning above 1.3×. Upper limit revisited only after clipping tests; any change updates `RANGES` + tests. | M1.1 |
+| A13 | **Explicit routing, no guessing of text purpose:** identified UI settings (gsettings `font-name`, qt6ct general font, named UI fonts) → UI variant; generic families elsewhere → reading variant. A heuristic; exceptions tested and documented. | M4.2, M4.3, M4.5 |
+| A14 | **Two verification levels:** configuration check (resolves to our family) in production; rendering check (actually drawn) in the test harness, plus Pango in production. A passing configuration check is never reported as proof that every running app draws the font. | M4.13, M3.4, M2.6 |
+| A15 | **Independent watchdog until the transaction ends.** The background service applies, then launches a **fresh process** `scribesense confirm <tx>` (bypasses single-instance forwarding). The service stays watchdog until COMPLETED or REVERTED; competing rollbacks prevented by the journal lock; a crashed watchdog is covered by login recovery (A3). Details in M2.3. | M2.3, M4.11, K10 |
+| A16 | **Chromium extension asks for the current *confirmed* style** and refreshes after Apply, Revert and Original. Preview values are never exposed. Firefox/Zen CSS is a file updated by the adapter on apply/revert (browser restart needed). | M4.9, M4.8, M4.6, K11 |
+| A17 | **Reader limit 200 000 characters**, explicit rejection, never silent truncation; byte limits also enforced at transport boundaries (native messaging). Provisional — revisit after measuring. | M2.10 |
+| A18 | **O4 owns the Hyprland keybind/config writer:** preserves unrelated config, no duplicates, safe restoration, Lua and classic formats. UI and CLI call it. | M4.14 |
+| A19 | **Names `AccessSans-<key>` (reading) / `AccessSansUI-<key>` (UI).** Key includes **every input that changes the generated files** — see M1.5. | M1.5 |
+| A20 | **Python ≥ 3.11 declared.** Core (non-GTK) modules tested on 3.11 and the dev version; desktop app validated on the system Python + installed GTK/PyGObject (3.14 on the dev machine). Full-app 3.11 support is **not** claimed. | M3.7, M3.9 |
+
+### Browser support boundary [D A6, A16]
+
+| Browser route | Page styling | "Open in ScribeSense" |
+|---|---|---|
+| Chromium family (Brave, Chrome, Chromium) | Preferences adapter + our extension | Extension right-click |
+| Firefox / Zen | `userContent.css` via the Firefox adapter | Selection keybind (Super+Alt+R), where capture is verified |
+| Any | — | Copy / paste into the reader always available |
+
+### Recovery review R2 — decisions (2026-10-09)
+
+| # | Decision | Where |
+|---|---|---|
+| R2-1 | **Permanent per-location record** (`LocationRecord`): baseline + restore metadata + backup ref, `managed` = last *kept* state. Recovery: finish unfinished txs first, then restore baselines. Successful reset clears `managed`. | K4, K9, M3.2 |
+| R2-2 | **`CONFIRMED` removed.** Keep = one atomic `Journal.keep()`: tx COMPLETED + retained managed records + active config + style revision; acknowledged after commit. | K4, K5, M2.3 |
+| R2-3 | **Lock owners named** (service / reset / recover / uninstall). Other recoveries are never interrupted: 60 s bounded wait → `LOCK_TIMEOUT`. Service takeover via pidfd + process group. | K4, K8 |
+| R2-4 | **Enforced test isolation:** fake adapters for unit tests; bubblewrap for integration (no host sockets, fail closed); VM for desktop tests. | M3.3, §4 |
+| R2-5 | **Extension:** keeps styling when disconnected, reconciles on reconnect, local Disable, revision on every reply, app supplies the CSS. | K11, M4.9 |
+| R2-6 | **Durability** promise narrowed to recovery records on storage that honors sync; WAL + `synchronous=FULL`; fsync sequence. | §4, K9 |
+| R2-7 | **Partial font styles allowed**; no promise about synthesized styles in other apps. | K7, M1.5 |
+| R2-8 | **Reading settings [P — confirm]:** `read_state()` for keys uses `dconf read <path>` (prints nothing when the key is unset; no GTK/Gio import in the recovery path); writes use `gsettings set` (type-checked) and `gsettings reset` for unset. [V] verify `dconf read` behaviour on the dev machine. | K3, M4.3 |
+| R2-9 | **Uninstall and fonts [P — confirm; reverses PLAN F10]:** fonts still referenced by skipped/unresolved settings, or whose use can't be determined, are **kept by default**; `uninstall --remove-fonts-anyway` removes them. Wording: "these apps may fall back to another font and their appearance may change." | M3.8, K10 |
 
 ---
 
@@ -134,58 +156,133 @@ Each has a proposed default **[P]** so work is not blocked, but the team must co
 | Session | Never changed globally for coverage (e.g. no setting `QT_QPA_PLATFORMTHEME`). [D] |
 | Writes | No write to any target without a journaled snapshot first. [D] |
 | Revert | A value the user changed after we wrote it is skipped and reported, never overwritten. [D] |
-| Testing | No test touches the real desktop. [D] |
+| Testing | No test touches the real desktop — **enforced**, not by convention: unit tests use fake adapters with `subprocess` blocked; integration tests run inside a bubblewrap sandbox (M3.3); desktop/compositor/Flatpak tests run only in the VM (M3.5). [D R2] |
+| Durability | "ScribeSense durably records recovery information before applying changes and supports recovery after process crashes or power loss on supported local storage that honors synchronization requests. Changes across external settings services are not one atomic transaction." SQLite WAL + `synchronous=FULL`; files: write temp → `fsync` file → `os.replace` → `fsync` directory (also for deletions and directory installs); a failed sync is an error (`WRITE_NOT_DURABLE`). Backups + intent are durable before a target is modified; generated files are durable before anything references them. [D R2] |
+| Backups privacy | Backups may contain unrelated app configuration (e.g. a whole browser `Preferences` file). Stored only in `data_dir()` (mode `0700`/`0600`), never exported or logged, removed by "Delete all ScribeSense data". Separate from optional recommendation samples. [D R2] |
 
 ---
 
 ## 5. Shared contracts
 
-### K1 — Configuration (owner O1)
+### K1 — Configuration (owner O1) — FROZEN 2026-10-09
 
 ```python
 @dataclass(frozen=True)
-class Configuration:
-    base_family: str     # one of SHORTLIST
-    letter_em: float     # 0.00–0.30, step 0.02             [D]
-    word_scale: float    # 1.0–3.0 × space width, step 0.25  [D]
-    reading_line: float  # 1.0–2.0 ×, step 0.1               [D]
-    ui_line: float       # recommended 1.2–1.3 ×, warn above [D]; bounds [O A12]
-    text_scale: float    # GTK text-scaling-factor           [O A11]
+class Configuration:          # always resolved and canonical when used (K2 resolve → round → validate)
+    base_family: str          # one of SHORTLIST
+    letter_em: float          # 0.00–0.30, step 0.02             [D]
+    word_scale: float         # 1.0–3.0 × space width, step 0.25  [D]
+    reading_line: float       # 1.0–2.0 ×, step 0.1               [D]
+    ui_line: float            # 1.0–2.0 ×, step 0.1; warn above 1.3  [D A12]
+    text_scale: float         # 1.0–2.0, step 0.05                [D A11]
+
+@dataclass(frozen=True)
+class Range:                  # no default here — the Default preset (K2) is the only source of defaults
+    min: float
+    max: float
+    step: float
 
 SHORTLIST = ("Carlito", "Atkinson Hyperlegible", "Lexend", "Noto Sans")   # [D]
-RANGES: dict[str, Range]          # single source of truth for UI controls and validation
+RANGES: dict[str, Range]      # single source of truth for UI controls, validation and tests
 
 @dataclass(frozen=True)
 class Issue:
     level: Literal["error", "warning"]
     field: str
-    code: str                     # e.g. "UI_LINE_ABOVE_RECOMMENDED"
+    code: str
 
-def validate(c: Configuration) -> list[Issue]
 def round_to_steps(c: Configuration) -> Configuration
+def validate(c: Configuration) -> list[Issue]
 ```
 
-### K2 — Preset (owner O1)
+**Rules [D 2026-10-09]:**
+1. Values are floats. `round_to_steps()` makes them canonical:
+   `round(min + round((v - min) / step) * step, decimals_of(step))`.
+   It **never clamps** — an out-of-range value stays out of range so `validate()` reports it.
+   Non-finite values (NaN, ±inf) pass through unchanged.
+2. Call order is always `round_to_steps()` → `validate()`.
+3. No exact float equality: on-step checks use a tolerance of `1e-9`.
+4. Issue codes:
+
+| Code | Level | When |
+|---|---|---|
+| `NON_FINITE` | error | value is NaN or ±inf |
+| `OUT_OF_RANGE` | error | outside `RANGES[field]` |
+| `UNKNOWN_FONT` | error | `base_family` not in `SHORTLIST` |
+| `NOT_ON_STEP` | error | **guard only** — value was not rounded first; never occurs in the normal flow |
+| `UI_LINE_ABOVE_RECOMMENDED` | warning | `ui_line` > 1.3 |
+
+5. The UI may tell the user a value was rounded; that is UI feedback, not an `Issue`.
+
+### K2 — Preset (owner O1) — FROZEN 2026-10-09
+
+A preset stores the user's **intent**; `resolve()` turns it into one concrete `Configuration` (K1).
+Only the resolved Configuration is used for building fonts — no second authoritative value. [D A9, A10]
 
 ```python
+@dataclass(frozen=True)
+class WordSpacing:
+    mode: Literal["target_em", "multiplier"]   # target_em: recalc when base font changes
+    value: float                               # em added (target_em) or × space width (multiplier)
+
+@dataclass(frozen=True)
+class PresetValues:            # all six fields, always present [D A10]
+    base_family: str
+    letter_em: float
+    word: WordSpacing
+    reading_line: float
+    ui_line: float
+    text_scale: float
+
 @dataclass(frozen=True)
 class Preset:
     id: str
     name: str
-    config: Configuration
+    values: PresetValues
     kind: Literal["builtin", "user", "custom"]
 
+def resolve(values: PresetValues) -> Configuration
+    # target_em → word_scale = 1 + value / space_width_em(Regular face of base_family),
+    # rounded to the 0.25 step, then round_to_steps() + validate()          [D A9]
+
 BUILTINS: tuple[Preset, ...]      # Default, Reading, High Separation   [D]
-ORIGINAL = "original"             # sentinel: revert everything          [D]
+ORIGINAL = "original"             # sentinel: revert everything (not a preset) [D]
 ```
 
-| Built-in | letter / word / reading line [D, values draft] |
-|---|---|
-| Default | 0.12 em / ≈ +0.16 em [O A9] / 1.5× |
-| Reading | 0.12 em / 1.5× / 1.8× |
-| High Separation | 0.20 em / 2.5× / 1.6× |
+UI rule: changing the base font keeps `multiplier` values unchanged and recalculates `target_em` ones. A manual word-spacing edit switches that field to `multiplier` mode. [D A9]
 
-### K3 — Adapter (owner O4, O4-only)
+| Built-in | base | letter | word | reading line | UI line | text scale |
+|---|---|---|---|---|---|---|
+| Default | Noto Sans | 0.12 em | target ≈ +0.16 em | 1.5× | 1.2× | 1.0 |
+| Reading | Noto Sans | 0.12 em | 1.5× | 1.8× | 1.2× | 1.0 |
+| High Separation | Noto Sans | 0.20 em | 2.5× | 1.6× | 1.2× | 1.0 |
+
+Values are draft-accepted; base font, UI line and text scale per [D A10].
+
+**Rules [D 2026-10-09]:**
+1. **Preset IDs:** built-ins use fixed IDs `default`, `reading`, `high-separation`; user presets
+   use `str(uuid4())`. The name is for display only (may repeat, may change).
+2. **Base fonts are bundled in the repo**, never taken from the system:
+
+```text
+fonts/
+  manifest.toml          # per family: files (Regular/Bold/Italic/BoldItalic), upstream version,
+                         # sha256 per file, licence (SPDX), source URL
+  <Family>/
+    *.ttf / *.otf
+    LICENSE / OFL.txt
+```
+
+```python
+def base_font_files(family: str) -> dict[str, Path]   # style → bundled file; raises BUNDLED_FONT_MISSING
+```
+
+   - The font key (M1.5) already includes the sha256 of every base file, so a font update gives
+     a new key automatically.
+   - **Before bundling, O1 verifies each licence permits redistribution and modification**
+     (SIL OFL expected for all four). A font that fails is removed from `SHORTLIST`.
+
+### K3 — Adapter (owner O4, O4-only) — FROZEN 2026-10-09 · amended R2 2026-10-09
 
 ```python
 @dataclass(frozen=True)
@@ -196,13 +293,30 @@ class Target:
     running: bool         # needed for must_be_closed and the restart notice
 
 @dataclass(frozen=True)
+class State:                  # canonical state of one location [D R2]
+    kind: Literal["file", "key"]
+    present: bool             # file: exists · key: explicitly set by the user (NOT "has a schema default")
+    data: bytes | None        # file: exact bytes (b"" = present but empty) · key: GVariant text, e.g. b"'Noto Sans 11'"
+    value_type: str | None    # key only: GVariant type string, e.g. "s", "d"
+    sha256: str               # sha256(b"absent") if not present, else sha256(b"present\0" + data)
+
+@dataclass(frozen=True)
 class SnapshotItem:
     target: Target
     kind: Literal["file", "key"]
-    location: str         # file path, or "schema key" for gsettings
-    existed: bool
-    old_value: str | None # key value; for files None (content stored as a backup, see K4)
-    old_sha256: str | None
+    location: str         # file path, or "<schema> <key>" for settings
+    existed: bool         # = state.present
+    old_value: str | None # key: GVariant text; files: None (bytes kept as backup, K4)
+    old_sha256: str       # = state.sha256 (also defined when absent)
+    file_mode: int | None # file permissions to restore (files only)
+    value_type: str | None
+
+@dataclass(frozen=True)
+class PlannedWrite:           # computed before anything is written (write-ahead intent) [D]
+    target: Target
+    location: str
+    payload: bytes | str      # exact file bytes, or the key value
+    new_sha256: str           # hash of payload
 
 @dataclass(frozen=True)
 class AppliedItem:
@@ -214,7 +328,7 @@ class AppliedItem:
 class VerifyResult:
     target: Target
     chosen_ok: bool       # the app/config resolves to our font
-    drawn_ok: bool | None # None = no drawn check for this target [O A14]
+    drawn_ok: bool | None # None = no drawn check for this target [D A14]
     detail_code: str
 
 class Adapter(Protocol):
@@ -222,74 +336,235 @@ class Adapter(Protocol):
     requires_restart: bool
     must_be_closed: bool
     def detect(self) -> list[Target]: ...
+    def read_state(self, location: str) -> State: ...                   # canonical, read-only [D R2]
     def snapshot(self, target: Target) -> list[SnapshotItem]: ...        # reads only
-    def apply(self, target: Target, fonts: FontSet,
-              config: Configuration) -> list[AppliedItem]: ...
+    def plan(self, target: Target, fonts: FontSet,
+             config: Configuration) -> list[PlannedWrite]: ...        # read-only; exact new values
+    def apply(self, planned: PlannedWrite) -> AppliedItem: ...           # writes exactly this, nothing else
     def verify(self, target: Target, fonts: FontSet) -> VerifyResult: ...
-    def revert(self, item: SnapshotItem) -> None: ...                    # restore one item
+    def revert(self, item: SnapshotItem, backup: bytes | None) -> None: ...  # restore one item [D]
 ```
 
 **Rules every adapter follows [D/DR]:**
 1. `snapshot` writes nothing; its items are journaled **before** `apply` is called.
-2. `apply` writes only locations returned by `snapshot` for that target.
+2. `plan` is read-only. `apply` writes exactly one `PlannedWrite`, only to a location that `snapshot` returned for that target. The controller journals the intent between `plan` and `apply`.
 3. The drift check is **not** done by adapters — M4.11 compares the current value with
    `AppliedItem.new_sha256` before calling `revert`.
 4. All paths come from K8.
-5. Errors are raised as K8 error codes; adapters never show UI.
+5. Errors are raised as `ScribeSenseError(code)` (K8); adapters never show UI and never return
+   `None` to signal failure. The **controller** maps errors to coverage (fontconfig failure → stop
+   + revert all; other adapters per the M2.1 rules) — an adapter never decides coverage. [D]
+6. **`detect()` and `snapshot()` are read-only.** [D]
+7. **Revert restores the original state, never a new one** [D]:
+   - file existed → write `backup` back (missing backup → `ScribeSenseError("BACKUP_MISSING")`);
+   - file did not exist → delete the file ScribeSense created;
+   - key → write `old_value`; key was unset → `gsettings reset` (or the API's equivalent unset).
+8. **Atomic file writes** [D]: temp file in the same directory → copy the original's permissions
+   → atomic replace (`os.replace`). Settings APIs (gsettings) use their own write call and are
+   read back to confirm.
+9. **Timeouts per operation** [D]: every external command runs through the shared helper
+   `run_cmd(argv, timeout)` (K8) — never `subprocess` directly. Default deadlines, overridable in the
+   adapter's `TIMEOUTS: dict[str, float]` on its card: `gsettings`/`dconf` 5 s · `fc-match` 10 s ·
+   `flatpak run … fc-match` 20 s · `fc-cache` 60 s · other 10 s. On timeout: terminate → kill after
+   2 s → reap → `ADAPTER_TIMEOUT`. Non-zero exit → `ADAPTER_COMMAND_FAILED`. [D R2]
+10. **Location format** [D]: files = absolute path; settings = `"<schema> <key>"`, e.g.
+    `"org.gnome.desktop.interface font-name"` — identical in snapshot, applied item and revert.
+11. **Canonical state [D R2]:** every comparison (snapshot, intent, drift, revert) uses `State.sha256`
+    from `read_state()` — never ad-hoc strings. For settings, "present" means **explicitly set by the
+    user**, so an unset key is restored by unsetting it, never by writing its default.
+    How a key is read is decision 8 (see §3 R2 table). The *effective* value an app will use is
+    checked separately, in `verify()`.
+12. **Changes by other programs [D R2]:** immediately before `apply`, the adapter re-reads the state;
+    if it no longer equals the snapshot → `CHANGED_DURING_APPLY`, nothing written for that target.
+    This is **best-effort race detection**, not an atomic compare-and-write; the remaining window is documented.
+13. **One owner per location [D R2]:** each location belongs to exactly one target. The controller
+    rejects a plan where two targets would write the same location (`PLAN_CONFLICT`).
 
-### K4 — Journal (owner O4, O4-only)
+### K4 — Journal (owner O4, O4-only) — FROZEN 2026-10-09 · amended R2 2026-10-09
 
 ```python
+@dataclass(frozen=True)
+class JournalItem:
+    item_id: ItemId
+    snapshot: SnapshotItem              # incl. existed / old_value / old_sha256
+    intent: PlannedWrite | None         # None → no write was ever planned for this item
+    applied: AppliedItem | None         # None → write not confirmed (may or may not have happened)
+    revert_outcome: Literal["reverted", "skipped_drift", "failed"] | None
+    retained: bool                      # True only if this write passed verify and is still applied
+
+@dataclass(frozen=True)
+class LocationRecord:                   # PERMANENT, one per location — not transaction history [D R2]
+    location: str
+    target: Target
+    baseline: SnapshotItem              # state before ScribeSense first managed it (incl. file_mode, value_type)
+    baseline_backup_ref: str | None     # reference to the stored original bytes (files)
+    managed_sha256: str | None          # last successfully KEPT ScribeSense state; None = not managed
+    managed_font_key: str | None        # generated font that managed value refers to
+    unresolved: ErrorCode | None        # set when a reset/revert of this location failed or was drift-skipped
+
+@dataclass(frozen=True)
+class ActiveConfig:                     # what is actually confirmed — not a preset ID [D R2]
+    config: Configuration
+    font_key: str
+    source_preset_id: str | None        # informational only
+    style_revision: int
+
 class Journal:
     def begin(self, kind: Literal["apply", "revert", "uninstall"],
-              preset_id: str | None) -> TxId           # raises APPLY_IN_PROGRESS if a tx is active (lock)
-    def set_state(self, tx: TxId, state: TxState) -> None  # only allowed transitions (K5)
+              preset_id: str | None, reverts: TxId | Literal["all"] | None = None) -> TxId
+        # takes the lock; raises APPLY_IN_PROGRESS if held. `reverts` = what a revert/uninstall tx undoes
+    def set_state(self, tx: TxId, state: TxState) -> None        # only K5 transitions
     def record_snapshot(self, tx: TxId, item: SnapshotItem,
-                        file_backup: bytes | None) -> None  # stores baseline if first ever for location
-    def record_applied(self, tx: TxId, item: AppliedItem) -> None
-    def record_coverage(self, tx: TxId, target: Target,
-                        status: CoverageStatus, detail_code: str) -> None
-    def unfinished(self) -> list[TxId]                 # state not in {COMPLETED, REVERTED, FAILED}
-    def items(self, tx: TxId) -> list[tuple[SnapshotItem, AppliedItem | None]]
+                        file_backup: bytes | None) -> ItemId      # stores baseline if first ever for location
+    def record_intent(self, tx: TxId, item_id: ItemId, planned: PlannedWrite) -> None  # BEFORE the write
+    def record_applied(self, tx: TxId, item_id: ItemId, item: AppliedItem) -> None      # after the write
+    def record_revert(self, tx: TxId, item_id: ItemId,
+                      outcome: Literal["reverted", "skipped_drift", "failed"]) -> None
+    def record_coverage(self, tx: TxId, entry: CoverageEntry) -> None
+    def state(self, tx: TxId) -> TxState
+    def pending_confirmation(self) -> TxId | None                 # the tx in AWAITING_CONFIRMATION
+    def unfinished(self) -> list[TxId]                            # every non-terminal state incl. REVERT_FAILED
+    def items(self, tx: TxId) -> list[JournalItem]
+    def backup(self, tx: TxId, item_id: ItemId) -> bytes | None
     def baseline(self, location: str) -> SnapshotItem | None
+    def baseline_backup(self, location: str) -> bytes | None   # original bytes; raises BACKUP_MISSING / BACKUP_CORRUPT
+    def location(self, location: str) -> LocationRecord | None
+    def locations(self) -> list[LocationRecord]
+    def mark_retained(self, tx: TxId, item_id: ItemId) -> None  # write passed verify and is still applied
+    def keep(self, tx: TxId, active: ActiveConfig) -> int
+        # ONE database transaction: tx AWAITING_CONFIRMATION → COMPLETED · managed_sha256/font_key updated
+        # for RETAINED items only · active config saved · style_revision incremented. Returns the revision.
+    def clear_managed(self, location: str) -> None              # after a successful reset of that location
+    def set_unresolved(self, location: str, code: ErrorCode | None) -> None
+    def active(self) -> ActiveConfig | None                     # None = Original
+    def set_original(self) -> int                               # active = None, style_revision += 1
+    def prune_history(self, before: datetime, keep_last: int) -> int   # [K9] see K9 pruning rule
+    def no_obligations(self) -> NoRecoveryObligations | None
+        # token only when nothing is unfinished, unresolved or managed; required by Store.delete_recovery_data()
+    # record_coverage() is the ONLY writer of coverage (K9 CoverageRepo is read-only)
 ```
 
-- **Baseline rule [D]:** the first snapshot ever taken of a location is kept permanently.
-- **Retention [D]:** completed transactions pruned after 30 days, always keeping the last 10
-  (done by M3.2); baselines never pruned.
+**Rules [D 2026-10-09]:**
+1. **Lock [D R2]:** `lock_path()` (K8) via `fcntl.flock`. The lock file is **stable** — never unlinked or
+   replaced while used. After acquiring, the holder writes an **owner record** into it:
+   `{"role": "service"|"reset"|"recover"|"uninstall", "pid": int, "start_time": int}` — identification
+   only; the flock is the lock. Held from `begin()` until the tx reaches a terminal state, **including the
+   whole confirmation period** and every failure path. Released by the OS on crash.
+   (The single-instance mechanism for the app window is a separate concept.)
+2. **Durability:** every `record_*` commits before returning. Snapshot, backup **and intent**
+   are committed before the adapter writes anything. Per item the order is:
+   `snapshot → record_snapshot → plan → record_intent → apply → record_applied → verify`.
+3. **Keep [D R2]:** the `confirm` window sends Keep/Revert to the service over IPC (rule 5). The
+   service checks the tx ID and calls `keep()` — **one atomic database transaction** — and only after
+   it commits does it acknowledge Keep to the window. Crash before the commit → the tx is still
+   AWAITING_CONFIRMATION → recovery reverts it. `managed` changes **only for retained writes**;
+   skipped, failed and rolled-back locations keep their previous `managed`. The active configuration is
+   the confirmed configuration; coverage per app is reported separately (K6).
+4. **Recovery order and comparison rules [D R2]** (all under the lock):
+   **Step 1 — finish unfinished txs** (`unfinished()`), per item, comparing `read_state()`:
+   - equals the tx snapshot (`old_sha256`) → `reverted`, write nothing;
+   - `intent` is None → nothing planned → `reverted`;
+   - equals `intent.new_sha256` (with or without `applied`) → ScribeSense wrote it → restore the snapshot;
+   - else → `skipped_drift`.
+   **Step 2 — only for reset / uninstall: restore baselines**, per `LocationRecord`:
+   - equals the baseline → already original → `clear_managed`;
+   - equals `managed_sha256` → ours → restore baseline (`baseline_backup`, delete, or unset) → `clear_managed`;
+   - `managed_sha256` is None → not ours → leave it;
+   - else → user change → `skipped_drift`, `set_unresolved(DRIFT_SKIPPED)`.
+   - A failed item keeps all its recovery information and is reported unresolved.
+   - Restore distinguishes: **originally absent** (`existed=False` → delete / unset) · **present but empty**
+     (backup = `b""`, valid) · **backup missing or corrupt** → `BACKUP_MISSING` / `BACKUP_CORRUPT`
+     (an error — never treated as "originally absent").
+   - After a full reset: `set_original()`. The report lists every unresolved location, so "Original" never
+     implies everything was restored.
+5. **IPC [D 2026-10-09]:** a Unix socket at `data_dir()/service.sock`, stdlib only (no GTK), used by
+   `confirm`, `reset` and the native-messaging host.
+   - Same-user only: socket file mode `0600` in a `0700` directory; the service checks the peer
+     UID (`SO_PEERCRED`) and drops other users.
+   - One JSON object per line, each message ≤ 1 MiB; anything else → `BAD_MESSAGE`.
+   - The socket is only for talking to a **running** service. When no service holds the lock,
+     `reset` and `recover --login` take the lock and recover **directly** (A2) — they never need
+     the socket.
+6. **Reset when the lock is held [D R2]** — depends on the owner record:
+   - **owner = service:** ask it over IPC to reset. The **5 s is a reply deadline**, not a rollback
+     deadline: a responsive service acknowledges, then performs the bounded recovery itself. No reply
+     → takeover: verify pid + start time, signal **the service process** via `pidfd`
+     (`os.pidfd_open` + `signal.pidfd_send_signal`; a pidfd identifies one process only), then terminate
+     its **process group** (the service is a session leader started with `setsid`; every child runs
+     through `run_cmd()` in that group): SIGTERM → 2 s → SIGKILL → wait until no process in the group
+     remains (bounded, 10 s) before recovering. Children never inherit the lock (close-on-exec).
+   - **owner = reset / recover / uninstall:** **never interrupted.** Wait for the lock with bounded
+     polling (default **60 s**, configurable) and print factual status. Timeout → exit 3 (`LOCK_TIMEOUT`),
+     nothing killed.
+   - After acquiring the lock: **re-read the journal** and run rule 4 — never assume the other process
+     already did what this command needed.
 
-### K5 — Transaction states (shared, defined by O4)
+- **Baseline rule [D R2]:** the first snapshot ever taken of a location becomes its `LocationRecord`
+  baseline, with its bytes and restore metadata. **Never removed by automatic history retention.**
+- **Retention [D R2]:** M3.2 prunes **transaction history only** (completed txs after 30 days, always
+  keeping the last 10). `LocationRecord`s and baseline backups are never pruned automatically.
+  Explicit "Delete all ScribeSense data" first offers a reset; if the user declines, it states that
+  restoring the originals will no longer be possible.
 
-States [D]: `CREATED, SNAPSHOTTED, APPLYING, VERIFYING, AWAITING_CONFIRMATION, CONFIRMED,
-REVERTING, COMPLETED, FAILED, REVERTED`.
+### K5 — Transaction states (shared, defined by O4) — FROZEN 2026-10-09 · amended R2 2026-10-09
 
-Allowed transitions [DR]:
+States [D R2]: `CREATED, SNAPSHOTTED, APPLYING, VERIFYING, AWAITING_CONFIRMATION, REVERTING,
+COMPLETED, REVERTED, FAILED_CLEAN, REVERT_FAILED`. (**`CONFIRMED` removed** — Keep is one atomic step.)
 
 | From | To |
 |---|---|
-| CREATED | SNAPSHOTTED · FAILED (nothing written) |
-| SNAPSHOTTED | APPLYING · FAILED (nothing written) |
+| CREATED | SNAPSHOTTED · REVERTING (revert/uninstall tx) · FAILED_CLEAN |
+| SNAPSHOTTED | APPLYING · FAILED_CLEAN |
 | APPLYING | VERIFYING · REVERTING |
 | VERIFYING | AWAITING_CONFIRMATION · REVERTING |
-| AWAITING_CONFIRMATION | CONFIRMED · REVERTING |
-| CONFIRMED | COMPLETED |
-| REVERTING | REVERTED · FAILED (revert itself failed → user told, recovery command offered) |
+| AWAITING_CONFIRMATION | COMPLETED (only via `Journal.keep()`) · REVERTING |
+| REVERTING | REVERTED · REVERT_FAILED |
+| REVERT_FAILED | REVERTING (retry by recovery / `reset`) |
 
-### K6 — Coverage status (shared, defined by O2)
+- **Terminal:** `COMPLETED`, `REVERTED`, `FAILED_CLEAN` (nothing was written).
+- **`REVERT_FAILED` is unfinished** → login recovery and `reset` retry it; the user is told.
+- A per-adapter revert after a failed verify (M2.1) happens inside the apply tx and does not
+  change the tx state; it is recorded with `record_revert`.
+- **If that per-adapter revert fails** (any item `failed`): the controller stops applying,
+  moves the tx to `REVERTING` and rolls back the **whole** tx. Result `REVERTED`, or
+  `REVERT_FAILED` if anything still needs recovery. The apply **never** proceeds to
+  `AWAITING_CONFIRMATION` after a failed revert.
 
-`COVERED` · `NOT_COVERED` (app keeps its existing font; text can go to the reader) ·
-`PENDING` (app must be closed and wasn't) · `RESTART_NEEDED`. [D]
-Each comes with a `detail_code` (K8).
+### K6 — Coverage status (shared, defined by O2) — FROZEN 2026-10-09
 
-### K7 — Font generator API (owner O1)
+```python
+class CoverageStatus(StrEnum):
+    COVERED = "covered"
+    NOT_COVERED = "not_covered"        # app keeps its font; text can go to the reader
+    PENDING = "pending"                # app must be closed and wasn't
+    RESTART_NEEDED = "restart_needed"
+
+@dataclass(frozen=True)
+class CoverageEntry:
+    target: Target
+    status: CoverageStatus
+    detail_code: ErrorCode | str
+```
+
+**Mapping (owned by O2, in the controller) [D]:**
+
+| Situation | Result |
+|---|---|
+| Target must be closed and is running | `PENDING` |
+| Per-target adapter error or timeout | `NOT_COVERED` + that code |
+| Unexpected exception | `NOT_COVERED` + `UNEXPECTED_ADAPTER_ERROR` (raw exception text never shown or logged) |
+| **fontconfig** fails (incl. timeout) | **not a coverage result** — the whole apply stops and reverts |
+
+### K7 — Font generator API (owner O1) — FROZEN 2026-10-09 · amended R2 2026-10-09
 
 ```python
 @dataclass(frozen=True)
 class FontSet:
     key: str                      # content key (M1.5)
-    reading_family: str           # e.g. "AccessSans-3f9a1c2b7d10"
-    ui_family: str                # [O A19]
+    reading_family: str           # "AccessSans-<key>"
+    ui_family: str                # "AccessSansUI-<key>"
     files: tuple[str, ...]        # installed file paths
+    styles: tuple[str, ...]       # styles actually built, e.g. ("Regular", "Bold") — partial allowed [D R2]
 
 @dataclass(frozen=True)
 class FontBuildResult:
@@ -297,26 +572,188 @@ class FontBuildResult:
     fonts: FontSet | None         # None unless built/cached
     reason_code: str | None       # e.g. "BASE_IS_MONOSPACE", "VALIDATION_FAILED"
 
-def build(config: Configuration) -> FontBuildResult
+def build(config: Configuration) -> FontBuildResult              # validated + installed, for Apply
+def build_preview(config: Configuration) -> PreviewFonts         # temporary, private; never installed
+def remove_unused() -> list[str]                                 # keys removed
 ```
 
-### K8 — Paths and error codes (shared, defined by O3)
+**Rules [D]:**
+1. `build()` is **synchronous**; callers run it off the UI thread. Single-flight per key
+   (same key waits, different keys may build in parallel); the install + `fc-cache` step is serialized.
+2. **Preview never installs:** `build_preview()` uses the same generation code, writes to a temp
+   dir and loads the files privately for the preview only (A5 [V]; image fallback if unreliable).
+   Files are deleted when the preview closes.
+3. **`remove_unused()` keeps** a font if it is referenced by [D R2]:
+   - the active configuration (`Journal.active()`);
+   - a saved preset (keeps switching fast);
+   - an unfinished tx;
+   - any `LocationRecord` with `managed_font_key` or `unresolved` set;
+   - any live setting found by **inspecting the supported font fields** of each target
+     (e.g. the family names in a browser `Preferences` file — not its whole-file hash).
+   If usage **can't be determined**, the font is kept. Runs only when no tx is active.
+4. **Partial styles [D R2]:** a base font may lack styles (e.g. no italic). Only available styles are
+   built and reported in `FontSet.styles`; ScribeSense **does not promise** how other apps synthesize
+   a missing style. [V] check each bundled family's actual files.
+
+### K8 — Paths and error codes (shared, defined by O3) — FROZEN 2026-10-09 (code list v1) · amended R2 2026-10-09
 
 ```python
-def data_dir() -> Path        # ~/.local/share/scribesense
-def fonts_dir() -> Path       # ~/.local/share/fonts/scribesense
-def config_home() -> Path     # $XDG_CONFIG_HOME or ~/.config
-def home() -> Path
-class ErrorCode(StrEnum): ... # one list for logs, reports and UI messages
+def data_dir() -> Path        # $SCRIBESENSE_DATA_DIR  else ~/.local/share/scribesense
+def fonts_dir() -> Path       # $SCRIBESENSE_FONTS_DIR else ~/.local/share/fonts/scribesense
+def config_home() -> Path     # $XDG_CONFIG_HOME else $HOME/.config
+def home() -> Path            # $HOME
+def logs_dir() -> Path        # data_dir()/logs
+def lock_path() -> Path       # data_dir()/apply.lock   (stable file; owner record inside, K4 rule 1)
+def socket_path() -> Path     # data_dir()/service.sock (dir 0700, socket 0600)
+
+def run_cmd(argv: list[str], timeout: float) -> CompletedProcess   # the only way to start external commands (K3 rule 9)
+
+class ErrorCode(StrEnum): ... # one stable list for logs, reports and UI
+
+class ScribeSenseError(Exception):
+    def __init__(self, code: ErrorCode): ...
 ```
-All functions honour environment overrides so the test sandbox (M3.3) can redirect them.
 
-### K9 — Store repositories (owner O3)
+**Rules [D]:** no module hard-codes these paths. The test sandbox (M3.3) sets `HOME`,
+`XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `SCRIBESENSE_*` and `FONTCONFIG_FILE` — inside bubblewrap, not
+as the isolation boundary itself. Error codes are fixed identifiers — never paths, text, or exception messages.
+Logging failures never break the app.
 
-One repository per table in M3.1, typed with K1–K7 objects. Only the store module touches
-SQLite. Exact methods frozen in the contract session. [P]
+**ErrorCode list v1 — approved 2026-10-09, add-only** (compiled from the module cards). Codes may be **added** by PR with the
+owner + one other; existing codes are never renamed or reused. K1 validation codes
+(`NON_FINITE`, `OUT_OF_RANGE`, `UNKNOWN_FONT`, `NOT_ON_STEP`, `UI_LINE_ABOVE_RECOMMENDED`) are
+`Issue` codes, not errors.
 
-### K10 — CLI commands (owner [O A7], proposed O2)
+| Area | Codes |
+|---|---|
+| Fonts (O1) | `BUNDLED_FONT_MISSING` · `FONT_UNREADABLE` · `BASE_IS_MONOSPACE` · `BASE_IS_ICON_FONT` · `PATCH_UNSUPPORTED` · `VALIDATION_FAILED` · `INSTALL_FAILED` · `PREVIEW_UNAVAILABLE` |
+| Apply / preflight (O2) | `APPLY_IN_PROGRESS` · `NOT_WRITABLE` · `NO_DISK_SPACE` · `ADAPTER_UNAVAILABLE` · `TX_NOT_PENDING` · `CONFIRM_STARTUP_TIMEOUT` · `CONFIRM_HEARTBEAT_LOST` · `CONFIRM_TIMEOUT` · `SERVICE_UNREACHABLE` |
+| Adapters (O4) | `ADAPTER_TIMEOUT` · `ADAPTER_COMMAND_FAILED` (external command exited non-zero) · `ADAPTER_VERIFY_FAILED` · `UNEXPECTED_ADAPTER_ERROR` · `CHECK_UNAVAILABLE` · `SCHEMA_MISSING` · `QT6CT_NOT_IN_SESSION` · `BROWSER_RUNNING` · `PREFERENCES_UNREADABLE` · `PROFILE_NOT_FOUND` |
+| Safety (O4) | `BACKUP_MISSING` · `BACKUP_CORRUPT` · `CHANGED_DURING_APPLY` · `PLAN_CONFLICT` · `LOCK_TIMEOUT` · `WRITE_NOT_DURABLE` · `REVERT_ITEM_FAILED` · `DRIFT_SKIPPED` · `KEYBIND_CONFLICT` |
+| Store (O3) | `STORE_BUSY` · `STORE_READ_ONLY` · `MIGRATION_FAILED` · `STORE_CORRUPT` · `STORE_IO_ERROR` · `SCHEMA_UNSUPPORTED` · `PRESET_READ_ONLY` · `FONT_IDENTITY_CONFLICT` · `FONT_IN_USE` · `INTERRUPTED_BUILD` · `SAMPLES_DISABLED` · `RECOVERY_OBLIGATIONS_REMAIN` |
+| Tests (O3) | `SANDBOX_UNAVAILABLE` |
+| Reader / capture (O2) | `NOTHING_SELECTED` · `CLIPBOARD_EMPTY` · `SELECTION_UNAVAILABLE` · `TOO_LARGE` |
+| Extension / IPC (O4 + O2) | `APP_NOT_RUNNING` · `HOST_MISSING` · `BAD_MESSAGE` |
+
+### K9 — Store repositories (owner O3) — DRAFT 2026-10-09, **O3 sign-off required**
+
+Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9). Nothing else.
+
+```python
+# ---- Records ----
+FontStatus = Literal["building", "validated", "failed", "removed"]
+
+@dataclass(frozen=True)
+class FontRegistryEntry:
+    key: str
+    config: Configuration
+    reading_family: str
+    ui_family: str
+    styles: tuple[str, ...]             # styles actually built (K7: missing styles allowed)
+    files: tuple[str, ...]
+    file_sha256: tuple[str, ...]        # verified before activation; mismatch → VALIDATION_FAILED
+    status: FontStatus
+    reason_code: str | None
+    created_at: datetime                # UTC, timezone-aware
+    last_used_at: datetime
+
+SETTINGS: dict[str, tuple[type, object]] = {      # fixed list: name → (type, default)
+    "recommend_opt_in":    (bool, False),
+    "keybind_reader":      (str, "SUPER ALT, R"),
+    "keybind_preset_next": (str, "SUPER ALT, P"),
+    "keybind_reset":       (str, "CTRL ALT SHIFT SUPER, BackSpace"),
+    "lock_wait_seconds":   (int, 60),               # valid 10–600
+}
+
+# ---- Store ----
+class Store:
+    def __init__(self, path: Path, *, mode: Literal["normal", "recovery"] = "normal"): ...
+        # every connection: WAL, synchronous=FULL, foreign_keys=ON, busy_timeout=5000
+        # one connection per thread; never shared across threads or processes
+    def transaction(self) -> ContextManager[None]
+        # commit on exit, rollback on exception; nested call joins the outer one;
+        # repository writes inside it join it; never spans an adapter write
+    def delete_preferences(self) -> None            # presets, settings, samples — never recovery data
+    def delete_recovery_data(self, *, precondition: NoRecoveryObligations) -> None
+        # journal tables; token only from Journal.no_obligations()
+    presets: PresetRepo
+    fonts: FontRegistryRepo
+    coverage: CoverageRepo                          # READ-ONLY
+    settings: SettingsRepo
+    samples: SampleRepo
+
+class PresetRepo:
+    def list(self) -> list[Preset]                  # built-ins first, then user presets by name
+    def get(self, id: str) -> Preset | None
+    def save(self, p: Preset) -> None               # built-in → PRESET_READ_ONLY
+    def delete(self, id: str) -> bool               # False if not found; built-in → PRESET_READ_ONLY
+
+class FontRegistryRepo:
+    def get(self, key: str) -> FontRegistryEntry | None
+    def create(self, e: FontRegistryEntry) -> None  # same key, different config/files → FONT_IDENTITY_CONFLICT
+    def set_status(self, key: str, status: FontStatus, reason: str | None) -> None   # missing → KeyError
+    def touch(self, key: str) -> None               # last_used_at; missing → KeyError
+    def keys(self, status: FontStatus | None = None) -> list[str]
+    def mark_removed(self, key: str) -> None        # in use (K7 rule 3 references) → FONT_IN_USE
+
+class CoverageRepo:
+    def last_completed_apply(self) -> list[CoverageEntry]
+        # historical: the latest completed apply — not proof of what is active now
+
+class SettingsRepo:
+    def get(self, name: str) -> object              # unknown → KeyError; default if never set
+    def set(self, name: str, value: object) -> None
+        # unknown → KeyError; exact type (type(v) is T; True is not an int) → TypeError; range → ValueError
+
+class SampleRepo:
+    def add(self, config: Configuration) -> None    # re-reads recommend_opt_in each call; off → SAMPLES_DISABLED
+    def delete_all(self) -> None                    # opting out also deletes existing samples
+```
+
+**Journal-only tables** (reached only through K4):
+
+| Table | Key columns |
+|---|---|
+| `transactions` | id, kind, state, preset_id, reverts, created_at, updated_at |
+| `journal_items` | id, tx_id, location, target, existed, old_value, old_sha256, file_mode, value_type, backup_id, intent_sha256, applied_sha256, retained, revert_outcome |
+| `backups` | id, sha256, bytes (BLOB) |
+| `location_records` | location (PK), target, **own copy** of baseline fields + `baseline_backup_id`, `managed_sha256`, `managed_font_key`, `unresolved` |
+| `active_config` | single row: config, font_key, source_preset_id, style_revision |
+| `coverage` | tx_id, target_id, status, detail_code |
+
+`location_records` keeps its own baseline copy, so pruning `journal_items` never loses an original.
+
+**Rules:**
+
+| Area | Rule |
+|---|---|
+| Font status | `building → validated \| failed` · `failed → building` (retry) · `validated → removed`. At startup a leftover `building` → `failed`, reason `INTERRUPTED_BUILD`. |
+| Busy | Reads and writes may both raise `STORE_BUSY`; callers retry a bounded number of times, never forever. SQLite busy timeout (5 s) ≠ `lock_wait_seconds` (60 s, apply/reset lock). |
+| Errors | `STORE_BUSY` contention · `STORE_READ_ONLY` permission · `STORE_CORRUPT` integrity · `NO_DISK_SPACE` disk full · `STORE_IO_ERROR` other I/O. Never claim a save that didn't happen. |
+| Migrations | Version in `PRAGMA user_version`; `store/migrations/NNN_name.sql` in order; schema change + version update in **one** transaction; failure → `MIGRATION_FAILED`, app refuses writes. **Recovery mode never migrates**: on an unsupported version it writes nothing and reports `SCHEMA_UNSUPPORTED`. Journal-table changes stay backward compatible. |
+| Pruning | `Journal.prune_history(before, keep_last)` deletes only terminal txs older than `before`, outside the newest `keep_last`, not referenced by any unfinished revert or unresolved location. A backup is deleted only when nothing references it. Order `(created_at, id)`. `keep_last < 0` → `ValueError`. Runs under the apply lock; returns the count. Never touches `location_records`, their backups or `active_config`. |
+| Delete all data | Run by the controller: apply lock → block applies and samples → finish unfinished txs + reset → report failed/skipped settings → `delete_recovery_data()` **only if** `no_obligations()` returns a token; otherwise refuse (`RECOVERY_OBLIGATIONS_REMAIN`) and offer `delete_preferences()` only. Wording: "removes ScribeSense's records" — not secure erasure. |
+| Serialization | `Configuration` / `Preset` as versioned JSON `{"v":1,…}`; timestamps UTC ISO-8601 with timezone; tuples as JSON arrays. |
+| Presets vs active | Deleting or editing a preset never changes `active_config` or the journal; `source_preset_id` is informational and may point to a deleted preset. |
+
+**Acceptance tests (O3):**
+1. Round-trip every repository and record type (incl. JSON `v` field and UTC timestamps).
+2. Built-in preset save/delete → `PRESET_READ_ONLY`.
+3. `SettingsRepo`: unknown name, wrong type (`True` for an int), out-of-range value each rejected.
+4. `create()` with an existing key but different content → `FONT_IDENTITY_CONFLICT`.
+5. Leftover `building` entry at startup → `failed` / `INTERRUPTED_BUILD`.
+6. `mark_removed()` on a font that is active / managed / in a preset / in an unfinished tx → `FONT_IN_USE`.
+7. Two processes (service + CLI) writing at once → one waits or gets `STORE_BUSY`; no corruption.
+8. Migration from empty and from each previous version; failed migration leaves `user_version` unchanged.
+9. Recovery mode on a newer schema → writes nothing, `SCHEMA_UNSUPPORTED`.
+10. `prune_history()` keeps `location_records`, their backups, unfinished and newest `keep_last` txs.
+11. `delete_recovery_data()` refused while anything is unfinished, unresolved or managed.
+12. Opt-out deletes samples; `add()` after opt-out → `SAMPLES_DISABLED`; SELECT sweep finds no canary text.
+
+**O3 sign-off checklist:** column types · matches the planned implementation · the 12 tests above
+accepted · journal tables return everything in `JournalItem` / `LocationRecord`.
+
+### K10 — CLI commands (owner O2) [D A7] — FROZEN 2026-10-09
 
 | Command | Used by |
 |---|---|
@@ -326,16 +763,60 @@ SQLite. Exact methods frozen in the contract session. [P]
 | `scribesense read --selection` | keybind Super+Alt+R [D] |
 | `scribesense read --clipboard` | UI |
 | `scribesense reset` | recovery keybind Ctrl+Alt+Shift+Super+Backspace [D] |
-| `scribesense recover --login` | login check [O A3] |
-| `scribesense uninstall [--delete-data]` | user |
+| `scribesense recover --login` | login check [D A3] |
+| `scribesense uninstall [--delete-data] [--remove-fonts-anyway]` | user [R2-9] |
 | `scribesense doctor` | user, install |
+| `scribesense confirm <tx>` | started by the service after apply — **fresh process, bypasses single-instance forwarding**; accepted only for the currently pending tx [D A15] |
+| `scribesense quit` | user — stops the background service safely [D A1] |
 
-### K11 — Extension ↔ app messages (owner O4 with O2) [O A6, A16]
+**Exit codes [D]:**
+
+| Code | Meaning |
+|---|---|
+| 0 | completed (partial coverage / skipped drift described in the output) |
+| 1 | failed |
+| 2 | usage error |
+| 3 | another transaction is active |
+| 4 | the service is required and couldn't be reached or started |
+
+- `reset`, `recover --login`, `uninstall`, `doctor` never need the service or GUI (A2) and never return 4.
+- `read` / `preset next` start the service if it isn't running; 4 only if that fails.
+- Output is plain readable text; `reset` ends with one line: restored / skipped / failed counts.
+
+### K11 — Extension ↔ app messages (owner O4 with O2) [D A6, A16] — FROZEN 2026-10-09 · amended R2 2026-10-09
+
+Chromium family only. Path: extension → native-messaging host → service socket (K4 rule 5).
+`get_style` returns the **confirmed** style only, re-requested after Apply / Revert / Original.
 
 ```json
-{"type": "open_in_reader", "text": "<selected text>"}
-{"type": "get_style"} -> {"family": "AccessSans-<key>", "line_height": 1.8}
+{"v": 1, "type": "open_in_reader", "text": "<selected text>"}
+{"v": 1, "type": "get_style"}
+-> {"v": 1, "ok": true, "active": true,  "revision": 7, "css": "<M4.8 output>"}
+-> {"v": 1, "ok": true, "active": false, "revision": 8}            # Original — remove styling
+-> {"v": 1, "ok": false, "error": "APP_NOT_RUNNING"}
+<- {"v": 1, "type": "style_changed", "revision": 9}                # pushed over the open connection
 ```
+
+Errors: `APP_NOT_RUNNING`, `HOST_MISSING`, `TOO_LARGE` (A17), `BAD_MESSAGE`.
+
+**Rules [D R2]:**
+- **The app sends the CSS** (M4.8 is the only source); the extension never builds CSS itself.
+- **Revisions order everything**, inactive replies included; the extension ignores an older revision.
+- **Persistent connection** (`connectNative`): the service pushes `style_changed`; the extension then
+  fetches `get_style` and updates eligible tabs. Restricted pages are reported, not promised.
+- **On connect / reconnect:** always fetch the full confirmed state, even if the cached revision looks
+  current. Notifications speed things up; they are not the source of correctness.
+- **Disconnected:** keep the last styling, show "disconnected" in the extension.
+- **Local Disable:** a button in the extension removes ScribeSense styling without the app.
+- **Offline reset / uninstall:** the extension can't be told; on its next connection it receives
+  `active: false`. Until then the user can use local Disable; the reset/uninstall output says so.
+- **Bridge:** the native host translates Chrome's framing (UTF-8 JSON with a native-order 32-bit
+  length prefix) ↔ newline-delimited JSON on the socket. Our 1 MiB limit applies to the **complete
+  encoded JSON message**. Chrome's own limits: 1 MB host→browser, 64 MiB browser→host.
+**Pinned extension ID [D 2026-10-09]:** the same public `key` in the development and distributed
+`manifest.json`, so the ID is identical on every machine; the native-messaging host manifest lists
+that exact ID in `allowed_origins`. **No private signing key is ever committed to the repo.**
+
 
 ---
 
@@ -346,12 +827,12 @@ SQLite. Exact methods frozen in the contract session. [P]
 | UI (M2.5) → Config (M1.1) | K1 | UI builds controls only from `RANGES`; shows `validate()` warnings, blocks on errors |
 | Controller (M2.1) → Generator (M1.8) | K7 | Apply never starts unless status is `built` or `cached` |
 | Controller → Journal (M4.10) | K4, K5 | Controller opens the tx and moves every state; journal refuses illegal transitions |
-| Controller → Adapters (M4.x) | K3 | Order per target: snapshot → `record_snapshot` → apply → `record_applied` → verify |
+| Controller → Adapters (M4.x) | K3 | Order per item: snapshot → `record_snapshot` → plan → `record_intent` → apply → `record_applied` → verify |
 | Adapters → Journal | K3, K4 | Adapters return items; only the controller records them (adapters never call the store) |
 | Journal → Store (M3.1) | K9 | Journal is the only writer of tx/journal/baseline/backup tables |
-| Revert (M4.11) → Adapters | K3 | Revert checks drift first, then calls `adapter.revert(item)` |
-| Confirm (M2.3) → Revert | K4 | Timeout or close → `revert_tx(tx)` |
-| Recovery (M4.12) → Journal + Revert | K4 | At login: every `unfinished()` tx is reverted |
+| Revert (M4.11) → Adapters | K3, K4 | Revert applies K4 rule 4 (original / intent / drift) first, then calls `adapter.revert(item, journal.backup(tx, item_id))` |
+| Confirm (M2.3) → Journal / Revert | K4 | Keep → `journal.keep(tx, active)` (atomic, then ack) · timeout / close / Revert → `revert_tx(tx)` |
+| Recovery (M4.12) → Journal + Revert | K4 | At login: step 1 of K4 rule 4 (finish unfinished txs). `reset` / uninstall: step 1 then step 2 (baselines) |
 | Reader (M2.9) ← Capture (M2.10) | — | Capture passes normalized text in memory only |
 | Extension (M4.9) ↔ App | K11 | Text goes app-ward only on an explicit right-click; no automatic capture |
 | Install/Uninstall (M3.8) → Revert, Keybinds | K4, K10 | Uninstall = `revert_all` with the drift rule, then removals |
@@ -393,15 +874,15 @@ SQLite. Exact methods frozen in the contract session. [P]
 | Used by | M2.1, M2.5, M3.1 (persists user presets) |
 | Provides | K2 |
 | Exact interface | K2 |
-| Example | `BUILTINS[1]` → `Preset("reading","Reading", Configuration(…, letter_em=0.12, word_scale=1.5, reading_line=1.8), "builtin")` |
+| Example | `resolve(BUILTINS[0].values)` with Noto Sans → word target +0.16 em converted to a multiplier, rounded to 0.25, validated [D A9] |
 | Data it reads/writes | none (persistence by M3.1) |
 | Data ownership | Owns built-in values; user presets are owned by the user, stored by M3.1 |
 | Preconditions | — |
 | Postconditions | Every built-in passes `validate()` with no errors |
 | Failure cases + required behaviour | — (static data) |
 | Must never | Let a user preset overwrite a built-in |
-| Acceptance tests | Built-ins validate; Original is not a Configuration; draft values match K2 table |
-| Done when | Tests pass · A9/A10 resolved · reviewed |
+| Acceptance tests | Built-ins resolve and validate; all six fields present; target_em recalculated on font change, multiplier kept; Original is not a preset; values match K2 table |
+| Done when | Tests pass · reviewed |
 
 #### M1.3 Font eligibility rules
 | Field | Spec |
@@ -409,7 +890,7 @@ SQLite. Exact methods frozen in the contract session. [P]
 | Purpose | Decide whether a font may be patched and which glyphs get spacing. [D Step 4, F2] |
 | Owner / may be helped? | O1 / no |
 | Built by / reviewed by | TBD / O4 |
-| Depends on | M1.1, fontTools [P A4] |
+| Depends on | M1.1, fontTools [D A4] |
 | Used by | M1.4, M1.8 |
 | Provides | `is_eligible(path) -> Eligibility(ok, reason_code)` · `latin_glyphs(font) -> set[str]` |
 | Exact interface | as above [P] |
@@ -429,7 +910,7 @@ SQLite. Exact methods frozen in the contract session. [P]
 | Purpose | Produce a patched font: wider Latin advances (letter), wider space glyph (word), raised line metrics (line height), ligatures removed, renamed. [D Step 2, F2] |
 | Owner / may be helped? | O1 / no — the core algorithm |
 | Built by / reviewed by | TBD / O3 |
-| Depends on | M1.1, M1.3, fontTools [P A4] |
+| Depends on | M1.1, M1.3, fontTools [D A4] |
 | Used by | M1.5 |
 | Provides | `patch(source_path, config, line: float, out_path) -> None` |
 | Exact interface | as above [P] |
@@ -437,7 +918,7 @@ SQLite. Exact methods frozen in the contract session. [P]
 | Data it reads/writes | reads base font file; writes one output file |
 | Data ownership | — |
 | Preconditions | Source eligible (M1.3) |
-| Postconditions | Only Latin glyphs changed; ligature features removed; new family name set |
+| Postconditions | **Spacing** (advance widths, space width) changed only for Latin glyphs. Permitted font-wide changes: vertical line metrics, removal of ligature features, naming tables. Nothing else changed [D R2] |
 | Failure cases + required behaviour | Unsupported outline/format → raise `PATCH_UNSUPPORTED`, write nothing |
 | Must never | Change non-Latin glyphs; keep the original family name (shadow mode = Later) |
 | Acceptance tests | Measured advance and space width match config; Devanagari glyphs unchanged; no `liga` feature; TrueType and CFF fonts handled; variable fonts flattened per weight [D Step 2 fixes] |
@@ -453,14 +934,14 @@ SQLite. Exact methods frozen in the contract session. [P]
 | Used by | M1.8 |
 | Provides | `content_key(config, source_sha, generator_version) -> str` · `build_variants(config) -> list[path]` |
 | Exact interface | as above [P] |
-| Example | key = sha256(source hash + rounded values + ligature setting + generator version)[:12] [D Step 2] → `AccessSans-3f9a1c2b7d10` |
+| Example | key = sha256(sha256 of every base-font style file + normalized `letter_em`, `word_scale`, `reading_line`, `ui_line` (fixed-decimal strings) + ligature setting + generator version)[:12] → `AccessSans-3f9a1c2b7d10` / `AccessSansUI-3f9a1c2b7d10` [D A19] |
 | Data it reads/writes | writes into a temporary directory |
-| Data ownership | Owns the key formula and family names [O A19] |
+| Data ownership | Owns the key formula and family names [D A19] |
 | Preconditions | Config rounded (M1.1) |
-| Postconditions | Reading variant uses `reading_line`; UI variant uses `ui_line`; Regular/Bold/Italic/BoldItalic each |
-| Failure cases + required behaviour | Missing style in the base font → [P] build the styles that exist and report the rest |
+| Postconditions | Reading variant uses `reading_line`; UI variant uses `ui_line`; every style **present in the base font** is built (Regular required; Bold/Italic/BoldItalic when available) and listed in `FontSet.styles` [D R2] |
+| Failure cases + required behaviour | Missing Regular → `BUNDLED_FONT_MISSING`; other missing styles are not an error — reported via `FontSet.styles` [D R2] |
 | Must never | Produce two different outputs for the same inputs |
-| Acceptance tests | Same inputs → identical key and identical bytes; changed value → new key |
+| Acceptance tests | Same font-building inputs → identical key and bytes; changing any **font-building** input (incl. `ui_line` alone) → new key; `text_scale` (a desktop setting) never changes the key; 1.5 and 1.50 → same key |
 | Done when | Tests pass · reviewed |
 
 #### M1.6 Font validation
@@ -540,7 +1021,7 @@ SQLite. Exact methods frozen in the contract session. [P]
 | Data ownership | Owns the sequence; does not own any data |
 | Preconditions | Preflight passes: permissions, files writable, directories exist, fonts valid, disk space, adapters available, no other apply running [D] |
 | Postconditions | Tx ends AWAITING_CONFIRMATION (then M2.3) or REVERTED/FAILED |
-| Failure cases + required behaviour | Build fails → stop before writing · fontconfig fails → stop + revert · other adapter fails → continue, NOT_COVERED · verify fails → revert that adapter only · must-be-closed declined → PENDING [D] |
+| Failure cases + required behaviour | Build fails → stop before writing · fontconfig fails → stop + revert · other adapter fails → continue, NOT_COVERED · verify fails → revert that adapter only; **if that revert fails → stop, roll back the whole tx (K5)** · verify passes → `mark_retained` · two targets plan the same location → `PLAN_CONFLICT` before any write · state changed since snapshot → that target `CHANGED_DURING_APPLY` · must-be-closed declined → PENDING [D] |
 | Must never | Write directly; skip a snapshot; close or restart an app |
 | Acceptance tests | One test per failure row above, with fake adapters |
 | Done when | Tests pass with fakes and in the sandbox · reviewed by O4 |
@@ -568,40 +1049,41 @@ SQLite. Exact methods frozen in the contract session. [P]
 #### M2.3 Confirm flow
 | Field | Spec |
 |---|---|
-| Purpose | Relaunch the ScribeSense window with the new fonts and run the 30 s keep-or-revert. [D F4, F5] |
+| Purpose | Prove the new fonts are readable in a **fresh process** and run the 30 s keep-or-revert, with an independent watchdog. [D F4, F5, A15] |
 | Owner / may be helped? | O2 / no |
-| Built by / reviewed by | TBD / O4 |
-| Depends on | K4, K5, M4.11 |
+| Built by / reviewed by | TBD / O4 (recovery + failure behaviour) |
+| Depends on | K4, K5, K10 `confirm`, M4.11 |
 | Used by | M2.1 |
-| Provides | `await_confirmation(tx)` |
+| Provides | `start_confirmation(tx)` (service side, watchdog) · `scribesense confirm <tx>` (window side) |
 | Exact interface | as above [P] |
-| Example | New window: "Can you read this? Keep (30)…"; no answer → revert |
+| Example | Service launches `scribesense confirm 42` → window: "Can you read this? Keep (30)…"; no answer → revert |
 | Data it reads/writes | tx state via K4 |
 | Data ownership | — |
-| Preconditions | Tx in AWAITING_CONFIRMATION |
+| Preconditions | Tx in AWAITING_CONFIRMATION; fonts generated, installed and `fc-cache` done |
 | Postconditions | Tx COMPLETED or REVERTED |
-| Failure cases + required behaviour | Window never appears/hangs → watchdog reverts [O A15] · crash/reboot → login recovery [D] |
-| Must never | Count the timeout before the relaunched window is visible |
-| Acceptance tests | Confirm → COMPLETED; timeout → REVERTED; killed mid-countdown → recovered at next login (VM) |
+| Deliverables | **Startup deadline** (window must become ready in time) · **readiness signal** sent when sample + controls are shown, not at process start · **30 s** counted from readiness · **heartbeat** from the window's event loop with a documented missed-heartbeat threshold · window checks its sample resolves to the intended family [D A15] |
+| Failure cases + required behaviour | Startup deadline missed / crash / heartbeat lost / timeout / "Revert" pressed → watchdog reverts · late confirm after rollback → rejected · watchdog crash → login recovery (A3) |
+| Must never | Run in the service's process or event loop · be forwarded to the existing instance · treat user inactivity as a hang (only the 30 s deadline applies) · accept confirmation for a tx that isn't the pending one |
+| Acceptance tests | Keep → `keep()` commits, then ack; crash before commit → reverted at recovery; crash after → COMPLETED and active config match; timeout → REVERTED; startup failure, crash, freeze, rejection, late confirmation each → correct outcome; killed mid-countdown → recovered at next login (VM) |
 | Done when | Tests pass · manual checklist item passes · reviewed by O4 |
 
 #### M2.4 UI shell
 | Field | Spec |
 |---|---|
-| Purpose | Application window, navigation, single instance, background lifetime. [D F6; O A1] |
+| Purpose | Application window, navigation, single-instance background service; closing the window doesn't quit; explicit Quit. [D F6, A1] |
 | Owner / may be helped? | O2 / no |
 | Built by / reviewed by | TBD / O3 |
-| Depends on | GTK4 + libadwaita [P A4] |
+| Depends on | GTK4 + libadwaita [D A4] |
 | Used by | M2.5–M2.9 |
 | Provides | window, pages, action entry points for M2.11 |
 | Exact interface | [P] actions: `apply`, `preset-next`, `open-reader` |
-| Example | Second launch focuses the existing window |
+| Example | Second launch focuses the existing window; `scribesense confirm` is the one exception (fresh process) [D A15] |
 | Data it reads/writes | none directly |
 | Data ownership | — |
 | Preconditions | — |
 | Postconditions | — |
 | Failure cases + required behaviour | Startup error → message + recovery info, never a blank window |
-| Must never | Be required by the recovery path [O A2] |
+| Must never | Be required by the recovery path [D A2] |
 | Acceptance tests | Keyboard-only navigation; screen-reader labels; large text (manual checklist) [D] |
 | Done when | Accessibility checklist passes · reviewed |
 
@@ -659,7 +1141,7 @@ SQLite. Exact methods frozen in the contract session. [P]
 | Data it reads/writes | settings rows |
 | Data ownership | — |
 | Preconditions | — |
-| Postconditions | Delete-all only after explicit confirmation [D] |
+| Postconditions | Delete-all only after explicit confirmation [D]; first offers a reset — if declined, states that restoring originals will no longer be possible [D R2] |
 | Failure cases + required behaviour | Keybind conflict → refuse and show the conflicting bind |
 | Must never | Enable data collection by default |
 | Acceptance tests | Default off; delete requires confirmation; recovery keybind displayed |
@@ -708,7 +1190,7 @@ SQLite. Exact methods frozen in the contract session. [P]
 #### M2.10 Capture
 | Field | Spec |
 |---|---|
-| Purpose | Bring text into the reader: paste, clipboard, selection keybind, extension right-click. [D F7] |
+| Purpose | Bring text into the reader: paste, clipboard, selection keybind, extension right-click (Chromium only — Firefox/Zen use the keybind). [D F7, A6] |
 | Owner / may be helped? | O2 / no |
 | Built by / reviewed by | TBD / O4 |
 | Depends on | Wayland clipboard / primary selection, K11 |
@@ -720,7 +1202,7 @@ SQLite. Exact methods frozen in the contract session. [P]
 | Data ownership | — |
 | Preconditions | User action triggered it |
 | Postconditions | Text normalized (NFC, control chars stripped) |
-| Failure cases + required behaviour | Empty selection → "nothing selected", never fall back to a whole document · too large → explicit message [O A17] |
+| Failure cases + required behaviour | Empty selection → "nothing selected", never fall back to a whole document · too large → explicit message [D A17] |
 | Must never | Capture without an explicit user action; log text |
 | Acceptance tests | Each way in works; empty and oversize cases give distinct messages |
 | Done when | Tests pass · reviewed by O4 |
@@ -728,7 +1210,7 @@ SQLite. Exact methods frozen in the contract session. [P]
 #### M2.11 CLI entry points
 | Field | Spec |
 |---|---|
-| Purpose | Commands used by keybinds, install, recovery and the user. [O A7] |
+| Purpose | Commands used by keybinds, install, recovery and the user. [D A7] |
 | Owner / may be helped? | O2 (proposed) / no |
 | Built by / reviewed by | TBD / O4 |
 | Depends on | K10, M2.1, M2.10, M4.12, M3.7, M3.8 |
@@ -741,7 +1223,7 @@ SQLite. Exact methods frozen in the contract session. [P]
 | Preconditions | — |
 | Postconditions | Exit code 0 only on success |
 | Failure cases + required behaviour | App not running for `read`/`preset next` → start it [P] |
-| Must never | Load UI code for `reset`, `recover`, `uninstall`, `doctor` [O A2] |
+| Must never | Load UI code for `reset`, `recover`, `uninstall`, `doctor` [D A2] |
 | Acceptance tests | Each command; import test proves recovery commands load no UI modules |
 | Done when | Tests pass · reviewed |
 
@@ -753,11 +1235,11 @@ SQLite. Exact methods frozen in the contract session. [P]
 | Purpose | Local persistence for one user. [D F8] |
 | Owner / may be helped? | O3 / no |
 | Built by / reviewed by | TBD / O4 |
-| Depends on | K1–K8, sqlite3 [P A4] |
+| Depends on | K1–K8, sqlite3 [D A4] |
 | Used by | M1.8, M2.5–M2.7, M3.2, M4.10 |
 | Provides | K9 repositories, schema, migrations |
 | Exact interface | K9 [P] |
-| Example | Tables [O A8]: `presets`, `active_preset`, `font_registry`, `transactions`, `journal_items`, `baselines`, `backups`, `coverage`, `settings`, `recommendation_samples` |
+| Example | Tables [D A8]: `presets`, `active_preset`, `font_registry`, `transactions`, `journal_items`, `baselines`, `backups`, `coverage`, `settings`, `recommendation_samples` |
 | Data it reads/writes | `~/.local/share/scribesense/` [D] |
 | Data ownership | Owns the storage medium; **content ownership** stays with the writing module (journal tables → M4.10, font registry → M1.8) |
 | Preconditions | — |
@@ -770,7 +1252,7 @@ SQLite. Exact methods frozen in the contract session. [P]
 #### M3.2 Retention
 | Field | Spec |
 |---|---|
-| Purpose | Prune old transactions and backups. [D F8] |
+| Purpose | Prune old **transaction history** (and its per-tx backups). Never `LocationRecord`s or baseline backups. [D F8, R2] |
 | Owner / may be helped? | O3 / no |
 | Built by / reviewed by | TBD / O4 |
 | Depends on | M3.1 |
@@ -781,7 +1263,7 @@ SQLite. Exact methods frozen in the contract session. [P]
 | Data it reads/writes | transactions, journal items, backups |
 | Data ownership | — |
 | Preconditions | No tx active |
-| Postconditions | Baselines untouched [D] |
+| Postconditions | `LocationRecord`s, baselines and their backups untouched; anything referenced by an unfinished tx untouched [D R2] |
 | Failure cases + required behaviour | Error → skip pruning, keep data |
 | Must never | Delete baselines or unfinished transactions |
 | Acceptance tests | 30-day/last-10 rule; baselines survive |
@@ -795,22 +1277,22 @@ SQLite. Exact methods frozen in the contract session. [P]
 | Built by / reviewed by | TBD / O4 |
 | Depends on | K8 |
 | Used by | all tests; **precondition for helper work** [D] |
-| Provides | pytest fixture: temporary HOME + XDG dirs + private fontconfig |
+| Provides | (1) unit fixture: fake adapters, `subprocess`/`run_cmd` blocked · (2) integration runner: **bubblewrap** sandbox — private `/tmp`, temp `HOME`, private `XDG_RUNTIME_DIR`, **no host D-Bus / Wayland / X11 / Hyprland / service sockets**, `--unshare-net`, no inherited descriptors, only minimal system paths mounted read-only (not the real home), `GSETTINGS_BACKEND=keyfile`, private fontconfig [D R2] |
 | Exact interface | `sandbox` fixture [P] |
 | Example | Adapter test writes `~/.config/...` → lands in a temp dir |
 | Data it reads/writes | temp dirs only |
 | Data ownership | — |
 | Preconditions | — |
 | Postconditions | Temp dirs removed after each test |
-| Failure cases + required behaviour | Detects a write outside the sandbox → test fails |
+| Failure cases + required behaviour | Sandbox can't start → **fail closed** (`SANDBOX_UNAVAILABLE`), never run unsandboxed |
 | Must never | Let a test reach the real home directory |
-| Acceptance tests | A deliberate escape attempt fails the test |
+| Acceptance tests | Escape tests: a write to a host path is **blocked**; connecting to the host session bus / Hyprland socket fails; real Flatpak/compositor tests run only in the VM (M3.5) |
 | Done when | Tests pass · reviewed · announced as ready to helpers |
 
 #### M3.4 Render checks
 | Field | Spec |
 |---|---|
-| Purpose | "Drawn font" checks per engine for tests. [D F9; O A14] |
+| Purpose | "Drawn font" checks per engine for tests. [D F9; D A14] |
 | Owner / may be helped? | O3 / no |
 | Built by / reviewed by | TBD / O4 |
 | Depends on | M3.3; pango-view, Qt offscreen, headless Brave/Firefox with temp profiles |
@@ -897,11 +1379,11 @@ SQLite. Exact methods frozen in the contract session. [P]
 | Used by | user |
 | Provides | install steps, `scribesense uninstall [--delete-data]` |
 | Exact interface | K10 |
-| Example | Uninstall: revert all (drift rule) → remove generated fonts → remove keybind file and include line → remove login check → keep data unless "delete all" |
+| Example | Uninstall: reset (K4 rule 4, steps 1+2) → remove generated fonts **except** those still referenced by unresolved/skipped settings or of unknown use (unless `--remove-fonts-anyway`) [P R2-9] → remove keybind file and include line → remove login check → keep data unless "delete all" |
 | Data it reads/writes | keybind file, login check, fonts dir, data dir (only on delete-all) |
 | Data ownership | — |
 | Preconditions | No tx active |
-| Postconditions | Report lists skipped (user-changed) settings and any app that falls back to its default font [D] |
+| Postconditions | Report lists skipped (user-changed) and failed settings, kept fonts, and: "these apps may fall back to another font and their appearance may change" [D R2] |
 | Failure cases + required behaviour | Revert of one item fails → continue, report it, offer `reset` |
 | Must never | Delete user data without explicit confirmation; overwrite a user's later change [D] |
 | Acceptance tests | VM: install → apply → uninstall → every touched file byte-identical to baseline (except skipped ones) |
@@ -917,7 +1399,7 @@ SQLite. Exact methods frozen in the contract session. [P]
 | Used by | everyone |
 | Provides | CI pipeline; import test |
 | Exact interface | — |
-| Example | Import test fails if recovery commands import UI modules [O A2] |
+| Example | Import test fails if recovery commands import UI modules [D A2]; core (non-GTK) tests run on Python 3.11 and the dev version; GUI tests on system Python only [D A20] |
 | Data it reads/writes | — |
 | Data ownership | — |
 | Preconditions | Repo exists |
@@ -961,7 +1443,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Used by | M2.1 (applied first) |
 | Provides | adapter `fontconfig` |
 | Exact interface | K3 |
-| Example | Writes `~/.config/fontconfig/conf.d/99-scribesense.conf` [P name]: generic families + named UI fonts → generated families [O A13]; monospace untouched |
+| Example | Writes `~/.config/fontconfig/conf.d/99-scribesense.conf` [P name]: generic families + named UI fonts → generated families [D A13]; monospace untouched |
 | Data it reads/writes | that rule file; current UI font names from gsettings |
 | Data ownership | Owns the rule file |
 | Preconditions | Fonts installed (M1.7) |
@@ -985,10 +1467,10 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Data it reads/writes | those gsettings keys |
 | Data ownership | — |
 | Preconditions | gsettings schema present |
-| Postconditions | Keys read back equal what was written |
+| Postconditions | Keys read back equal what was written; `read_state()` reports unset keys as not present [R2-8] |
 | Failure cases + required behaviour | Schema missing → NOT_COVERED |
 | Must never | Touch the monospace key |
-| Acceptance tests | Conformance; snapshot → apply → revert restores exact values |
+| Acceptance tests | Conformance; snapshot → plan → apply → revert restores exact values |
 | Done when | Conformance + tests pass in sandbox · reviewed by O4 |
 
 #### M4.4 Flatpak adapter
@@ -1088,7 +1570,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Postconditions | No letter-spacing or word-spacing declarations [D] |
 | Failure cases + required behaviour | — |
 | Must never | Use `@font-face`, `file://`, or any URL [D] |
-| Acceptance tests | Output contains font + line-height only; exclusions present; Material Icons/Symbols and Font Awesome pages keep their icons |
+| Acceptance tests | Output contains font + line-height only; exclusions present; Material Icons/Symbols and Font Awesome pages keep their icons. Coverage is stated as **the tested icon fonts only**, not a guarantee; other pages → reader fallback (per-site disable = Later) [D R2] |
 | Done when | Tests pass · reviewed by O4 |
 
 #### M4.9 Browser extension (JavaScript)
@@ -1100,7 +1582,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Depends on | M4.8 (via K11), M2.10 |
 | Used by | user (installs once) [D] |
 | Provides | content script, context-menu item |
-| Exact interface | K11 [O A6, A16] |
+| Exact interface | K11 [D A6, A16] |
 | Example | Right-click selected text → reader opens with it |
 | Data it reads/writes | current style from the app; selected text only on right-click |
 | Data ownership | — |
@@ -1158,16 +1640,16 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Owner / may be helped? | O4 / **no (O4 only)** [D] |
 | Built by / reviewed by | O4 / O2 |
 | Depends on | M4.10, M4.11 |
-| Used by | keybind, login check [O A3], M2.11 |
+| Used by | keybind, login check [D A3], M2.11 |
 | Provides | `reset()` · `recover_at_login()` |
 | Exact interface | K10 `reset`, `recover --login` |
 | Example | Login after a crash at AWAITING_CONFIRMATION → reverted, notice shown next time the app opens |
 | Data it reads/writes | via journal |
 | Data ownership | — |
 | Preconditions | — |
-| Postconditions | No unfinished transactions remain |
+| Postconditions | Every recoverable item attempted; failures keep what is needed to retry; recovery **never reports complete while anything still needs restoring**. Note: hash check → restore is not atomic against another program writing at the same moment (best effort, as on apply). |
 | Failure cases + required behaviour | Revert fails → message + instructions in plain text |
-| Must never | Depend on the GUI [O A2]; remove the recovery keybind (only uninstall does) [D] |
+| Must never | Depend on the GUI [D A2]; remove the recovery keybind (only uninstall does) [D] |
 | Acceptance tests | VM: crash + reboot scenario; keybind triggers reset |
 | Done when | VM scenarios pass · manual checklist item passes |
 
@@ -1187,14 +1669,14 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Preconditions | Target applied |
 | Postconditions | — |
 | Failure cases + required behaviour | Check can't run → `chosen_ok=False`, adapter reverted [D] |
-| Must never | Report verified from fc-match alone where a drawn check is required [O A14] |
+| Must never | Report verified from fc-match alone where a drawn check is required [D A14] |
 | Acceptance tests | Distinguishes patched vs original font |
 | Done when | Tests pass · reviewed |
 
 #### M4.14 Keybind writer
 | Field | Spec |
 |---|---|
-| Purpose | Write ScribeSense keybinds to a separate file included from the Hyprland config; check conflicts. [D F7, F10; O A18] |
+| Purpose | Write ScribeSense keybinds to a separate file included from the Hyprland config; check conflicts. [D F7, F10; D A18] |
 | Owner / may be helped? | O4 (proposed) / no |
 | Built by / reviewed by | TBD / O3 |
 | Depends on | `hyprctl binds -j` |
@@ -1248,8 +1730,17 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 
 ## 9. Dependency order (what must exist before what — not a schedule)
 
-1. **Contract session (all four):** K1–K11 frozen; open items A1–A20 decided or accepted as proposed.
+1. **Contract session:** K1–K8, K10, K11 frozen 2026-10-09 · **K9 pending O3 review** · A1–A20 ✅ decided 2026-10-08 (§3).
 2. **Foundations:** M1.1 · M3.3 sandbox · M3.1 store · M4.1 interface + fake adapter · M3.9 CI.
+   **Recovery slice first [D R2]** — one fake adapter + one temp file + the journal must pass, before any real adapter:
+   1. keep A → apply B → revert B → reset → original;
+   2. keep A → write B → crash before Keep → reset → B recovered, then original;
+   3. one adapter rolls back, others kept → that location's `managed` unchanged;
+   4. prune history past retention → baseline still restorable;
+   5. crash after `keep()` commits, before notifying the extension → reconnect gives the correct state;
+   6. service stopped → standalone reset → extension local Disable / next connect shows Original;
+   7. user edits a managed setting → reset skips and reports it; uninstall states kept fonts and consequences.
+   (5 and 6 run once the extension exists.)
 3. **Parallel cores:** O1 M1.2–M1.8 · O2 M2.1–M2.6 against fake adapters · O3 M3.2, M3.4, M3.7 · O4 M4.2, M4.10, M4.11, M4.13, M4.15.
 4. **First end-to-end slice:** preset → build → fontconfig + GTK → relaunch confirm → revert.
 5. **Fan-out:** remaining adapters (owners + helpers) · reader + capture · extension · keybinds · recovery.
