@@ -1,0 +1,35 @@
+# --- Private, shared with the team outside GitHub ---
+AGENTS.md
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- Environment ---
+.venv/
+.env
+
+# --- Tests and tooling ---
+.pytest_cache/
+.coverage
+htmlcov/
+.sandbox/
+
+# --- ScribeSense data (never commit user or test databases) ---
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+
+# --- Browser extension signing keys (never commit) ---
+*.pem
+*.crx
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store

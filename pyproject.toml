@@ -1,0 +1,37 @@
+[project]
+name = "scribesense"
+version = "0.1.0"
+description = "System-wide reading spacing for Linux (Hyprland): generated fonts, per-app adapters, safe revert."
+readme = "README.md"
+requires-python = ">=3.11"
+# PyGObject (GTK4, libadwaita, Pango, Gio) is a SYSTEM prerequisite — never list it here.
+# Use: uv venv --python /usr/bin/python3 --system-site-packages
+dependencies = [
+    "fonttools>=4.50",
+]
+
+[project.scripts]
+scribesense = "scribesense.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.29,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv]
+# Use the system Python so PyGObject's typelibs are visible (A4, A20).
+python-preference = "only-system"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib -m 'not gui'"
+markers = [
+    "gui: needs a real GTK display — local only, never in CI",
+    "integration: runs inside the bubblewrap sandbox (M3.3); skipped (fail closed) anywhere else",
+    "real_subprocess: may launch only sys.executable or files inside the test's temp dir (run_cmd tests)",
+    "recovery: §9 recovery-slice scenarios",
+]
