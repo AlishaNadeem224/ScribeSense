@@ -2,6 +2,7 @@
 
 What this file guarantees for ordinary (unit) tests:
   1. Environment redirected to a per-test temp dir: HOME, XDG_*, SCRIBESENSE_*, FONTCONFIG_FILE.
+     (SCRIBESENSE_DATA_DIR uses a short private /tmp/ss-* dir: Unix socket paths are limited to 108 bytes.)
      Desktop session variables (D-Bus, Wayland, X11, Hyprland) are removed; GSETTINGS_BACKEND=memory.
   2. Process launching is BLOCKED (subprocess, os.system, exec*, spawn*, posix_spawn*, fork).
   3. Unix-socket connections outside the test's temp dir are BLOCKED.
@@ -17,9 +18,11 @@ launched, but ONLY the current Python interpreter or files inside the test's tem
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -67,11 +70,15 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fix
         require_sandbox(os.environ)
 
     root = tmp_path / "sandbox"
+    # Unix socket paths are limited to 108 bytes and pytest's tmp_path is long, so the data dir
+    # (which holds service.sock) lives in a short private dir under /tmp, removed after the test.
+    short = Path(tempfile.mkdtemp(prefix="ss-", dir="/tmp"))
+    request.addfinalizer(lambda: shutil.rmtree(short, ignore_errors=True))
     sb = Sandbox(
         root=root,
         home=root / "home",
         config_home=root / "home" / ".config",
-        data_dir=root / "home" / ".local" / "share" / "scribesense",
+        data_dir=short / "scribesense",
         fonts_dir=root / "home" / ".local" / "share" / "fonts" / "scribesense",
         runtime_dir=root / "run",
     )
@@ -94,7 +101,7 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fix
 
     if not request.node.get_closest_marker("integration"):
         _block_processes(monkeypatch, allow=bool(request.node.get_closest_marker("real_subprocess")), root=tmp_path)
-        _block_foreign_unix_sockets(monkeypatch, root=tmp_path)
+        _block_foreign_unix_sockets(monkeypatch, roots=(tmp_path, short))
     return sb
 
 
@@ -128,13 +135,13 @@ def _block_processes(monkeypatch: pytest.MonkeyPatch, *, allow: bool, root: Path
             monkeypatch.setattr(os, name, blocked)
 
 
-def _block_foreign_unix_sockets(monkeypatch: pytest.MonkeyPatch, *, root: Path) -> None:
+def _block_foreign_unix_sockets(monkeypatch: pytest.MonkeyPatch, *, roots: tuple[Path, ...]) -> None:
     real_connect = socket.socket.connect
 
     def guarded_connect(self, address):  # type: ignore[no-untyped-def]
         if self.family == socket.AF_UNIX:
             path = os.fsdecode(address) if isinstance(address, (str, bytes)) else ""
-            if path.startswith("\0") or not path or not _is_within(Path(path), root):
+            if path.startswith("\0") or not path or not any(_is_within(Path(path), r) for r in roots):
                 raise ProcessLaunchBlocked(f"unix socket outside the test dir blocked: {path!r}")
         return real_connect(self, address)
 

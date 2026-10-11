@@ -755,9 +755,13 @@ Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 
 - ⬜ M4.2 fontconfig · ⏳ M4.3 GTK (needs R2-8) · ⬜ M4.4 Flatpak · ⬜ M4.5 Qt · ⬜ M4.6 Firefox
 - ⬜ M4.7 Chromium · ⬜ M4.8 Browser CSS · ⬜ M4.9 Extension
 - 🟡 M4.10 Journal — **in-memory double** `safety/memory_journal.py` implements all of K4 (2026-10-12);
-  SQLite journal ⏳ K9 · lock (`flock` + owner record) and IPC socket ⬜
+  SQLite journal ⏳ K9 · ✅ cross-process lock `safety/lock.py` (flock, owner record, close-on-exec) ·
+  ✅ IPC socket `safety/ipc.py` (same-user, JSON lines ≤ 1 MiB, stale-socket handling) (2026-10-12, review pending)
 - 🟡 M4.11 Revert — `safety/revert.py`, K4 rule 4 step 1, repeatable, drift-safe; sandbox tests ✅, VM tests ⬜ (2026-10-12, review pending)
-- 🟡 M4.12 Recovery — `safety/recovery.py`: `reset()` + `recover_at_login()` ✅; lock-held takeover (rule 6) ⬜
+- 🟡 M4.12 Recovery — `safety/recovery.py`: `reset()` + `recover_at_login()` ✅ · K4 rule 6 lock handling ✅
+  (ask the service over IPC, pidfd + process-group takeover of a hung service only, bounded wait for other
+  recoveries, journal re-read) — tested with real helper processes in the sandbox (2026-10-12, review pending).
+  Remaining: VM scenarios (crash + reboot, keybind → reset) · CLI wiring `reset` / `recover --login` (O2, M2.11)
 - ⬜ M4.13 Verify · ⬜ M4.14 Keybind writer · ⬜ M4.15 Logging
 
 **§9 recovery slice** — `tests/recovery/` via `safety/testing.make_recovery_system`

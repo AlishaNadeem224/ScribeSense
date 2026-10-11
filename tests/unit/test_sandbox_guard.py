@@ -21,8 +21,11 @@ def _blocked_error_type() -> type[BaseException]:
 
 def test_home_and_xdg_point_into_the_test_dir(sandbox, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     for var in ("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR",
-                "SCRIBESENSE_DATA_DIR", "SCRIBESENSE_FONTS_DIR", "FONTCONFIG_FILE"):
+                "SCRIBESENSE_FONTS_DIR", "FONTCONFIG_FILE"):
         assert Path(os.environ[var]).is_relative_to(tmp_path), var
+    data_dir = Path(os.environ["SCRIBESENSE_DATA_DIR"])  # short private dir (socket path limit)
+    assert data_dir == sandbox.data_dir and data_dir.parent.name.startswith("ss-")
+    assert len(str(data_dir / "service.sock")) < 108
     assert os.environ["GSETTINGS_BACKEND"] == "memory"
 
 
