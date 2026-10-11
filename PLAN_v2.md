@@ -720,6 +720,17 @@ plan's Flatpak route is dropped; MVP installs natively (an RPM can come later).
   `no_obligations()`; K8 gains 9 store/font codes; M4.12 postcondition reworded.
 - ▶ Implementation starts now for modules not blocked by K9. R2-8 (Gio vs dconf) and R2-9 still open.
 
+## Decisions (2026-10-12) — socket location + cross-owner notes
+
+- ✅ **K8 amended (contract change, decided by O4; O3 as K8 owner to confirm):** `socket_path()` moves to
+  `$XDG_RUNTIME_DIR/scribesense/service.sock` (fallback `data_dir()/service.sock`). Reason: the kernel limits
+  Unix socket paths to 108 bytes; the runtime dir is short. `lock_path()` unchanged. Contract code
+  `contracts/paths.py` and its contract test updated.
+- ✅ Cross-owner changes recorded as notes in `ARCHITECTURE.md`: M3.3 (O3 — short test data dir in
+  `tests/conftest.py`), M2.1 (O2 — reference apply sequence in `safety/testing.py` until the controller
+  exists), M3.9 (O3 — two pytest markers in `pyproject.toml`).
+- Rule from now on: O4 does not edit other owners' files; unavoidable changes are recorded in `ARCHITECTURE.md`.
+
 ---
 
 ## Implementation progress (live checklist — update when a card changes state)
@@ -762,7 +773,8 @@ Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 
   (ask the service over IPC, pidfd + process-group takeover of a hung service only, bounded wait for other
   recoveries, journal re-read) — tested with real helper processes in the sandbox (2026-10-12, review pending).
   Remaining: VM scenarios (crash + reboot, keybind → reset) · CLI wiring `reset` / `recover --login` (O2, M2.11)
-- ⬜ M4.13 Verify · ⬜ M4.14 Keybind writer · ⬜ M4.15 Logging
+- ⬜ M4.13 Verify · ⬜ M4.14 Keybind writer
+- ✅ M4.15 Logging — `safety/logging.py`, canary acceptance test passes; strings only in identifier fields (2026-10-12, review pending)
 
 **§9 recovery slice** — `tests/recovery/` via `safety/testing.make_recovery_system`
 (in-memory journal + reference apply sequence until M2.1 / SQLite journal exist)

@@ -80,6 +80,11 @@ def test_paths_follow_sandbox_overrides(sandbox) -> None:  # type: ignore[no-unt
     assert paths.fonts_dir() == sandbox.fonts_dir
     assert paths.logs_dir() == sandbox.data_dir / "logs"
     assert paths.lock_path() == sandbox.data_dir / "apply.lock"
+    assert paths.socket_path() == sandbox.runtime_dir / "scribesense" / "service.sock"
+
+
+def test_socket_falls_back_to_data_dir_without_runtime_dir(sandbox, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.delenv("XDG_RUNTIME_DIR")
     assert paths.socket_path() == sandbox.data_dir / "service.sock"
 
 

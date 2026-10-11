@@ -477,7 +477,8 @@ class Journal:
      (an error — never treated as "originally absent").
    - After a full reset: `set_original()`. The report lists every unresolved location, so "Original" never
      implies everything was restored.
-5. **IPC [D 2026-10-09]:** a Unix socket at `data_dir()/service.sock`, stdlib only (no GTK), used by
+5. **IPC [D 2026-10-09; location amended 2026-10-12]:** a Unix socket at `socket_path()` (K8) =
+   `$XDG_RUNTIME_DIR/scribesense/service.sock`, stdlib only (no GTK), used by
    `confirm`, `reset` and the native-messaging host.
    - Same-user only: socket file mode `0600` in a `0700` directory; the service checks the peer
      UID (`SO_PEERCRED`) and drops other users.
@@ -604,7 +605,8 @@ def config_home() -> Path     # $XDG_CONFIG_HOME else $HOME/.config
 def home() -> Path            # $HOME
 def logs_dir() -> Path        # data_dir()/logs
 def lock_path() -> Path       # data_dir()/apply.lock   (stable file; owner record inside, K4 rule 1)
-def socket_path() -> Path     # data_dir()/service.sock (dir 0700, socket 0600)
+def socket_path() -> Path     # $XDG_RUNTIME_DIR/scribesense/service.sock; fallback data_dir()/service.sock
+                              # (dir 0700, socket 0600) — amended 2026-10-12, see note below
 
 def run_cmd(argv: list[str], timeout: float) -> CompletedProcess   # the only way to start external commands (K3 rule 9)
 
@@ -613,6 +615,12 @@ class ErrorCode(StrEnum): ... # one stable list for logs, reports and UI
 class ScribeSenseError(Exception):
     def __init__(self, code: ErrorCode): ...
 ```
+
+**Socket location (amended 2026-10-12, decided by O4; O3 as K8 owner to confirm):** Unix socket paths are
+limited to **108 bytes by the Linux kernel**; a socket under a long `$HOME` could fail to bind. The socket
+therefore lives in the per-user runtime dir (`/run/user/<uid>`, short, mode 0700, cleared at logout), in a
+`scribesense/` subfolder that ScribeSense owns (0700). If `$XDG_RUNTIME_DIR` is unset, it falls back to
+`data_dir()/service.sock` (the old location; the length limit then applies). `lock_path()` is unchanged.
 
 **Rules [D]:** no module hard-codes these paths. The test sandbox (M3.3) sets `HOME`,
 `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `SCRIBESENSE_*` and `FONTCONFIG_FILE` — inside bubblewrap, not
@@ -1026,6 +1034,12 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Acceptance tests | One test per failure row above, with fake adapters |
 | Done when | Tests pass with fakes and in the sandbox · reviewed by O4 |
 
+> **Note (2026-10-12, O4 → O2):** until this controller exists, the §9 recovery tests use a
+> **reference apply sequence** in `scribesense/safety/testing.py` (`RecoverySystem.apply`, K4 rule 2
+> order + the failure rows above). It is test support, not production code. **When M2.1 is built,
+> `make_recovery_system` must call this controller instead, and the §9 scenarios in `tests/recovery/`
+> must still pass** — they are part of this card's acceptance.
+
 #### M2.2 Restart notice
 | Field | Spec |
 |---|---|
@@ -1289,6 +1303,14 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Acceptance tests | Escape tests: a write to a host path is **blocked**; connecting to the host session bus / Hyprland socket fails; real Flatpak/compositor tests run only in the VM (M3.5) |
 | Done when | Tests pass · reviewed · announced as ready to helpers |
 
+> **Note (2026-10-12, O4 → O3 to review):** O4 changed the unit fixture in `tests/conftest.py`:
+> `SCRIBESENSE_DATA_DIR` points to a short private `/tmp/ss-*` dir (removed after each test), and
+> Unix sockets are allowed there as well as under `tmp_path`. Reason: Unix socket paths are limited to
+> 108 bytes and pytest's `tmp_path` is longer. `tests/unit/test_sandbox_guard.py` was updated to match.
+> Since the socket moved to `$XDG_RUNTIME_DIR` (K8 amendment), O4's socket tests point
+> `XDG_RUNTIME_DIR` into that short dir themselves. **Suggested O3 follow-up:** make the fixture's
+> `XDG_RUNTIME_DIR` short instead and drop the data-dir workaround — O3's decision.
+
 #### M3.4 Render checks
 | Field | Spec |
 |---|---|
@@ -1408,6 +1430,11 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Run tests outside the sandbox |
 | Acceptance tests | A deliberate rule violation fails CI |
 | Done when | CI green on the skeleton · reviewed |
+
+> **Note (2026-10-12, O4 → O3 to review):** `pyproject.toml` has two pytest markers added by O4 (Step C):
+> `real_subprocess` (only for `run_cmd` and lock-takeover tests; may launch only `sys.executable` or files
+> in the test's temp dir) and `recovery` (the §9 scenarios). The import rules R1–R6 live in
+> `tests/unit/test_import_rules.py`; CI runs in `.github/workflows/tests.yml` (Python 3.11 + 3.14).
 
 ### O4 — System Integration & Safety
 
@@ -1713,6 +1740,13 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Acceptance tests | Canary grep over logs after a full session → zero hits |
 | Done when | Tests pass · reviewed |
 
+> **Implemented 2026-10-12 (O4) — how every module must call it:**
+> `from scribesense.safety.logging import log` · `log(ErrorCode.X, "category", field=value, ...)`
+> (`code` and `category` are positional). Numbers, booleans, `None` and ErrorCodes are allowed in any field.
+> **Strings are accepted only in identifier fields** — `adapter, target, role, state, step, setting,
+> preset, kind, reason` — and only if identifier-shaped (≤ 64 chars, no spaces, no `/`). Any other string is
+> dropped, never written. Never put user content in an identifier field. Logging never raises.
+> File: `logs_dir()/scribesense.log` (0600, dir 0700), rotated at 1 MiB, one old file kept.
 ---
 
 ## 8. Helper work model [D]

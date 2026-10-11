@@ -51,8 +51,13 @@ def lock_path() -> Path:
 
 
 def socket_path() -> Path:
-    """data_dir()/service.sock — directory 0700, socket 0600 (K4 rule 5)."""
-    return data_dir() / "service.sock"
+    """$XDG_RUNTIME_DIR/scribesense/service.sock — directory 0700, socket 0600 (K4 rule 5).
+
+    Amended 2026-10-12: Unix socket paths are limited to 108 bytes by the kernel, so the socket lives
+    in the short per-user runtime dir. Fallback when XDG_RUNTIME_DIR is unset: data_dir()/service.sock.
+    """
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    return Path(runtime) / "scribesense" / "service.sock" if runtime else data_dir() / "service.sock"
 
 
 def run_cmd(argv: list[str], timeout: float) -> subprocess.CompletedProcess[bytes]:

@@ -14,6 +14,14 @@ from scribesense.contracts.messages import MAX_MESSAGE_BYTES
 from scribesense.safety import ipc
 
 
+@pytest.fixture(autouse=True)
+def short_runtime_dir(sandbox, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    """Socket paths are limited to 108 bytes; tmp_path is too long. Use the fixture's short dir."""
+    runtime = sandbox.data_dir.parent / "run"
+    runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+
+
 def echo(message: ipc.Message) -> ipc.Message:
     return {"v": 1, "ok": True, "type": message["type"]}
 

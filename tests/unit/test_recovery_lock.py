@@ -19,6 +19,14 @@ FILE = "/fake/a.conf"
 A = Configuration("Noto Sans", 0.12, 1.5, 1.5, 1.2, 1.0)
 
 
+@pytest.fixture(autouse=True)
+def short_runtime_dir(sandbox, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    """Socket paths are limited to 108 bytes; tmp_path is too long. Use the fixture's short dir."""
+    runtime = sandbox.data_dir.parent / "run"
+    runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+
+
 class Calls:
     def __init__(self) -> None:
         self.asked = 0
