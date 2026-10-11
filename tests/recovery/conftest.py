@@ -1,9 +1,11 @@
 """§9 recovery slice — test harness interface.
 
-The scenarios in this folder drive the REAL controller + journal + revert + recovery code through
-one in-memory FakeAdapter world. They are BLOCKED until O4 implements the journal (M4.10), revert
-(M4.11) and recovery (M4.12), which in turn wait for O3's K9 sign-off. Until then every scenario
-skips with an explicit "BLOCKED" reason — they never pass vacuously.
+The scenarios in this folder drive the journal + revert + recovery code through one in-memory
+FakeAdapter world. Current wiring (2026-10-12): scribesense.safety.testing uses the IN-MEMORY journal
+(M4.10 double), the real revert (M4.11) and recovery core (M4.12), and a REFERENCE apply sequence.
+When the SQLite journal (after K9) and O2's apply controller (M2.1) exist, the hook must switch to them
+and these scenarios must still pass. If the hook module is missing, every scenario skips as BLOCKED —
+they never pass vacuously.
 
 O4 provides the hook (test-support code, not production behaviour):
 

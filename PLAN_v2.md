@@ -719,3 +719,76 @@ plan's Flatpak route is dropped; MVP installs natively (an RPM can come later).
   tables, busy/error/migration/pruning/delete-all rules, 12 acceptance tests. K4 gains `prune_history()` +
   `no_obligations()`; K8 gains 9 store/font codes; M4.12 postcondition reworded.
 - ▶ Implementation starts now for modules not blocked by K9. R2-8 (Gio vs dconf) and R2-9 still open.
+
+## Decisions (2026-10-12) — socket location + cross-owner notes
+
+- ✅ **K8 amended (contract change, decided by O4; O3 as K8 owner to confirm):** `socket_path()` moves to
+  `$XDG_RUNTIME_DIR/scribesense/service.sock` (fallback `data_dir()/service.sock`). Reason: the kernel limits
+  Unix socket paths to 108 bytes; the runtime dir is short. `lock_path()` unchanged. Contract code
+  `contracts/paths.py` and its contract test updated.
+- ✅ Cross-owner changes recorded as notes in `ARCHITECTURE.md`: M3.3 (O3 — short test data dir in
+  `tests/conftest.py`), M2.1 (O2 — reference apply sequence in `safety/testing.py` until the controller
+  exists), M3.9 (O3 — two pytest markers in `pyproject.toml`).
+- Rule from now on: O4 does not edit other owners' files; unavoidable changes are recorded in `ARCHITECTURE.md`.
+
+## Decisions (2026-10-12) — R2-8, R2-9
+
+- ✅ **R2-8 = Gio:** settings state is read with `Gio.Settings.get_user_value()` (works with the sandbox's
+  `GSETTINGS_BACKEND`); `Gio` is allowed in recovery, only `Gtk`/`Adw` are banned. Unblocks M4.3 GTK adapter.
+- ✅ **R2-9 = yes:** uninstall keeps fonts still referenced by skipped/unresolved settings;
+  `--remove-fonts-anyway` removes them. Reverses PLAN Feature 10.
+
+---
+
+## Implementation progress (live checklist — update when a card changes state)
+
+Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 partial / test double · ⏳ blocked ·
+⬜ not started. "(review pending)" = not yet reviewed by the card's reviewer.
+
+**Foundations**
+- ✅ Repo skeleton, `pyproject.toml` (uv, `uv_build`), package layout, `.gitignore`, `AGENTS.md` (private)
+- ✅ Contracts as code `src/scribesense/contracts/` — K1–K8, K10, K11 frozen · ⏳ K9 DRAFT (awaiting sign-off)
+- ✅ Unit-test isolation `tests/conftest.py` (temp HOME/XDG, process launch + foreign sockets blocked, integration fails closed)
+- ✅ Import-rule tests R1–R6 (`tests/unit/test_import_rules.py`)
+- ✅ CI workflow `.github/workflows/tests.yml` (Python 3.11 + 3.14)
+
+**O1 — Configuration & Fonts**
+- ⬜ M1.1 Configuration vocabulary · ⬜ M1.2 Presets · ⬜ M1.3 Eligibility · ⬜ M1.4 Patcher
+- ⬜ M1.5 Variants + naming · ⬜ M1.6 Validation · ⬜ M1.7 Cache/install · ⬜ M1.8 Generator API
+- ⬜ Bundled fonts + licence check · ⬜ confirm `PreviewFonts` fields
+
+**O2 — User Experience**
+- ⬜ M2.1 Apply controller · ⬜ M2.2 Restart notice · ⬜ M2.3 Confirm flow · ⬜ M2.4 UI shell
+- ⬜ M2.5 Presets/preview · ⬜ M2.6 Coverage report · ⬜ M2.7 Settings · ⬜ M2.8 Tray (optional)
+- ⬜ M2.9 Reader · ⬜ M2.10 Capture · ⬜ M2.11 CLI
+
+**O3 — Data & Platform**
+- ⏳ K9 sign-off · ⏳ M3.1 Store · ⬜ M3.2 Retention · 🟡 M3.3 Sandbox (unit level ✅, bubblewrap runner ⬜)
+- ⬜ M3.4 Render checks · ⬜ M3.5 VM tests · ⬜ M3.6 Manual checklist · ⬜ M3.7 Doctor · ⬜ M3.8 Install/uninstall
+- 🟡 M3.9 CI + import rules (both ✅; CI branch protection optional)
+
+**O4 — System Integration & Safety**
+- ✅ M4.1 Adapter interface — contract K3, **fake adapter** (`adapters/fake.py`) and **conformance suite**
+  (`adapters/conformance.py`, proven against 6 broken adapters) (2026-10-12, review pending)
+- 🟡 M4.2 fontconfig — `adapters/fontconfig.py`: conformance (3 start states) + unit tests ✅, 4-lens review +
+  adversarial verify, 12 findings fixed (2026-10-12, review pending). Remaining: real-fontconfig integration test
+  (written, needs O3's bubblewrap runner with `/etc/fonts` + system fonts read-only) · Pango drawn check (M4.13)
+- ⬜ M4.3 GTK (R2-8 decided: Gio) · ⬜ M4.4 Flatpak · ⬜ M4.5 Qt · ⬜ M4.6 Firefox
+- ⬜ M4.7 Chromium · ⬜ M4.8 Browser CSS · ⬜ M4.9 Extension
+- 🟡 M4.10 Journal — **in-memory double** `safety/memory_journal.py` implements all of K4 (2026-10-12);
+  SQLite journal ⏳ K9 · ✅ cross-process lock `safety/lock.py` (flock, owner record, close-on-exec) ·
+  ✅ IPC socket `safety/ipc.py` (same-user, JSON lines ≤ 1 MiB, stale-socket handling) (2026-10-12, review pending)
+- 🟡 M4.11 Revert — `safety/revert.py`, K4 rule 4 step 1, repeatable, drift-safe; sandbox tests ✅, VM tests ⬜ (2026-10-12, review pending)
+- 🟡 M4.12 Recovery — `safety/recovery.py`: `reset()` + `recover_at_login()` ✅ · K4 rule 6 lock handling ✅
+  (ask the service over IPC, pidfd + process-group takeover of a hung service only, bounded wait for other
+  recoveries, journal re-read) — tested with real helper processes in the sandbox (2026-10-12, review pending).
+  Remaining: VM scenarios (crash + reboot, keybind → reset) · CLI wiring `reset` / `recover --login` (O2, M2.11)
+- ⬜ M4.13 Verify · ⬜ M4.14 Keybind writer
+- ✅ M4.15 Logging — `safety/logging.py`, canary acceptance test passes; strings only in identifier fields (2026-10-12, review pending)
+
+**§9 recovery slice** — `tests/recovery/` via `safety/testing.make_recovery_system`
+(in-memory journal + reference apply sequence until M2.1 / SQLite journal exist)
+- ✅ S1 keep A → B → revert B → reset · ✅ S2 crash before Keep · ✅ S3 rolled-back adapter keeps `managed`
+- ✅ S4 prune keeps baselines · ⏳ S5, S6 need the extension · ✅ S7 user edit skipped and reported
+
+**Open decisions:** K9 sign-off · K8 socket amendment (O3 to confirm) · PBL date.
