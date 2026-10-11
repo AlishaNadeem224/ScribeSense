@@ -719,3 +719,50 @@ plan's Flatpak route is dropped; MVP installs natively (an RPM can come later).
   tables, busy/error/migration/pruning/delete-all rules, 12 acceptance tests. K4 gains `prune_history()` +
   `no_obligations()`; K8 gains 9 store/font codes; M4.12 postcondition reworded.
 - ▶ Implementation starts now for modules not blocked by K9. R2-8 (Gio vs dconf) and R2-9 still open.
+
+---
+
+## Implementation progress (live checklist — update when a card changes state)
+
+Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 partial / test double · ⏳ blocked ·
+⬜ not started. "(review pending)" = not yet reviewed by the card's reviewer.
+
+**Foundations**
+- ✅ Repo skeleton, `pyproject.toml` (uv, `uv_build`), package layout, `.gitignore`, `AGENTS.md` (private)
+- ✅ Contracts as code `src/scribesense/contracts/` — K1–K8, K10, K11 frozen · ⏳ K9 DRAFT (awaiting sign-off)
+- ✅ Unit-test isolation `tests/conftest.py` (temp HOME/XDG, process launch + foreign sockets blocked, integration fails closed)
+- ✅ Import-rule tests R1–R6 (`tests/unit/test_import_rules.py`)
+- ✅ CI workflow `.github/workflows/tests.yml` (Python 3.11 + 3.14)
+
+**O1 — Configuration & Fonts**
+- ⬜ M1.1 Configuration vocabulary · ⬜ M1.2 Presets · ⬜ M1.3 Eligibility · ⬜ M1.4 Patcher
+- ⬜ M1.5 Variants + naming · ⬜ M1.6 Validation · ⬜ M1.7 Cache/install · ⬜ M1.8 Generator API
+- ⬜ Bundled fonts + licence check · ⬜ confirm `PreviewFonts` fields
+
+**O2 — User Experience**
+- ⬜ M2.1 Apply controller · ⬜ M2.2 Restart notice · ⬜ M2.3 Confirm flow · ⬜ M2.4 UI shell
+- ⬜ M2.5 Presets/preview · ⬜ M2.6 Coverage report · ⬜ M2.7 Settings · ⬜ M2.8 Tray (optional)
+- ⬜ M2.9 Reader · ⬜ M2.10 Capture · ⬜ M2.11 CLI
+
+**O3 — Data & Platform**
+- ⏳ K9 sign-off · ⏳ M3.1 Store · ⬜ M3.2 Retention · 🟡 M3.3 Sandbox (unit level ✅, bubblewrap runner ⬜)
+- ⬜ M3.4 Render checks · ⬜ M3.5 VM tests · ⬜ M3.6 Manual checklist · ⬜ M3.7 Doctor · ⬜ M3.8 Install/uninstall
+- 🟡 M3.9 CI + import rules (both ✅; CI branch protection optional)
+
+**O4 — System Integration & Safety**
+- ✅ M4.1 Adapter interface — contract K3, **fake adapter** (`adapters/fake.py`) and **conformance suite**
+  (`adapters/conformance.py`, proven against 6 broken adapters) (2026-10-12, review pending)
+- ⬜ M4.2 fontconfig · ⏳ M4.3 GTK (needs R2-8) · ⬜ M4.4 Flatpak · ⬜ M4.5 Qt · ⬜ M4.6 Firefox
+- ⬜ M4.7 Chromium · ⬜ M4.8 Browser CSS · ⬜ M4.9 Extension
+- 🟡 M4.10 Journal — **in-memory double** `safety/memory_journal.py` implements all of K4 (2026-10-12);
+  SQLite journal ⏳ K9 · lock (`flock` + owner record) and IPC socket ⬜
+- 🟡 M4.11 Revert — `safety/revert.py`, K4 rule 4 step 1, repeatable, drift-safe; sandbox tests ✅, VM tests ⬜ (2026-10-12, review pending)
+- 🟡 M4.12 Recovery — `safety/recovery.py`: `reset()` + `recover_at_login()` ✅; lock-held takeover (rule 6) ⬜
+- ⬜ M4.13 Verify · ⬜ M4.14 Keybind writer · ⬜ M4.15 Logging
+
+**§9 recovery slice** — `tests/recovery/` via `safety/testing.make_recovery_system`
+(in-memory journal + reference apply sequence until M2.1 / SQLite journal exist)
+- ✅ S1 keep A → B → revert B → reset · ✅ S2 crash before Keep · ✅ S3 rolled-back adapter keeps `managed`
+- ✅ S4 prune keeps baselines · ⏳ S5, S6 need the extension · ✅ S7 user edit skipped and reported
+
+**Open decisions:** R2-8 (Gio vs `dconf`) · R2-9 (keep fonts on uninstall) · K9 sign-off · PBL date.
