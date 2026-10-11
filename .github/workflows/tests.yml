@@ -1,0 +1,43 @@
+# CI: runs `uv run pytest` on every push and every pull request into main.
+# Only runs tests — never merges, pushes or changes anything.
+# GUI tests (-m gui) and real-desktop tests are NOT run here (no screen, no GTK 4.22, no Hyprland);
+# those run locally / in the Hyprland VM.
+
+name: tests
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]   # declared minimum (A20) + the dev machine's version
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies (fails if uv.lock is out of date)
+        run: uv sync --locked --python "$(which python)"
+
+      - name: Run tests
+        run: uv run --python "$(which python)" pytest -ra
