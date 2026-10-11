@@ -138,8 +138,8 @@ All twenty were reviewed and decided by the team (proposals + six amendments). T
 | R2-5 | **Extension:** keeps styling when disconnected, reconciles on reconnect, local Disable, revision on every reply, app supplies the CSS. | K11, M4.9 |
 | R2-6 | **Durability** promise narrowed to recovery records on storage that honors sync; WAL + `synchronous=FULL`; fsync sequence. | §4, K9 |
 | R2-7 | **Partial font styles allowed**; no promise about synthesized styles in other apps. | K7, M1.5 |
-| R2-8 | **Reading settings [P — confirm]:** `read_state()` for keys uses `dconf read <path>` (prints nothing when the key is unset; no GTK/Gio import in the recovery path); writes use `gsettings set` (type-checked) and `gsettings reset` for unset. [V] verify `dconf read` behaviour on the dev machine. | K3, M4.3 |
-| R2-9 | **Uninstall and fonts [P — confirm; reverses PLAN F10]:** fonts still referenced by skipped/unresolved settings, or whose use can't be determined, are **kept by default**; `uninstall --remove-fonts-anyway` removes them. Wording: "these apps may fall back to another font and their appearance may change." | M3.8, K10 |
+| R2-8 | **Reading settings [D 2026-10-12 — Gio]:** `read_state()` for keys uses **`Gio.Settings.get_user_value()`** (returns nothing when the key is unset; follows the active `GSETTINGS_BACKEND`, so the test sandbox and production behave the same). `gi.repository.Gio` is **allowed** in the recovery path — only `Gtk`/`Adw` are banned (A2, import rule R6). Writes use `gsettings set` (type-checked) and `gsettings reset` for unset. `dconf read` is **not** used. | K3, M4.3 |
+| R2-9 | **Uninstall and fonts [D 2026-10-12 — yes; reverses PLAN F10]:** fonts still referenced by skipped/unresolved settings, or whose use can't be determined, are **kept by default**; `uninstall --remove-fonts-anyway` removes them. Wording: "these apps may fall back to another font and their appearance may change." | M3.8, K10 |
 
 ---
 
@@ -1401,7 +1401,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Used by | user |
 | Provides | install steps, `scribesense uninstall [--delete-data]` |
 | Exact interface | K10 |
-| Example | Uninstall: reset (K4 rule 4, steps 1+2) → remove generated fonts **except** those still referenced by unresolved/skipped settings or of unknown use (unless `--remove-fonts-anyway`) [P R2-9] → remove keybind file and include line → remove login check → keep data unless "delete all" |
+| Example | Uninstall: reset (K4 rule 4, steps 1+2) → remove generated fonts **except** those still referenced by unresolved/skipped settings or of unknown use (unless `--remove-fonts-anyway`) [D R2-9] → remove keybind file and include line → remove login check → keep data unless "delete all" |
 | Data it reads/writes | keybind file, login check, fonts dir, data dir (only on delete-all) |
 | Data ownership | — |
 | Preconditions | No tx active |
@@ -1479,6 +1479,18 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Must never | Redirect monospace or icon families |
 | Acceptance tests | Sandbox: fc-match results as above; revert restores byte-identical state (or no file) |
 | Done when | Conformance + tests pass · reviewed |
+
+> **Implemented 2026-10-12 (O4) — notes for reviewers and the integration runner:**
+> one target `fontconfig:user`, one file `config_home()/fontconfig/conf.d/99-scribesense.conf`.
+> Rules: `sans-serif`, `serif` → reading family; the gsettings `font-name` family → UI family
+> (`<match target="pattern">` + `<edit mode="prepend" binding="strong">`). Never redirected: generic
+> monospace/emoji/math/system-ui names and their aliases, names that look monospace/icon/emoji (heuristic),
+> ScribeSense's own families. UI redirects already in an existing ScribeSense rule file are **kept** on the
+> next apply (once the GTK adapter has set `font-name` to our UI family, gsettings no longer names the
+> original font). `verify` = chosen-font check with `fc-match` (patterns escaped, e.g. `sans\-serif`);
+> `drawn_ok` stays `None` until M4.13. Directories created by apply are left in place on revert (only the
+> rule file is removed). The integration test needs the bubblewrap runner to expose `/etc/fonts` and system
+> fonts read-only. Adapter does **not** log (import rule R5) — see open item below.
 
 #### M4.3 GTK adapter
 | Field | Spec |

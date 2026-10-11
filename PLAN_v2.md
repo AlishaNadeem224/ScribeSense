@@ -731,6 +731,13 @@ plan's Flatpak route is dropped; MVP installs natively (an RPM can come later).
   exists), M3.9 (O3 — two pytest markers in `pyproject.toml`).
 - Rule from now on: O4 does not edit other owners' files; unavoidable changes are recorded in `ARCHITECTURE.md`.
 
+## Decisions (2026-10-12) — R2-8, R2-9
+
+- ✅ **R2-8 = Gio:** settings state is read with `Gio.Settings.get_user_value()` (works with the sandbox's
+  `GSETTINGS_BACKEND`); `Gio` is allowed in recovery, only `Gtk`/`Adw` are banned. Unblocks M4.3 GTK adapter.
+- ✅ **R2-9 = yes:** uninstall keeps fonts still referenced by skipped/unresolved settings;
+  `--remove-fonts-anyway` removes them. Reverses PLAN Feature 10.
+
 ---
 
 ## Implementation progress (live checklist — update when a card changes state)
@@ -763,7 +770,10 @@ Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 
 **O4 — System Integration & Safety**
 - ✅ M4.1 Adapter interface — contract K3, **fake adapter** (`adapters/fake.py`) and **conformance suite**
   (`adapters/conformance.py`, proven against 6 broken adapters) (2026-10-12, review pending)
-- ⬜ M4.2 fontconfig · ⏳ M4.3 GTK (needs R2-8) · ⬜ M4.4 Flatpak · ⬜ M4.5 Qt · ⬜ M4.6 Firefox
+- 🟡 M4.2 fontconfig — `adapters/fontconfig.py`: conformance (3 start states) + unit tests ✅, 4-lens review +
+  adversarial verify, 12 findings fixed (2026-10-12, review pending). Remaining: real-fontconfig integration test
+  (written, needs O3's bubblewrap runner with `/etc/fonts` + system fonts read-only) · Pango drawn check (M4.13)
+- ⬜ M4.3 GTK (R2-8 decided: Gio) · ⬜ M4.4 Flatpak · ⬜ M4.5 Qt · ⬜ M4.6 Firefox
 - ⬜ M4.7 Chromium · ⬜ M4.8 Browser CSS · ⬜ M4.9 Extension
 - 🟡 M4.10 Journal — **in-memory double** `safety/memory_journal.py` implements all of K4 (2026-10-12);
   SQLite journal ⏳ K9 · ✅ cross-process lock `safety/lock.py` (flock, owner record, close-on-exec) ·
@@ -781,4 +791,4 @@ Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 
 - ✅ S1 keep A → B → revert B → reset · ✅ S2 crash before Keep · ✅ S3 rolled-back adapter keeps `managed`
 - ✅ S4 prune keeps baselines · ⏳ S5, S6 need the extension · ✅ S7 user edit skipped and reported
 
-**Open decisions:** R2-8 (Gio vs `dconf`) · R2-9 (keep fonts on uninstall) · K9 sign-off · PBL date.
+**Open decisions:** K9 sign-off · K8 socket amendment (O3 to confirm) · PBL date.
