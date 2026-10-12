@@ -1,6 +1,9 @@
 """O4 — Privacy-safe logging for every module (M4.15).
 
-    from scribesense.safety.logging import log
+Lives at the package top level (not in safety/) so every module — adapters included — may import it
+without breaking import rule R5 (adapters never import scribesense.safety). Decided 2026-10-12.
+
+    from scribesense.log import log
     log(ErrorCode.ADAPTER_VERIFY_FAILED, "adapter", adapter="qt", target="qt:default", attempt=2)
 
 Writes one JSON line per event to contracts.paths.logs_dir()/scribesense.log (dir 0700, file 0600).

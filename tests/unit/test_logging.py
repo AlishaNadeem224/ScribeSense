@@ -10,7 +10,7 @@ import pytest
 
 from scribesense.contracts import paths
 from scribesense.contracts.errors import ErrorCode
-from scribesense.safety import logging as sslog
+from scribesense import log as sslog
 
 CANARY = "CANARY-7f3a91-do-not-log"
 
