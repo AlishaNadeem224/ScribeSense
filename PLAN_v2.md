@@ -776,7 +776,9 @@ Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 
 - 🟡 M4.3 GTK — `adapters/gtk.py`: conformance (3 start states) + unit tests ✅, GLib text formatting checked
   against real GLib, plan checked read-only on the dev machine (2026-10-12, review pending). Remaining:
   integration test in O3's bubblewrap runner (`GSETTINGS_BACKEND=keyfile`) · ⬜ M4.4 Flatpak · ⬜ M4.5 Qt · ⬜ M4.6 Firefox
-- ⬜ M4.7 Chromium · ⬜ M4.8 Browser CSS · ⬜ M4.9 Extension
+- ⬜ M4.7 Chromium · ⬜ M4.9 Extension
+- 🟡 M4.8 Browser CSS — `adapters/browser_css.py`: font family + line height only, code/icon exclusions,
+  unit tests ✅ (2026-10-12, review pending). Remaining: real-browser render check (O3's harness, M3.4)
 - 🟡 M4.10 Journal — **in-memory double** `safety/memory_journal.py` implements all of K4 (2026-10-12);
   SQLite journal ⏳ K9 · ✅ cross-process lock `safety/lock.py` (flock, owner record, close-on-exec) ·
   ✅ IPC socket `safety/ipc.py` (same-user, JSON lines ≤ 1 MiB, stale-socket handling) (2026-10-12, review pending)
