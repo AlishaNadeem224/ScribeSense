@@ -20,12 +20,14 @@ import pytest
 
 from scribesense.adapters import chromium as cr
 from scribesense.adapters.chromium import ChromiumAdapter
-from scribesense.adapters.conformance import AdapterConformance, snapshot_with_backups
+from scribesense.adapters.conformance import AdapterConformance
+from scribesense.adapters.fake import FakeWorld
 from scribesense.contracts.adapter import Adapter, SnapshotItem, Target, state_sha256
 from scribesense.contracts.config import Configuration
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 from scribesense.contracts.fonts import FontSet
 from scribesense.contracts.paths import config_home, home, run_cmd
+from scribesense.safety.testing import make_recovery_system
 
 CFG = Configuration("Noto Sans", 0.12, 1.5, 1.5, 1.2, 1.0)
 FONTS = FontSet("abc123", "AccessSans-abc123", "AccessSansUI-abc123", (), ("Regular",))
@@ -84,12 +86,18 @@ def target_for(adapter: ChromiumAdapter, target_id: str) -> Target:
     return t
 
 
-def snap_plan_apply(adapter: ChromiumAdapter, t: Target) -> tuple[list[SnapshotItem], bytes]:
+def snap_plan_apply(adapter: ChromiumAdapter, t: Target) -> list[SnapshotItem]:
+    """K3 rule 10b: two key locations per profile -> two planned writes, applied in order."""
     items = adapter.snapshot(t)
-    [p] = adapter.plan(t, FONTS, CFG)
-    adapter.apply(p)
-    assert isinstance(p.payload, bytes)
-    return items, p.payload
+    planned = adapter.plan(t, FONTS, CFG)
+    assert [p.location for p in planned] == [i.location for i in items]
+    for p in planned:
+        adapter.apply(p)
+    return items
+
+
+def key_locs(path: Path) -> list[str]:
+    return [cr.key_location(path, kp) for kp in cr.FONT_KEYS]
 
 
 def expected_after(original: dict[str, Any]) -> dict[str, Any]:
@@ -127,10 +135,31 @@ class ChromiumHarness:
     config: Configuration = CFG
 
     def fingerprint(self) -> dict[str, str]:
-        return fingerprint_tree(self.home)
+        """K3 rule 10b view: each Preferences file = its two key locations + everything ELSE in it ("#rest"),
+        so a change to any other key is still caught; every other file by bytes and mode."""
+        out = fingerprint_tree(self.home)
+        for name in list(out):
+            p = Path(name)
+            if p.name != "Preferences":
+                continue
+            try:
+                prefs = cr.parse_preferences(p.read_bytes())
+            except (ScribeSenseError, OSError):
+                continue
+            mode = stat.S_IMODE(p.stat().st_mode)
+            out[name] = f"link:{os.readlink(p) if p.is_symlink() else ''}:mode:{mode:o}"
+            for loc in key_locs(p):
+                out[loc] = self.adapter.read_state(loc).sha256
+            rest = prefs
+            for kp in cr.FONT_KEYS:
+                rest = cr._delete_path(rest, kp)
+            out[f"{name}#rest"] = state_sha256(True, json.dumps(rest, sort_keys=True).encode())
+        return out
 
     def external_edit(self, location: str) -> None:
-        Path(location).write_bytes(b'{"changed_by":"someone else"}')
+        path, keypath = cr.split_location(location)
+        prefs = cr.parse_preferences(path.read_bytes())
+        path.write_bytes(cr.serialize_preferences(cr._set_path(prefs, keypath, "Someone Else Font")))
 
 
 class TestChromiumConformance(AdapterConformance):
@@ -193,8 +222,9 @@ def test_detects_every_browser_and_profile_including_flatpak(sandbox) -> None:  
 def test_flatpak_location_comes_from_home(sandbox) -> None:  # type: ignore[no-untyped-def]
     path = make_profile(sandbox.home / ".var/app/org.chromium.Chromium/config/chromium")
     a = ChromiumAdapter()
-    [item] = a.snapshot(target_for(a, "chromium-flatpak:Default"))
-    assert item.location == str(path)
+    items = a.snapshot(target_for(a, "chromium-flatpak:Default"))
+    assert [i.location for i in items] == key_locs(path)
+    assert all(i.kind == "key" and i.file_mode is None for i in items)
 
 
 def test_skips_non_profiles_and_profiles_without_preferences(sandbox) -> None:  # type: ignore[no-untyped-def]
@@ -265,23 +295,23 @@ def test_vanished_profile_is_profile_not_found_and_nothing_created(sandbox) -> N
     assert not path.exists()
 
 
-def test_preferences_vanishing_after_snapshot_is_changed_and_not_recreated(sandbox) -> None:  # type: ignore[no-untyped-def]
+def test_preferences_vanishing_after_snapshot_is_refused_and_not_recreated(sandbox) -> None:  # type: ignore[no-untyped-def]
     path = make_profile(brave_dir())
     a = ChromiumAdapter()
     t = target_for(a, "brave:Default")
     a.snapshot(t)
-    [p] = a.plan(t, FONTS, CFG)
+    p = a.plan(t, FONTS, CFG)[0]
     path.unlink()
     with pytest.raises(ScribeSenseError) as exc:
         a.apply(p)
-    assert exc.value.code is ErrorCode.CHANGED_DURING_APPLY
+    assert exc.value.code is ErrorCode.PROFILE_NOT_FOUND
     assert not path.exists()
 
 
 def test_apply_without_snapshot_is_refused(sandbox) -> None:  # type: ignore[no-untyped-def]
     make_profile(brave_dir())
     a = ChromiumAdapter()
-    [p] = a.plan(target_for(a, "brave:Default"), FONTS, CFG)
+    p = a.plan(target_for(a, "brave:Default"), FONTS, CFG)[0]
     with pytest.raises(ValueError):
         ChromiumAdapter().apply(p)
 
@@ -289,12 +319,14 @@ def test_apply_without_snapshot_is_refused(sandbox) -> None:  # type: ignore[no-
 # ---------------------------------------------------------------- the edit itself
 
 def plan_payload(data: bytes) -> bytes:
-    make_profile(brave_dir(), "Default", data)
+    """The Preferences bytes after applying both key writes."""
+    path = make_profile(brave_dir(), "Default", data)
     a = ChromiumAdapter()
-    [p] = a.plan(target_for(a, "brave:Default"), FONTS, CFG)
-    assert isinstance(p.payload, bytes)
-    assert p.new_sha256 == state_sha256(True, p.payload)
-    return p.payload
+    t = target_for(a, "brave:Default")
+    for p in a.plan(t, FONTS, CFG):
+        assert p.payload == json.dumps(FAM) and p.new_sha256 == state_sha256(True, json.dumps(FAM).encode())
+    snap_plan_apply(a, t)
+    return path.read_bytes()
 
 
 def test_sets_exactly_the_two_keys_creating_missing_dicts_in_chrome_order() -> None:
@@ -344,12 +376,11 @@ def test_plan_is_deterministic_and_idempotent(sandbox) -> None:  # type: ignore[
     path = make_profile(brave_dir(), "Default", UNICODE)
     a = ChromiumAdapter()
     t = target_for(a, "brave:Default")
-    [p1] = a.plan(t, FONTS, CFG)
-    [p2] = a.plan(t, FONTS, CFG)
-    assert p1 == p2
+    assert a.plan(t, FONTS, CFG) == a.plan(t, FONTS, CFG)
     snap_plan_apply(a, t)
-    [p3] = a.plan(t, FONTS, CFG)
-    assert p3.payload == path.read_bytes() == p1.payload
+    once = path.read_bytes()
+    snap_plan_apply(a, t)  # applying again changes nothing
+    assert path.read_bytes() == once
 
 
 def test_serializer_round_trips_lone_surrogates_and_big_numbers() -> None:
@@ -378,8 +409,8 @@ def test_unreadable_preferences_are_refused_and_left_untouched(sandbox, bad: byt
     before = fingerprint_tree(sandbox.home)
     a = ChromiumAdapter()
     t = target_for(a, "brave:Default")
-    a.snapshot(t)
     with pytest.raises(ScribeSenseError) as exc:
+        a.snapshot(t)  # unparseable -> refused here; a shape we must not edit -> refused by plan's dry run
         a.plan(t, FONTS, CFG)
     assert exc.value.code is ErrorCode.PREFERENCES_UNREADABLE
     assert path.read_bytes() == bad
@@ -390,16 +421,15 @@ def test_unreadable_preferences_are_refused_and_left_untouched(sandbox, bad: byt
     assert (result.chosen_ok, result.detail_code) == (False, expected.value)
 
 
-def test_apply_refuses_a_payload_that_is_not_preferences(sandbox) -> None:  # type: ignore[no-untyped-def]
+def test_apply_refuses_a_payload_that_is_not_a_json_value(sandbox) -> None:  # type: ignore[no-untyped-def]
     path = make_profile(brave_dir())
     a = ChromiumAdapter()
     t = target_for(a, "brave:Default")
     a.snapshot(t)
-    [p] = a.plan(t, FONTS, CFG)
-    forged = type(p)(p.target, p.location, b"{}garbage", state_sha256(True, b"{}garbage"))
-    with pytest.raises(ScribeSenseError) as exc:
+    p = a.plan(t, FONTS, CFG)[0]
+    forged = type(p)(p.target, p.location, "{}garbage", state_sha256(True, b"{}garbage"))
+    with pytest.raises(ValueError):
         a.apply(forged)
-    assert exc.value.code is ErrorCode.PREFERENCES_UNREADABLE
     assert path.read_bytes() == NO_WEBKIT
 
 
@@ -420,7 +450,7 @@ def test_running_browser_is_never_edited(sandbox) -> None:  # type: ignore[no-un
     a = ChromiumAdapter()
     t = target_for(a, "brave:Default")
     items = a.snapshot(t)
-    [p] = a.plan(t, FONTS, CFG)
+    p = a.plan(t, FONTS, CFG)[0]
     set_running(brave_dir())
     before = fingerprint_tree(sandbox.home)
     with pytest.raises(ScribeSenseError) as exc:
@@ -453,21 +483,17 @@ def test_each_profile_is_its_own_target_and_location(sandbox) -> None:  # type: 
     assert json.loads(p1.read_bytes())["webkit"]["webprefs"]["fonts"]["standard"]["Zyyy"] == FAM
 
 
-def test_mode_is_preserved(sandbox) -> None:  # type: ignore[no-untyped-def]
+def test_mode_is_preserved_and_the_current_mode_is_kept_on_revert(sandbox) -> None:  # type: ignore[no-untyped-def]
+    """Key-level: the file belongs to the browser, so revert keeps whatever mode it has NOW."""
     path = make_profile(brave_dir(), mode=0o640)
     a = ChromiumAdapter()
     t = target_for(a, "brave:Default")
-    [(item, backup)] = snapshot_with_backups(_Harness(a), t)
-    snap_plan_apply(a, t)
+    items = snap_plan_apply(a, t)
     assert stat.S_IMODE(path.stat().st_mode) == 0o640
     path.chmod(0o600)
-    a.revert(item, backup)
-    assert stat.S_IMODE(path.stat().st_mode) == 0o640 and path.read_bytes() == NO_WEBKIT
-
-
-@dataclass
-class _Harness:
-    adapter: ChromiumAdapter
+    for item in items:
+        a.revert(item, None)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600 and path.read_bytes() == NO_WEBKIT
 
 
 def test_symlinked_preferences_stay_a_symlink(sandbox) -> None:  # type: ignore[no-untyped-def]
@@ -480,12 +506,11 @@ def test_symlinked_preferences_stay_a_symlink(sandbox) -> None:  # type: ignore[
     os.symlink(real, link)
     a = ChromiumAdapter()
     t = target_for(a, "brave:Default")
-    [(item, backup)] = snapshot_with_backups(_Harness(a), t)
-    assert item.file_mode == 0o640  # the real file's mode, not the link's
-    snap_plan_apply(a, t)
+    items = snap_plan_apply(a, t)
     assert link.is_symlink() and real.read_bytes() == NO_WEBKIT_APPLIED
     assert stat.S_IMODE(real.stat().st_mode) == 0o640
-    a.revert(item, backup)
+    for item in items:
+        a.revert(item, None)
     assert link.is_symlink() and real.read_bytes() == NO_WEBKIT
     assert stat.S_IMODE(real.stat().st_mode) == 0o640
 
@@ -509,12 +534,29 @@ def test_escape_patterns_still_cover_the_chrome_escape_set() -> None:
         assert not cr._BAD_CHAR.search(ch), repr(ch)
 
 
-def test_revert_of_a_never_existing_file_deletes_nothing(sandbox) -> None:  # type: ignore[no-untyped-def]
+def test_file_items_are_refused_and_a_missing_file_is_never_recreated(sandbox) -> None:  # type: ignore[no-untyped-def]
     path = make_profile(brave_dir())
     t = Target("chromium", "brave:Default", "Brave (Default)", False)
-    item = SnapshotItem(t, "file", str(path), False, None, state_sha256(False, None), None, None)
-    ChromiumAdapter().revert(item, None)
-    assert path.read_bytes() == NO_WEBKIT
+    file_item = SnapshotItem(t, "file", str(path), True, None, state_sha256(True, NO_WEBKIT), 0o600, None)
+    with pytest.raises(ValueError):
+        ChromiumAdapter().revert(file_item, NO_WEBKIT)
+    key_item = SnapshotItem(t, "key", key_locs(path)[0], False, None, state_sha256(False, None), None, "json")
+    path.unlink()
+    with pytest.raises(ScribeSenseError) as exc:
+        ChromiumAdapter().revert(key_item, None)
+    assert exc.value.code is ErrorCode.PROFILE_NOT_FOUND
+    assert not path.exists()
+
+
+def test_revert_restores_existing_values_and_deletes_and_prunes_absent_ones(sandbox) -> None:  # type: ignore[no-untyped-def]
+    with_fonts = make_profile(brave_dir(), "Default", WITH_FONTS)
+    no_webkit = make_profile(brave_dir(), "Profile 1", NO_WEBKIT)
+    a = ChromiumAdapter()
+    for tid, path, original in (("brave:Default", with_fonts, WITH_FONTS), ("brave:Profile_1", no_webkit, NO_WEBKIT)):
+        items = snap_plan_apply(a, target_for(a, tid))
+        for item in reversed(items):
+            a.revert(item, None)
+        assert path.read_bytes() == original  # "Times"/"Arial" back; created dicts pruned away
 
 
 def test_failed_fsync_is_write_not_durable_and_original_kept(sandbox, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -522,7 +564,7 @@ def test_failed_fsync_is_write_not_durable_and_original_kept(sandbox, monkeypatc
     a = ChromiumAdapter()
     t = target_for(a, "brave:Default")
     a.snapshot(t)
-    [p] = a.plan(t, FONTS, CFG)
+    p = a.plan(t, FONTS, CFG)[0]
 
     def broken_fsync(_fd: int) -> None:
         raise OSError(5, "I/O error")
@@ -566,10 +608,10 @@ def test_no_process_is_ever_started(sandbox, monkeypatch) -> None:  # type: igno
     make_profile(brave_dir())
     a = ChromiumAdapter()
     t = target_for(a, "brave:Default")
-    [(item, backup)] = snapshot_with_backups(_Harness(a), t)
-    snap_plan_apply(a, t)
+    items = snap_plan_apply(a, t)
     a.verify(t, FONTS)
-    a.revert(item, backup)
+    for item in items:
+        a.revert(item, None)
 
 
 # ---------------------------------------------------------------- integration (bubblewrap only)
@@ -602,3 +644,57 @@ def test_real_brave_keeps_the_edit_and_still_starts(sandbox) -> None:  # type: i
     snap_plan_apply(a, t)
     run_cmd(argv, 60.0)  # must not hang (ADAPTER_TIMEOUT would raise)
     assert a.verify(t, FONTS).chosen_ok
+
+
+# ---------------------------------------------------------------- M4.7-1: the browser rewrites its file
+
+def _browser_rewrites(path: Path) -> None:
+    """What Chrome does on every run: re-serialise everything, change unrelated values, add new keys."""
+    prefs = json.loads(path.read_bytes())
+    prefs["profile"] = {"exit_type": "Crashed", "name": "Person 1", "last_used": 1760000000}
+    prefs["session"] = {"restore_on_startup": 1}
+    path.write_bytes(json.dumps(prefs, indent=1, sort_keys=False).encode())
+
+
+def test_browser_rewriting_the_file_is_not_drift_for_our_keys(sandbox) -> None:  # type: ignore[no-untyped-def]
+    path = make_profile(brave_dir(), "Default", NO_WEBKIT)
+    a = ChromiumAdapter()
+    t = target_for(a, "brave:Default")
+    planned_sha = {p.location: p.new_sha256 for p in a.plan(t, FONTS, CFG)}
+    items = snap_plan_apply(a, t)
+    _browser_rewrites(path)
+    assert {loc: a.read_state(loc).sha256 for loc in planned_sha} == planned_sha  # still "ours"
+    for item in reversed(items):
+        a.revert(item, None)
+    after = json.loads(path.read_bytes())
+    assert "webkit" not in after  # our keys gone, created dicts pruned
+    assert after["profile"]["exit_type"] == "Crashed" and after["session"] == {"restore_on_startup": 1}
+
+
+def test_reset_undoes_our_font_after_the_browser_rewrote_the_file(sandbox) -> None:  # type: ignore[no-untyped-def]
+    """End to end with the real journal/revert/recovery: the M4.7-1 bug is gone."""
+    path = make_profile(brave_dir(), "Default", WITH_FONTS)
+    system = make_recovery_system(FakeWorld(), [ChromiumAdapter()])  # type: ignore[list-item]
+    system.apply(CFG, keep=True)
+    fonts = json.loads(path.read_bytes())["webkit"]["webprefs"]["fonts"]
+    assert fonts["standard"]["Zyyy"].startswith("AccessSans-")
+    _browser_rewrites(path)
+    report = system.reset()
+    assert report.ok and report.skipped == [], report
+    after = json.loads(path.read_bytes())
+    assert after["webkit"]["webprefs"]["fonts"]["standard"] == {"Hani": "Noto Sans CJK SC", "Zyyy": "Times"}
+    assert after["webkit"]["webprefs"]["fonts"]["sansserif"] == {"Arab": "Noto Naskh Arabic", "Zyyy": "Arial"}
+    assert after["session"] == {"restore_on_startup": 1}  # the browser's own changes are kept
+
+
+def test_user_changing_our_font_is_drift_and_is_never_overwritten(sandbox) -> None:  # type: ignore[no-untyped-def]
+    path = make_profile(brave_dir(), "Default", NO_WEBKIT)
+    system = make_recovery_system(FakeWorld(), [ChromiumAdapter()])  # type: ignore[list-item]
+    system.apply(CFG, keep=True)
+    prefs = json.loads(path.read_bytes())
+    prefs["webkit"]["webprefs"]["fonts"]["standard"]["Zyyy"] = "User Choice"
+    path.write_bytes(json.dumps(prefs).encode())
+    report = system.reset()
+    standard_loc = key_locs(path)[0]
+    assert report.skipped == [standard_loc]
+    assert json.loads(path.read_bytes())["webkit"]["webprefs"]["fonts"]["standard"]["Zyyy"] == "User Choice"

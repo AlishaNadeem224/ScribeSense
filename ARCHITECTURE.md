@@ -1613,6 +1613,14 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Acceptance tests | Headless Firefox (temp profile) draws the reading family on a test page with its own font; icons and code blocks unchanged |
 | Done when | Conformance + render test pass · reviewed by O4 |
 
+> **Implemented 2026-10-12 (O4):** `adapters/firefox.py` — every profile of native Firefox
+> (`~/.mozilla/firefox` and the newer `~/.config/mozilla/firefox`), Flatpak Firefox and Zen (native + Flatpak).
+> Managed blocks in `user.js` (the stylesheet pref) and `chrome/userContent.css` (M4.8 CSS); everything else kept.
+> Running = the profile's `lock` symlink → apply refuses (`BROWSER_RUNNING`). Decisions 2026-10-12:
+> **target ids use a 12-hex hash of the profile path** (`firefox:<root>:<hash>`) so user-chosen profile names never
+> reach logs; the display name keeps the readable name; **revert is allowed while the browser runs** (Firefox never
+> rewrites these files). Real-browser render check: O3's harness (M3.4).
+
 #### M4.7 Chromium preferences adapter
 | Field | Spec |
 |---|---|
@@ -1632,6 +1640,16 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Must never | Write a new minimal Preferences file (hung Brave in tests) [D Step 3]; edit while running |
 | Acceptance tests | Edit preserves every other key; headless Brave draws reading family for `sans-serif` |
 | Done when | Conformance + render test pass · reviewed by O4 |
+
+> **Implemented 2026-10-12 (O4) — key-level locations (K3 rule 10b, decision option A, finding M4.7-1):**
+> `adapters/chromium.py`. Chrome rewrites `Preferences` on every run, so each profile owns **two key
+> locations** (`…/Preferences#webkit.webprefs.fonts.standard.Zyyy` and `…sansserif.Zyyy`) whose state is only that
+> value. apply/revert change only that key; revert of an absent key deletes it and prunes empty parents; the file
+> is never created. Proven end to end: after the browser rewrites the file, `reset` still removes our font and
+> keeps the browser's own changes; a user-changed font is skipped (drift), never overwritten. Brave, Chrome,
+> Chromium (native + Flatpak Brave/Chromium). Running = `SingletonLock` → apply **and revert** refuse
+> (`BROWSER_RUNNING`; decision 2026-10-12 — the browser would overwrite a revert on exit; recovery retries).
+> Not yet covered: Chrome Flatpak, Vivaldi, Edge, beta channels (later). VM: Chrome accepts the edit.
 
 #### M4.8 Browser CSS generator
 | Field | Spec |

@@ -341,8 +341,8 @@ def test_malformed_profiles_ini_gives_no_targets_and_no_crash(sandbox, ini: byte
     root = root_path("firefox")
     (root / "x").mkdir(parents=True)
     (root / "profiles.ini").write_bytes(ini)
-    make_profile("zen", "z.default")  # other roots still work
-    assert [t.target_id for t in FirefoxAdapter().detect()] == ["firefox:zen:z.default"]
+    zen = make_profile("zen", "z.default")  # other roots still work
+    assert [t.target_id for t in FirefoxAdapter().detect()] == [tid("zen", zen)]
 
 
 def test_malformed_ini_log_has_no_content(sandbox) -> None:  # type: ignore[no-untyped-def]

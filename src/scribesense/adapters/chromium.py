@@ -12,13 +12,17 @@ name cannot become an identifier-safe id ("Profile 1" -> "Profile_1"; anything o
 refused) or whose id would collide with another profile's is skipped: Chrome itself only creates
 "Default" and "Profile <n>".
 
-Location (kind "file", K3 rule 10): <user-data dir>/<profile>/Preferences. The only change, made with the
-browser CLOSED (Step 3 finding):
-    webkit.webprefs.fonts.standard.Zyyy  = fonts.reading_family
-    webkit.webprefs.fonts.sansserif.Zyyy = fonts.reading_family
-Missing nested dicts are created; every other key and value survives unchanged (parsed comparison).
+Locations (kind "key", K3 rule 10b — decided 2026-10-12, finding M4.7-1): Chrome rewrites its whole
+Preferences file on every run, so the FILE is not the unit of change. Each profile owns two key locations:
+    <user-data dir>/<profile>/Preferences#webkit.webprefs.fonts.standard.Zyyy
+    <user-data dir>/<profile>/Preferences#webkit.webprefs.fonts.sansserif.Zyyy
+State covers ONLY that value (present = the key exists under dict parents; data = its canonical JSON text),
+so the browser rewriting the rest of the file is not drift and reset/uninstall can still undo our change.
+apply() / revert() read the current file, change only that one key, and write the file back; everything
+else is whatever the browser last wrote. Revert of a key that did not exist deletes it and prunes parent
+dicts that became empty. Missing nested dicts are created on apply.
 A Preferences file is NEVER created (a minimal invented one hung Brave, Step 3): missing -> no target /
-PROFILE_NOT_FOUND, and revert of a "did not exist" item deletes nothing (ScribeSense created no file).
+PROFILE_NOT_FOUND.
 
 Serialization follows Chrome's own JSONWriter so an untouched file round-trips byte-for-byte:
 compact separators, keys in parsed order, non-ASCII kept as UTF-8, '<' / U+2028 / U+2029 / control
@@ -28,8 +32,8 @@ otherwise appended.
 
 Running: the user-data dir has a "SingletonLock" (a symlink, possibly dangling: os.path.lexists).
 must_be_closed=True; apply() and revert() re-check and refuse with BROWSER_RUNNING, writing nothing
-(card: "must never edit while running" — revert is an edit too). A stale lock after a crash therefore
-reads as running.
+(decision 2026-10-12: Chromium would overwrite a revert made while it runs; recovery retries later and the
+user is told). A stale lock after a crash therefore reads as running.
 
 Verify (A14): configuration check only — the file parses and both keys name the reading family.
 drawn_ok=None: the drawn check (headless browser) belongs to the harness.
@@ -253,6 +257,59 @@ def _check_fonts(fonts: FontSet) -> None:
         raise ScribeSenseError(ErrorCode.UNEXPECTED_ADAPTER_ERROR)
 
 
+VALUE_TYPE = "json"
+_KEY_SEP = "#"
+
+
+def key_location(path: Path, keypath: tuple[str, ...]) -> str:
+    """K3 rule 10b location: '<absolute Preferences path>#<dotted.key.path>'."""
+    return f"{path}{_KEY_SEP}{'.'.join(keypath)}"
+
+
+def split_location(location: str) -> tuple[Path, tuple[str, ...]]:
+    """Refuse anything but '<owned Preferences path>#<one of FONT_KEYS>'."""
+    if location.count(_KEY_SEP) != 1:
+        raise ValueError("not a Chromium key location this adapter owns")
+    path_text, dotted = location.split(_KEY_SEP)
+    keypath = tuple(dotted.split("."))
+    if keypath not in FONT_KEYS:
+        raise ValueError("not a Chromium key location this adapter owns")
+    return _check_location(path_text), keypath
+
+
+def canonical_value(value: Any) -> bytes:
+    """Canonical JSON text of one value (State.data for key locations)."""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _lookup(d: Any, path: tuple[str, ...]) -> tuple[bool, Any]:
+    for key in path:
+        if not isinstance(d, dict) or key not in d:
+            return False, None
+        d = d[key]
+    return True, d
+
+
+def _delete_path(d: dict[str, Any], path: tuple[str, ...]) -> dict[str, Any]:
+    """Copy of d without the key at path; parent dicts that become empty are removed too."""
+    head = path[0]
+    if head not in d:
+        return d
+    new = dict(d)
+    if len(path) == 1:
+        del new[head]
+        return new
+    child = d[head]
+    if not isinstance(child, dict):
+        return d
+    pruned = _delete_path(child, path[1:])
+    if pruned:
+        new[head] = pruned
+    else:
+        del new[head]
+    return new
+
+
 # ---------------------------------------------------------------- the adapter
 
 class ChromiumAdapter:
@@ -319,84 +376,102 @@ class ChromiumAdapter:
         return targets
 
     def read_state(self, location: str) -> State:
-        path = _check_location(location)
-        try:
-            data = path.read_bytes()
-        except FileNotFoundError:
-            return State("file", False, None, None, state_sha256(False, None))
-        except OSError:
-            raise ScribeSenseError(ErrorCode.PREFERENCES_UNREADABLE) from None
-        return State("file", True, data, None, state_sha256(True, data))
+        path, keypath = split_location(location)
+        prefs = self._load(path)
+        found, value = _lookup(prefs, keypath)
+        if not found:
+            return State("key", False, None, VALUE_TYPE, state_sha256(False, None))
+        data = canonical_value(value)
+        return State("key", True, data, VALUE_TYPE, state_sha256(True, data))
 
     def snapshot(self, target: Target) -> list[SnapshotItem]:
-        location = str(self._resolve(target))
-        st = self.read_state(location)
-        if not st.present:
-            raise ScribeSenseError(ErrorCode.PROFILE_NOT_FOUND)  # never journal a file we may not create
-        try:
-            mode = stat.S_IMODE(os.stat(location).st_mode)
-        except OSError:
-            raise ScribeSenseError(ErrorCode.PREFERENCES_UNREADABLE) from None
-        self._snapshot_sha[location] = st.sha256
-        return [SnapshotItem(target, "file", location, True, None, st.sha256, mode, None)]
+        path = self._resolve(target)
+        items = []
+        for keypath in FONT_KEYS:
+            location = key_location(path, keypath)
+            st = self.read_state(location)
+            self._snapshot_sha[location] = st.sha256
+            old = st.data.decode("utf-8") if st.data is not None else None
+            items.append(SnapshotItem(target, "key", location, st.present, old, st.sha256, None, VALUE_TYPE))
+        return items
 
     def plan(self, target: Target, fonts: FontSet, config: Configuration) -> list[PlannedWrite]:
         _check_fonts(fonts)
-        location = str(self._resolve(target))
-        st = self.read_state(location)
-        if not st.present or st.data is None:
-            raise ScribeSenseError(ErrorCode.PROFILE_NOT_FOUND)
-        payload = serialize_preferences(with_reading_family(parse_preferences(st.data), fonts.reading_family))
-        return [PlannedWrite(target, location, payload, state_sha256(True, payload))]
+        path = self._resolve(target)
+        prefs = self._load(path)  # missing / unreadable -> refuse now, before anything is journaled as intent
+        for kp in FONT_KEYS:
+            _set_path(prefs, kp, fonts.reading_family)  # dry run: a shape we must not edit -> refuse now
+        payload = canonical_value(fonts.reading_family).decode("utf-8")
+        new_sha = state_sha256(True, payload.encode("utf-8"))
+        return [PlannedWrite(target, key_location(path, kp), payload, new_sha) for kp in FONT_KEYS]
 
     def apply(self, planned: PlannedWrite) -> AppliedItem:
         expected = self._snapshot_sha.get(planned.location)
         if expected is None:
             raise ValueError("apply() for a location that snapshot() did not return (K3 rule 2)")
-        if not isinstance(planned.payload, bytes):
-            raise ValueError("Chromium payload must be file bytes")
-        path = _check_location(planned.location)
-        parse_preferences(planned.payload)  # never write anything a browser could choke on
-        self._refuse_if_running(path)
-        current = self.read_state(planned.location)
-        if current.sha256 != expected:
-            raise ScribeSenseError(ErrorCode.CHANGED_DURING_APPLY)  # K3 rule 12
-        if not current.present:
-            raise ScribeSenseError(ErrorCode.PROFILE_NOT_FOUND)  # never create Preferences
-        real = Path(os.path.realpath(path))  # a symlinked Preferences stays a symlink
+        path, keypath = split_location(planned.location)
+        text = planned.payload.decode("utf-8") if isinstance(planned.payload, bytes) else planned.payload
         try:
-            mode = stat.S_IMODE(os.stat(real).st_mode)
-        except OSError:
-            raise ScribeSenseError(ErrorCode.PREFERENCES_UNREADABLE) from None
-        write_durable(real, planned.payload, mode)
+            value = json.loads(text)
+        except ValueError:
+            raise ValueError("Chromium payload must be a JSON value") from None
+        self._refuse_if_running(path)
+        if self.read_state(planned.location).sha256 != expected:
+            raise ScribeSenseError(ErrorCode.CHANGED_DURING_APPLY)  # K3 rule 12, this key only
+        self._write(path, _set_path(self._load(path), keypath, value))
         return AppliedItem(planned.target, planned.location, planned.new_sha256)
 
     def verify(self, target: Target, fonts: FontSet) -> VerifyResult:
         """Configuration check (A14): both font keys name the reading family. drawn_ok=None (harness)."""
         try:
-            st = self.read_state(str(self._resolve(target)))
-            if not st.present or st.data is None:
-                raise ScribeSenseError(ErrorCode.PROFILE_NOT_FOUND)
-            prefs = parse_preferences(st.data)
+            prefs = self._load(self._resolve(target))
         except (ScribeSenseError, OSError):
             return VerifyResult(target, False, None, ErrorCode.CHECK_UNAVAILABLE.value)
         ok = all(_get_path(prefs, p) == fonts.reading_family for p in FONT_KEYS)
         return VerifyResult(target, ok, None, "OK" if ok else ErrorCode.ADAPTER_VERIFY_FAILED.value)
 
     def revert(self, item: SnapshotItem, backup: bytes | None) -> None:
-        """K3 rule 7: existed -> write the backup bytes + mode back (through a symlink).
-
-        "Did not exist" -> nothing: this adapter never creates a Preferences file, so there is nothing
-        ScribeSense created to delete, and deleting a browser's own Preferences would lose the profile's
-        settings.
-        """
-        if item.kind != "file":
-            raise ValueError("the Chromium adapter owns files only")
-        path = _check_location(item.location)
-        if not item.existed:
-            return
-        if backup is None:
-            raise ScribeSenseError(ErrorCode.BACKUP_MISSING)
+        """K3 rule 7 for a key location: write the old value back, or delete a key that did not exist
+        (pruning parent dicts that became empty). Only that key changes; `backup` is unused for keys."""
+        if item.kind != "key":
+            raise ValueError("the Chromium adapter owns key locations only (K3 rule 10b)")
+        path, keypath = split_location(item.location)
         self._refuse_if_running(path)
-        mode = item.file_mode if item.file_mode is not None else 0o600
-        write_durable(Path(os.path.realpath(path)), backup, mode)
+        prefs = self._load(path)
+        if item.existed:
+            if item.old_value is None:
+                raise ScribeSenseError(ErrorCode.BACKUP_MISSING)
+            try:
+                old = json.loads(item.old_value)
+            except ValueError:
+                raise ScribeSenseError(ErrorCode.BACKUP_CORRUPT) from None
+            new = _set_path(prefs, keypath, old)
+        else:
+            new = _delete_path(prefs, keypath)
+        if new != prefs:
+            self._write(path, new)
+
+    # ---- file access
+
+    @staticmethod
+    def _load(path: Path) -> dict[str, Any]:
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            raise ScribeSenseError(ErrorCode.PROFILE_NOT_FOUND) from None  # never created by us
+        except OSError:
+            raise ScribeSenseError(ErrorCode.PREFERENCES_UNREADABLE) from None
+        return parse_preferences(data)
+
+    @staticmethod
+    def _write(path: Path, prefs: dict[str, Any]) -> None:
+        payload = serialize_preferences(prefs)
+        parse_preferences(payload)  # never write anything a browser could choke on
+        real = Path(os.path.realpath(path))  # a symlinked Preferences stays a symlink
+        try:
+            mode = stat.S_IMODE(os.stat(real).st_mode)
+        except FileNotFoundError:
+            raise ScribeSenseError(ErrorCode.PROFILE_NOT_FOUND) from None
+        except OSError:
+            raise ScribeSenseError(ErrorCode.PREFERENCES_UNREADABLE) from None
+        write_durable(real, payload, mode)
