@@ -1040,6 +1040,12 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > `make_recovery_system` must call this controller instead, and the §9 scenarios in `tests/recovery/`
 > must still pass** — they are part of this card's acceptance.
 
+> **Note (2026-10-12, O4 → O2) — verify rule for this controller:** treat a target's verify as **passed only
+> if `chosen_ok and drawn_ok is not False`** (M4.13). `drawn_ok=None` means "no drawn check for this
+> target" and does not fail it; `drawn_ok=False` (mismatch or probe unavailable) **does** fail it, even when
+> `chosen_ok` is True. On failure: revert that adapter only (row above); if that revert fails, roll back the
+> whole tx (K5). The reference apply in `safety/testing.py` already follows this rule and has tests for it.
+
 #### M2.2 Restart notice
 | Field | Spec |
 |---|---|
@@ -1310,6 +1316,10 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > Since the socket moved to `$XDG_RUNTIME_DIR` (K8 amendment), O4's socket tests point
 > `XDG_RUNTIME_DIR` into that short dir themselves. **Suggested O3 follow-up:** make the fixture's
 > `XDG_RUNTIME_DIR` short instead and drop the data-dir workaround — O3's decision.
+> **Update (2026-10-12, review finding):** the default fixture still puts `XDG_RUNTIME_DIR` under the long
+> `tmp_path`, so any NEW test that binds the socket without O4's per-module fixture will hit the 108-byte
+> limit; and `test_sandbox_guard.py` checks the length of `data_dir/service.sock`, which is now only the
+> fallback location. Both are O3's files — not changed by O4.
 
 #### M3.4 Render checks
 | Field | Spec |
@@ -1624,6 +1634,16 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Acceptance tests | Output contains font + line-height only; exclusions present; Material Icons/Symbols and Font Awesome pages keep their icons. Coverage is stated as **the tested icon fonts only**, not a guarantee; other pages → reader fallback (per-site disable = Later) [D R2] |
 | Done when | Tests pass · reviewed by O4 |
 
+> **Implemented 2026-10-12 (O4):** `src/scribesense/adapters/browser_css.py`, `browser_css(fonts, config)`.
+> One rule: `:root :not(<excluded>, <excluded> *) { font-family: "<reading family>", sans-serif !important;
+> line-height: <reading_line> !important; }` (Selectors Level 4 lists inside `:not()`). Exclusions are a
+> declared heuristic list: code/pre/kbd/samp/tt/var, common code editors (CodeMirror, Monaco, Ace), classes
+> containing mono/code/highlight, Font Awesome, Material Icons/Symbols, generic icon classes, svg, math.
+> Only an `AccessSans-<key>` family can be emitted; spacing, `@font-face`, `@import`, `url(`, `file:` and
+> `http(s):` are refused with an explicit check. **Not yet checked in a real browser** (headless Brave hung on
+> the dev machine) — needs O3's render harness (M3.4): parsing of the `:not()` list, icons and code keep
+> their fonts.
+
 #### M4.9 Browser extension (JavaScript)
 | Field | Spec |
 |---|---|
@@ -1719,7 +1739,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Data ownership | — |
 | Preconditions | Target applied |
 | Postconditions | — |
-| Failure cases + required behaviour | Check can't run → `chosen_ok=False`, adapter reverted [D] |
+| Failure cases + required behaviour | **Updated 2026-10-12 (O4):** chosen check can't run → `chosen_ok=False`, `CHECK_UNAVAILABLE` · drawn check can't run → `chosen_ok` keeps the fc-match result, `drawn_ok=False`, `CHECK_UNAVAILABLE` · **"verify passed" = `chosen_ok and drawn_ok is not False`** (`drawn_ok=None` = no drawn check for that target); a failed verify → that adapter is reverted [D] |
 | Must never | Report verified from fc-match alone where a drawn check is required [D A14] |
 | Acceptance tests | Distinguishes patched vs original font |
 | Done when | Tests pass · reviewed |
@@ -1732,7 +1752,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 >   (a long-running process keeps its old fontconfig setup) and returns the families Pango actually drew for
 >   a **fixed** Latin sample (never user content). A run with an unidentified font fails the probe (fails closed).
 > - Errors: launch failure / empty or bad output → `CHECK_UNAVAILABLE`.
-> - **Semantics in VerifyResult (deviation from "Failure cases" above, for O1/O2 review):** when the *drawn*
+> - **Semantics in VerifyResult (now the card's rule — "Failure cases" updated 2026-10-12):** when the *drawn*
 >   check can't run, `chosen_ok` keeps the fc-match result and `drawn_ok=False` with `CHECK_UNAVAILABLE`.
 >   "Verify passed" = `chosen_ok and drawn_ok is not False`. The fontconfig adapter fails verify unless both pass.
 > - Checked read-only on the dev machine: the real probe reports `Noto Sans` for `sans-serif`, matching fc-match.

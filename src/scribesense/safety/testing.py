@@ -63,7 +63,9 @@ class RecoverySystem:
         reverter = Reverter(j, self.adapters)
         for adapter, target in targets:
             ids = list(by_target[(adapter.name, target.target_id)].values())
-            if adapter.verify(target, fonts).chosen_ok:
+            result = adapter.verify(target, fonts)
+            # "verify passed" = chosen_ok AND drawn_ok is not False (M4.13 note); None = no drawn check here.
+            if result.chosen_ok and result.drawn_ok is not False:
                 for item_id in ids:
                     j.mark_retained(tx, item_id)
                 continue

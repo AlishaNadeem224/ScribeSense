@@ -135,3 +135,23 @@ def test_reset_twice_is_safe(world: FakeWorld) -> None:
     assert second.ok and second.restored == []
     assert world.snapshot_all() == original
     assert system.journal.no_obligations() is not None
+
+
+
+def test_failed_drawn_check_is_not_retained_even_when_chosen_ok(world: FakeWorld) -> None:
+    """chosen_ok=True but drawn_ok=False must count as a failed verify: reverted, never managed."""
+    original = world.snapshot_all()
+    adapter = FakeAdapter(world, {"t": [FILE, KEY]}, verify_ok=True, drawn_ok=False)
+    system = make_recovery_system(world, [adapter])
+    tx = system.apply(A, keep=True)
+    assert system.managed(FILE) is None and system.managed(KEY) is None
+    assert world.snapshot_all() == original
+    assert all(not i.retained for i in system.journal.items(tx))
+
+
+def test_no_drawn_check_still_counts_as_passed(world: FakeWorld) -> None:
+    """drawn_ok=None (no drawn check for this target, A14) must not block retaining the write."""
+    adapter = FakeAdapter(world, {"t": [FILE, KEY]}, verify_ok=True, drawn_ok=None)
+    system = make_recovery_system(world, [adapter])
+    system.apply(A, keep=True)
+    assert system.managed(FILE) is not None
