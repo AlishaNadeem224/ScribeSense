@@ -772,7 +772,7 @@ Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 
   (`adapters/conformance.py`, proven against 6 broken adapters) (2026-10-12, review pending)
 - 🟡 M4.2 fontconfig — `adapters/fontconfig.py`: conformance (3 start states) + unit tests ✅, 4-lens review +
   adversarial verify, 12 findings fixed (2026-10-12, review pending). Remaining: real-fontconfig integration test
-  (written, needs O3's bubblewrap runner with `/etc/fonts` + system fonts read-only) · Pango drawn check (M4.13)
+  (written, needs O3's bubblewrap runner with `/etc/fonts` + system fonts read-only) · Pango drawn check now wired (M4.13)
 - ⬜ M4.3 GTK (R2-8 decided: Gio) · ⬜ M4.4 Flatpak · ⬜ M4.5 Qt · ⬜ M4.6 Firefox
 - ⬜ M4.7 Chromium · ⬜ M4.8 Browser CSS · ⬜ M4.9 Extension
 - 🟡 M4.10 Journal — **in-memory double** `safety/memory_journal.py` implements all of K4 (2026-10-12);
@@ -783,8 +783,11 @@ Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 
   (ask the service over IPC, pidfd + process-group takeover of a hung service only, bounded wait for other
   recoveries, journal re-read) — tested with real helper processes in the sandbox (2026-10-12, review pending).
   Remaining: VM scenarios (crash + reboot, keybind → reset) · CLI wiring `reset` / `recover --login` (O2, M2.11)
-- ⬜ M4.13 Verify · ⬜ M4.14 Keybind writer
-- ✅ M4.15 Logging — `safety/logging.py`, canary acceptance test passes; strings only in identifier fields (2026-10-12, review pending)
+- 🟡 M4.13 Verify — `adapters/verify.py` + `adapters/pango_probe.py`: chosen (host + Flatpak) and Pango drawn check,
+  wired into M4.2; 3-lens review, 6 findings fixed; real probe checked read-only on the dev machine (2026-10-12,
+  review pending). Remaining: integration tests in O3's bubblewrap runner
+- ⬜ M4.14 Keybind writer
+- ✅ M4.15 Logging — `scribesense/log.py` (moved from `safety/` 2026-10-12 so adapters may log under R5), canary acceptance test passes; strings only in identifier fields (2026-10-12, review pending)
 
 **§9 recovery slice** — `tests/recovery/` via `safety/testing.make_recovery_system`
 (in-memory journal + reference apply sequence until M2.1 / SQLite journal exist)

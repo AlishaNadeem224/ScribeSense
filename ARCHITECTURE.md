@@ -1488,9 +1488,9 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > ScribeSense's own families. UI redirects already in an existing ScribeSense rule file are **kept** on the
 > next apply (once the GTK adapter has set `font-name` to our UI family, gsettings no longer names the
 > original font). `verify` = chosen-font check with `fc-match` (patterns escaped, e.g. `sans\-serif`);
-> `drawn_ok` stays `None` until M4.13. Directories created by apply are left in place on revert (only the
+> plus the Pango drawn check from M4.13 (`drawn_ok` is True/False; see the M4.13 note). Directories created by apply are left in place on revert (only the
 > rule file is removed). The integration test needs the bubblewrap runner to expose `/etc/fonts` and system
-> fonts read-only. Adapter does **not** log (import rule R5) — see open item below.
+> fonts read-only. Adapter logs through `scribesense.log` (moved out of `safety/` on 2026-10-12 so R5 still holds).
 
 #### M4.3 GTK adapter
 | Field | Spec |
@@ -1712,6 +1712,21 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Acceptance tests | Distinguishes patched vs original font |
 | Done when | Tests pass · reviewed |
 
+> **Implemented 2026-10-12 (O4):** `src/scribesense/adapters/verify.py` (in `adapters/`, not `safety/`, so
+> adapters may import it under rule R5).
+> - `chosen_family(target, query)` — fc-match on the host, or `flatpak run --command=fc-match <app-id>` for
+>   `flatpak:<app-id>` targets (app id validated; patterns escaped).
+> - `drawn_family_pango(query)` — runs `python -P -m scribesense.adapters.pango_probe` in a **fresh process**
+>   (a long-running process keeps its old fontconfig setup) and returns the families Pango actually drew for
+>   a **fixed** Latin sample (never user content). A run with an unidentified font fails the probe (fails closed).
+> - Errors: launch failure / empty or bad output → `CHECK_UNAVAILABLE`.
+> - **Semantics in VerifyResult (deviation from "Failure cases" above, for O1/O2 review):** when the *drawn*
+>   check can't run, `chosen_ok` keeps the fc-match result and `drawn_ok=False` with `CHECK_UNAVAILABLE`.
+>   "Verify passed" = `chosen_ok and drawn_ok is not False`. The fontconfig adapter fails verify unless both pass.
+> - Checked read-only on the dev machine: the real probe reports `Noto Sans` for `sans-serif`, matching fc-match.
+>   The integration tests (before/after/revert with generated fonts) still need O3's bubblewrap runner.
+
+
 #### M4.14 Keybind writer
 | Field | Spec |
 |---|---|
@@ -1753,7 +1768,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Done when | Tests pass · reviewed |
 
 > **Implemented 2026-10-12 (O4) — how every module must call it:**
-> `from scribesense.safety.logging import log` · `log(ErrorCode.X, "category", field=value, ...)`
+> `from scribesense.log import log` (top-level module, so adapters may use it without breaking R5) · `log(ErrorCode.X, "category", field=value, ...)`
 > (`code` and `category` are positional). Numbers, booleans, `None` and ErrorCodes are allowed in any field.
 > **Strings are accepted only in identifier fields** — `adapter, target, role, state, step, setting,
 > preset, kind, reason` — and only if identifier-shaped (≤ 64 chars, no spaces, no `/`). Any other string is
