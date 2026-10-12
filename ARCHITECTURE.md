@@ -369,6 +369,12 @@ class Adapter(Protocol):
    2 s → reap → `ADAPTER_TIMEOUT`. Non-zero exit → `ADAPTER_COMMAND_FAILED`. [D R2]
 10. **Location format** [D]: files = absolute path; settings = `"<schema> <key>"`, e.g.
     `"org.gnome.desktop.interface font-name"` — identical in snapshot, applied item and revert.
+    **10b (amended 2026-10-12, decided by O4 — second owner sign-off pending):** a single value inside a JSON
+    file that its application rewrites on every run (Chromium `Preferences`) is its own location of kind
+    `"key"`: `"<absolute file path>#<dotted.key.path>"`, e.g. `".../Default/Preferences#webkit.webprefs.fonts.standard.Zyyy"`.
+    `State` and every hash cover **only that value** (present = the key exists; data = its canonical JSON
+    text), so the browser rewriting the rest of the file is **not** drift and reset/uninstall can still undo
+    our change. Revert writes back the old value, or deletes the key if it was absent (never the whole file).
 11. **Canonical state [D R2]:** every comparison (snapshot, intent, drift, revert) uses `State.sha256`
     from `read_state()` — never ad-hoc strings. For settings, "present" means **explicitly set by the
     user**, so an unset key is restored by unsetting it, never by writing its default.
@@ -1040,6 +1046,12 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > `make_recovery_system` must call this controller instead, and the §9 scenarios in `tests/recovery/`
 > must still pass** — they are part of this card's acceptance.
 
+> **Note (2026-10-12, O4 → O2) — verify rule for this controller:** treat a target's verify as **passed only
+> if `chosen_ok and drawn_ok is not False`** (M4.13). `drawn_ok=None` means "no drawn check for this
+> target" and does not fail it; `drawn_ok=False` (mismatch or probe unavailable) **does** fail it, even when
+> `chosen_ok` is True. On failure: revert that adapter only (row above); if that revert fails, roll back the
+> whole tx (K5). The reference apply in `safety/testing.py` already follows this rule and has tests for it.
+
 #### M2.2 Restart notice
 | Field | Spec |
 |---|---|
@@ -1310,6 +1322,10 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > Since the socket moved to `$XDG_RUNTIME_DIR` (K8 amendment), O4's socket tests point
 > `XDG_RUNTIME_DIR` into that short dir themselves. **Suggested O3 follow-up:** make the fixture's
 > `XDG_RUNTIME_DIR` short instead and drop the data-dir workaround — O3's decision.
+> **Update (2026-10-12, review finding):** the default fixture still puts `XDG_RUNTIME_DIR` under the long
+> `tmp_path`, so any NEW test that binds the socket without O4's per-module fixture will hit the 108-byte
+> limit; and `test_sandbox_guard.py` checks the length of `data_dir/service.sock`, which is now only the
+> fallback location. Both are O3's files — not changed by O4.
 
 #### M3.4 Render checks
 | Field | Spec |
@@ -1488,9 +1504,9 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > ScribeSense's own families. UI redirects already in an existing ScribeSense rule file are **kept** on the
 > next apply (once the GTK adapter has set `font-name` to our UI family, gsettings no longer names the
 > original font). `verify` = chosen-font check with `fc-match` (patterns escaped, e.g. `sans\-serif`);
-> `drawn_ok` stays `None` until M4.13. Directories created by apply are left in place on revert (only the
+> plus the Pango drawn check from M4.13 (`drawn_ok` is True/False; see the M4.13 note). Directories created by apply are left in place on revert (only the
 > rule file is removed). The integration test needs the bubblewrap runner to expose `/etc/fonts` and system
-> fonts read-only. Adapter does **not** log (import rule R5) — see open item below.
+> fonts read-only. Adapter logs through `scribesense.log` (moved out of `safety/` on 2026-10-12 so R5 still holds).
 
 #### M4.3 GTK adapter
 | Field | Spec |
@@ -1512,6 +1528,18 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Acceptance tests | Conformance; snapshot → plan → apply → revert restores exact values |
 | Done when | Conformance + tests pass in sandbox · reviewed by O4 |
 
+> **Implemented 2026-10-12 (O4):** `src/scribesense/adapters/gtk.py`, target `gtk:user`, three keys of
+> `org.gnome.desktop.interface`: `font-name` → UI family, `document-font-name` → reading family (both keep the
+> user's current font size), `text-scaling-factor` → `text_scale`. `monospace-font-name` is never touched.
+> Reads with `Gio.Settings.get_user_value()` (R2-8; unset = not present), writes with `gsettings set/reset`
+> via `run_cmd`, then reads back (short poll — the settings service may commit a moment later; no match →
+> `ADAPTER_COMMAND_FAILED`). Planned text is **canonical GLib GVariant text** (GLib prints 1.1 as
+> `1.1000000000000001`); a pure-Python formatter is checked against real GLib for every `text_scale` step.
+> Missing schema → `SCHEMA_MISSING` (detect still lists the target, so it shows as NOT_COVERED).
+> `verify` = configuration check (effective values name our families); `drawn_ok=None` (GTK drawn check is
+> harness-only, A14). Checked read-only against the dev machine's real settings. Integration test (real
+> `gsettings` with `GSETTINGS_BACKEND=keyfile`) needs O3's bubblewrap runner.
+
 #### M4.4 Flatpak adapter
 | Field | Spec |
 |---|---|
@@ -1531,6 +1559,13 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Must never | Use a global override for all apps [D per-app] |
 | Acceptance tests | VM: override applied and reverted; fc-match inside the app |
 | Done when | Conformance + VM test pass · reviewed by O4 |
+
+> **Implemented 2026-10-12 (O4):** `adapters/flatpak.py` — every installed app (detected, no fixed list), one
+> per-app user override keyfile written directly (exact bytes; `[Context] filesystems=` gains
+> `xdg-config/fontconfig:ro`, everything else preserved; GLib keyfile line rules). The global override is never
+> touched. Decisions 2026-10-12: **accepted** that our `:ro` entry can narrow an app whose manifest grants write
+> access to the fontconfig folder (rare; font managers); **accepted for now** that the user Flatpak dir comes
+> from `FLATPAK_USER_DIR` / `XDG_DATA_HOME` / `home()` because K8 has no `data_home()` (known K8 gap).
 
 #### M4.5 Qt adapter
 | Field | Spec |
@@ -1552,6 +1587,12 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Acceptance tests | Conformance; not-qt6ct session → NOT_COVERED; menus checked at UI line 1.2 [V system Qt + qt6ct untested] |
 | Done when | Conformance + tests pass · reviewed by O4 |
 
+> **Implemented 2026-10-12 (O4):** `adapters/qt.py` — only when the session already uses qt6ct; edits only
+> `[Fonts] general=` (UI family, size kept, default 11), never `fixed=`; adds `[Fonts]` if missing; writes through
+> symlinks. **[V] in the VM:** the exact Qt 6 `QFont::toString()` field layout, qt6ct's own default size, and that
+> the ScribeSense process sees `QT_QPA_PLATFORMTHEME` (a service started without the session environment would
+> wrongly report Qt as not covered — O2/O3: start the service from the session).
+
 #### M4.6 Firefox adapter
 | Field | Spec |
 |---|---|
@@ -1571,6 +1612,14 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Must never | Edit a profile while the browser runs; add letter/word spacing in CSS [D] |
 | Acceptance tests | Headless Firefox (temp profile) draws the reading family on a test page with its own font; icons and code blocks unchanged |
 | Done when | Conformance + render test pass · reviewed by O4 |
+
+> **Implemented 2026-10-12 (O4):** `adapters/firefox.py` — every profile of native Firefox
+> (`~/.mozilla/firefox` and the newer `~/.config/mozilla/firefox`), Flatpak Firefox and Zen (native + Flatpak).
+> Managed blocks in `user.js` (the stylesheet pref) and `chrome/userContent.css` (M4.8 CSS); everything else kept.
+> Running = the profile's `lock` symlink → apply refuses (`BROWSER_RUNNING`). Decisions 2026-10-12:
+> **target ids use a 12-hex hash of the profile path** (`firefox:<root>:<hash>`) so user-chosen profile names never
+> reach logs; the display name keeps the readable name; **revert is allowed while the browser runs** (Firefox never
+> rewrites these files). Real-browser render check: O3's harness (M3.4).
 
 #### M4.7 Chromium preferences adapter
 | Field | Spec |
@@ -1592,6 +1641,16 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Acceptance tests | Edit preserves every other key; headless Brave draws reading family for `sans-serif` |
 | Done when | Conformance + render test pass · reviewed by O4 |
 
+> **Implemented 2026-10-12 (O4) — key-level locations (K3 rule 10b, decision option A, finding M4.7-1):**
+> `adapters/chromium.py`. Chrome rewrites `Preferences` on every run, so each profile owns **two key
+> locations** (`…/Preferences#webkit.webprefs.fonts.standard.Zyyy` and `…sansserif.Zyyy`) whose state is only that
+> value. apply/revert change only that key; revert of an absent key deletes it and prunes empty parents; the file
+> is never created. Proven end to end: after the browser rewrites the file, `reset` still removes our font and
+> keeps the browser's own changes; a user-changed font is skipped (drift), never overwritten. Brave, Chrome,
+> Chromium (native + Flatpak Brave/Chromium). Running = `SingletonLock` → apply **and revert** refuse
+> (`BROWSER_RUNNING`; decision 2026-10-12 — the browser would overwrite a revert on exit; recovery retries).
+> Not yet covered: Chrome Flatpak, Vivaldi, Edge, beta channels (later). VM: Chrome accepts the edit.
+
 #### M4.8 Browser CSS generator
 | Field | Spec |
 |---|---|
@@ -1612,6 +1671,16 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Acceptance tests | Output contains font + line-height only; exclusions present; Material Icons/Symbols and Font Awesome pages keep their icons. Coverage is stated as **the tested icon fonts only**, not a guarantee; other pages → reader fallback (per-site disable = Later) [D R2] |
 | Done when | Tests pass · reviewed by O4 |
 
+> **Implemented 2026-10-12 (O4):** `src/scribesense/adapters/browser_css.py`, `browser_css(fonts, config)`.
+> One rule: `:root :not(<excluded>, <excluded> *) { font-family: "<reading family>", sans-serif !important;
+> line-height: <reading_line> !important; }` (Selectors Level 4 lists inside `:not()`). Exclusions are a
+> declared heuristic list: code/pre/kbd/samp/tt/var, common code editors (CodeMirror, Monaco, Ace), classes
+> containing mono/code/highlight, Font Awesome, Material Icons/Symbols, generic icon classes, svg, math.
+> Only an `AccessSans-<key>` family can be emitted; spacing, `@font-face`, `@import`, `url(`, `file:` and
+> `http(s):` are refused with an explicit check. **Not yet checked in a real browser** (headless Brave hung on
+> the dev machine) — needs O3's render harness (M3.4): parsing of the `:not()` list, icons and code keep
+> their fonts.
+
 #### M4.9 Browser extension (JavaScript)
 | Field | Spec |
 |---|---|
@@ -1631,6 +1700,15 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Must never | Send page content anywhere except the local app, and only on explicit right-click; make network requests |
 | Acceptance tests | Headless Brave with extension: test page restyled; right-click message delivered |
 | Done when | Tests pass · reviewed by O4 |
+
+> **Implemented 2026-10-12 (O4):** `extension/` (MV3, no libraries, node tests: `node --test
+> 'extension/test/*.test.mjs'`) + native-messaging host `src/scribesense/safety/native_host.py` (K11 framing
+> bridge to the IPC socket). Disconnected → keeps the last styling (K11/R2-5 overrides this card's older "page
+> unchanged"). **Key:** O4 keeps the private key; `extension/tools/set_key.py` inserts only the PUBLIC key and prints
+> the ID (README there has the openssl steps); no key is in the repo. **Note for O2 (decision 2026-10-12):** there
+> is no service push yet — after Apply/Revert/Original the extension only updates when it reconnects; the service
+> (M2.4) must push `style_changed` to the native host for A16's "refreshes after Apply" to hold.
+> **Packaging (O3):** exclude `extension/test/`, `extension/tools/` and any `__pycache__` from the packed extension.
 
 #### M4.10 Journal
 | Field | Spec |
@@ -1707,10 +1785,25 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Data ownership | — |
 | Preconditions | Target applied |
 | Postconditions | — |
-| Failure cases + required behaviour | Check can't run → `chosen_ok=False`, adapter reverted [D] |
+| Failure cases + required behaviour | **Updated 2026-10-12 (O4):** chosen check can't run → `chosen_ok=False`, `CHECK_UNAVAILABLE` · drawn check can't run → `chosen_ok` keeps the fc-match result, `drawn_ok=False`, `CHECK_UNAVAILABLE` · **"verify passed" = `chosen_ok and drawn_ok is not False`** (`drawn_ok=None` = no drawn check for that target); a failed verify → that adapter is reverted [D] |
 | Must never | Report verified from fc-match alone where a drawn check is required [D A14] |
 | Acceptance tests | Distinguishes patched vs original font |
 | Done when | Tests pass · reviewed |
+
+> **Implemented 2026-10-12 (O4):** `src/scribesense/adapters/verify.py` (in `adapters/`, not `safety/`, so
+> adapters may import it under rule R5).
+> - `chosen_family(target, query)` — fc-match on the host, or `flatpak run --command=fc-match <app-id>` for
+>   `flatpak:<app-id>` targets (app id validated; patterns escaped).
+> - `drawn_family_pango(query)` — runs `python -P -m scribesense.adapters.pango_probe` in a **fresh process**
+>   (a long-running process keeps its old fontconfig setup) and returns the families Pango actually drew for
+>   a **fixed** Latin sample (never user content). A run with an unidentified font fails the probe (fails closed).
+> - Errors: launch failure / empty or bad output → `CHECK_UNAVAILABLE`.
+> - **Semantics in VerifyResult (now the card's rule — "Failure cases" updated 2026-10-12):** when the *drawn*
+>   check can't run, `chosen_ok` keeps the fc-match result and `drawn_ok=False` with `CHECK_UNAVAILABLE`.
+>   "Verify passed" = `chosen_ok and drawn_ok is not False`. The fontconfig adapter fails verify unless both pass.
+> - Checked read-only on the dev machine: the real probe reports `Noto Sans` for `sans-serif`, matching fc-match.
+>   The integration tests (before/after/revert with generated fonts) still need O3's bubblewrap runner.
+
 
 #### M4.14 Keybind writer
 | Field | Spec |
@@ -1731,6 +1824,21 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Must never | Edit other parts of the user's Hyprland config |
 | Acceptance tests | Lua and classic configs; conflict detected |
 | Done when | Tests pass · VM check |
+
+> **Implemented 2026-10-12 (O4) — decisions D1–D5 + review:** `src/scribesense/safety/keybinds.py`.
+> Changeable binds (format-neutral `Keybind(action, mods, key)`; K9 setting strings parsed); a desktop-backend
+> interface with one backend, Hyprland (Lua **and** classic). ScribeSense's own file
+> `config_home()/scribesense/hyprland.{lua,conf}` holds the binds + the login-recovery hook (A3). One marked,
+> guarded include block goes into the rice's user hook (`custom.lua` when `hyprland.lua` loads it — ML4W) or
+> else the entry config; in Lua it is inserted before a final top-level `return`. `hyprctl reload` after
+> changes; **skipped when Hyprland isn't running** (decision 2026-10-12). Conflict check via `hyprctl binds -j`.
+> **"Include line journaled" (postcondition above) is satisfied by the marked block itself (decision
+> 2026-10-12):** removal is byte-exact and drift-aware (a hand-edited block is never touched → `DRIFT_SKIPPED`),
+> so no K4 journal entry is needed. `reset` never removes keybinds (tested); only uninstall does.
+> API for callers (O2 M2.7, O3 M3.8): `install_keybinds(binds, command, *, include_login_hook=True,
+> allow_unchecked=False)`, `remove_keybinds()`, `conflicts(binds)`, `default_keybinds()`,
+> `parse_keybind(text, action)`, `keybind_status()`. **VM checks:** Lua `dofile`/`pcall` allowed, reload re-runs a
+> Lua config, real `hyprctl binds -j` format, `hl.on("hyprland.start")` not stacking on reload.
 
 #### M4.15 Logging
 | Field | Spec |
@@ -1753,7 +1861,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Done when | Tests pass · reviewed |
 
 > **Implemented 2026-10-12 (O4) — how every module must call it:**
-> `from scribesense.safety.logging import log` · `log(ErrorCode.X, "category", field=value, ...)`
+> `from scribesense.log import log` (top-level module, so adapters may use it without breaking R5) · `log(ErrorCode.X, "category", field=value, ...)`
 > (`code` and `category` are positional). Numbers, booleans, `None` and ErrorCodes are allowed in any field.
 > **Strings are accepted only in identifier fields** — `adapter, target, role, state, step, setting,
 > preset, kind, reason` — and only if identifier-shaped (≤ 64 chars, no spaces, no `/`). Any other string is

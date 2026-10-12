@@ -28,16 +28,20 @@ plan() therefore carries forward the named-UI-family redirects of the current ru
 file is one ScribeSense generated). After a revert the file is gone or the user's own again, so
 nothing is carried.
 
-Verification (A14): verify() is the configuration check only — `fc-match` must name our family.
-drawn_ok is None: the Pango drawn check is M4.13 and not built yet.
+Verification (A14, M4.13 helpers in adapters/verify.py):
+    chosen check  `fc-match` (verify.chosen_family) must name our family for sans-serif, serif and each
+                  redirected UI family of the current rule file;
+    drawn check   Pango in a fresh process (verify.drawn_family_pango("sans-serif")) must draw EVERY run of
+                  the fixed sample in the reading family. If the probe cannot run, drawn_ok=False and the
+                  detail is CHECK_UNAVAILABLE: fc-match alone is never reported as verified (card M4.13).
 
 External commands go through an injectable runner (default contracts.paths.run_cmd, K3 rule 9) and
 the UI-font source is injectable (default reads gsettings through Gio lazily) so tests need neither
 real processes nor PyGObject.
 
-Logging: adapters may not import scribesense.safety (import rule R5), so this module does not log.
-It raises ScribeSenseError codes; the controller logs them. The one swallowed failure — the cache
-refresh after revert — is deliberately ignored (revert must not fail because of it).
+Logging: through scribesense.log (allowed under import rule R5). Failures are raised as ScribeSenseError
+codes for the controller; the one swallowed failure — the cache refresh after revert — is logged, not
+raised (revert must not fail because of it).
 """
 
 from __future__ import annotations
@@ -53,6 +57,8 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
+from scribesense.adapters.pango_probe import valid_query
+from scribesense.adapters.verify import chosen_family, drawn_family_pango
 from scribesense.contracts.adapter import (
     DEFAULT_TIMEOUTS,
     AppliedItem,
@@ -67,9 +73,12 @@ from scribesense.contracts.config import Configuration
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 from scribesense.contracts.fonts import READING_FAMILY_PREFIX, UI_FAMILY_PREFIX, FontSet
 from scribesense.contracts.paths import config_home, fonts_dir, run_cmd
+from scribesense.log import log
 
-#: K3 rule 9 — deadlines for this card (fc-match 10 s, fc-cache 60 s).
+#: K3 rule 9 — deadlines for this card (fc-match 10 s, fc-cache 60 s; the Pango probe uses "other").
 TIMEOUTS: dict[str, float] = {**DEFAULT_TIMEOUTS, "fc-match": 10.0, "fc-cache": 60.0}
+#: Generic family the drawn check lays out (A13: generics -> reading variant).
+DRAWN_CHECK_QUERY = "sans-serif"
 
 TARGET_ID = "fontconfig:user"
 RULE_FILE_NAME = "99-scribesense.conf"
@@ -196,6 +205,9 @@ def _skip_family(name: str) -> bool:
     return (
         not key
         or bool(_BAD_CHAR.search(name))  # not representable in XML 1.0
+        # One acceptance rule for writer and verifier: a family verify cannot query (format chars such
+        # as U+200B / U+00AD, or longer than MAX_QUERY_LEN) gets no rule, else verify could never pass.
+        or not valid_query(name)
         or key in NEVER_GENERICS
         or key in FONTCONFIG_GENERICS  # generics + aliases go to the reading variant only (A13)
         or key.startswith(_OWN_FAMILY_PREFIX)
@@ -284,11 +296,6 @@ def parse_rules(data: bytes) -> list[tuple[str, str]]:
         if test is not None and edit is not None and test.text and edit.text:
             pairs.append((test.text, edit.text))
     return pairs
-
-
-def _fc_pattern(family: str) -> str:
-    """Escape a family for fontconfig pattern syntax ('-' starts the size, ':' and ',' are separators)."""
-    return re.sub(r"([\\\-:,])", r"\\\1", family)
 
 
 # ---------------------------------------------------------------- durable file ops (§4 Durability)
@@ -428,11 +435,6 @@ class FontconfigAdapter:
         if directory.is_dir():
             self._run(["fc-cache", str(directory)], TIMEOUTS["fc-cache"])
 
-    def _fc_match(self, family: str) -> str:
-        proc = self._run(["fc-match", "-f", "%{family[0]}", _fc_pattern(family)], TIMEOUTS["fc-match"])
-        out = proc.stdout if isinstance(proc.stdout, bytes) else b""
-        return out.decode("utf-8", errors="replace").strip()
-
     # ---- K3
 
     def detect(self) -> list[Target]:
@@ -492,24 +494,51 @@ class FontconfigAdapter:
         return AppliedItem(planned.target, planned.location, planned.new_sha256)
 
     def verify(self, target: Target, fonts: FontSet) -> VerifyResult:
-        """Configuration check (A14). drawn_ok=None: the Pango drawn check is M4.13 (not built yet)."""
+        """Chosen check (fc-match) + drawn check (Pango, fresh process) — A14, M4.13.
+
+        chosen_ok: every checked family (sans-serif, serif, each redirected UI family) resolves to ours.
+        drawn_ok:  every run of the fixed sample, laid out as "sans-serif", is drawn in the reading family;
+                   False when the probe cannot run (never None for this target).
+        detail_code: "OK" only when chosen_ok and drawn_ok are both True; else ADAPTER_VERIFY_FAILED when a
+        check ran and disagreed, else CHECK_UNAVAILABLE (a check could not run).
+        "Verify passed" means chosen_ok AND drawn_ok is not False (K3 VerifyResult; here drawn_ok is a bool).
+        """
         self._check_target(target)
         checks = [(g, fonts.reading_family) for g in READING_GENERICS]
+        chosen_ok, mismatch, unavailable = True, False, False
         try:
             st = self.read_state(str(rule_path()))
         except ScribeSenseError:
-            return VerifyResult(target, False, None, ErrorCode.CHECK_UNAVAILABLE.value)
-        if st.present and st.data is not None:
-            checks += [(fam, gen) for fam, gen in parse_rules(st.data)
-                       if gen == fonts.ui_family and fam not in READING_GENERICS]
-        ok = True
-        for family, expected in checks:
-            try:
-                chosen = self._fc_match(family)
-            except (ScribeSenseError, OSError):
-                return VerifyResult(target, False, None, ErrorCode.CHECK_UNAVAILABLE.value)
-            ok = ok and chosen == expected
-        return VerifyResult(target, ok, None, "OK" if ok else ErrorCode.ADAPTER_VERIFY_FAILED.value)
+            chosen_ok, unavailable = False, True
+        else:
+            if st.present and st.data is not None:
+                checks += [(fam, gen) for fam, gen in parse_rules(st.data)
+                           if gen == fonts.ui_family and fam not in READING_GENERICS]
+            for family, expected in checks:
+                try:
+                    chosen = chosen_family(target, family, runner=self._run, timeout=TIMEOUTS["fc-match"])
+                except (ScribeSenseError, OSError):
+                    chosen_ok, unavailable = False, True
+                    break
+                if chosen != expected:
+                    chosen_ok, mismatch = False, True
+
+        try:
+            drawn = drawn_family_pango(DRAWN_CHECK_QUERY, runner=self._run, timeout=TIMEOUTS["other"])
+        except (ScribeSenseError, OSError):
+            drawn_ok = False
+            unavailable = True
+        else:
+            drawn_ok = drawn == (fonts.reading_family,)
+            mismatch = mismatch or not drawn_ok
+
+        if chosen_ok and drawn_ok:
+            code = "OK"
+        elif mismatch:
+            code = ErrorCode.ADAPTER_VERIFY_FAILED.value
+        else:
+            code = ErrorCode.CHECK_UNAVAILABLE.value
+        return VerifyResult(target, chosen_ok, drawn_ok, code)
 
     def revert(self, item: SnapshotItem, backup: bytes | None) -> None:
         """K3 rule 7: restore the ORIGINAL state (existed -> backup bytes + mode; else delete)."""
@@ -525,5 +554,7 @@ class FontconfigAdapter:
             delete_durable(path)
         try:
             self._refresh_cache()
-        except (ScribeSenseError, OSError):
-            pass  # a stale cache must not fail a revert; fontconfig rescans config on its own
+        except (ScribeSenseError, OSError) as exc:
+            # a stale cache must not fail a revert; fontconfig rescans config on its own
+            code = exc.code if isinstance(exc, ScribeSenseError) else ErrorCode.UNEXPECTED_ADAPTER_ERROR
+            log(code, "adapter", adapter=self.name, target=TARGET_ID, step="revert-cache-refresh")

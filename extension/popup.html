@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ScribeSense</title>
+  <style>
+    body { margin: 0; padding: 12px 14px; width: 300px; line-height: 1.5; }
+    h1 { margin: 0 0 8px; font-size: 1.1em; }
+    p { margin: 8px 0; }
+    #status[data-status="connected"]::before { content: "\25CF  "; color: #1a7f37; }
+    #status[data-status="disconnected"]::before { content: "\25CF  "; color: #b35900; }
+    #status[data-status="disabled"]::before { content: "\25CB  "; }
+    #error { color: #b3261e; }
+    label { display: flex; gap: 8px; align-items: center; }
+  </style>
+</head>
+<body>
+  <h1>ScribeSense</h1>
+  <p id="status" role="status" aria-live="polite">Checking...</p>
+  <label><input type="checkbox" id="enabled" checked> Use the reading style on web pages</label>
+  <p id="error" role="alert" hidden></p>
+  <p id="restricted" hidden></p>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

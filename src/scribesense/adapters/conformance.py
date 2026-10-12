@@ -50,6 +50,8 @@ from scribesense.contracts.fonts import FontSet
 
 #: K3 rule 10 — settings are "<schema> <key>", e.g. "org.gnome.desktop.interface font-name".
 KEY_LOCATION = re.compile(r"^[A-Za-z0-9_.-]+ [A-Za-z0-9_-]+$")
+#: K3 rule 10b (amended 2026-10-12): a value inside a JSON file the app rewrites, "<abs path>#<dotted.key.path>".
+JSON_KEY_LOCATION = re.compile(r"^/[^#\x00]+#[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$")
 
 
 class ConformanceHarness(Protocol):
@@ -156,7 +158,8 @@ class AdapterConformance:
                 assert item.old_value is None
                 assert (item.file_mode is not None) == item.existed, "file_mode iff the file existed"
             else:
-                assert KEY_LOCATION.match(item.location), f"key location must be '<schema> <key>': {item.location!r}"
+                assert KEY_LOCATION.match(item.location) or JSON_KEY_LOCATION.match(item.location), (
+                    f"key location must be '<schema> <key>' or '<abs path>#<dotted.key>': {item.location!r}")
                 assert item.file_mode is None
                 assert (item.old_value is not None) == item.existed
             assert item.existed == st.present

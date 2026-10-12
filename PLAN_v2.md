@@ -738,6 +738,18 @@ plan's Flatpak route is dropped; MVP installs natively (an RPM can come later).
 - ✅ **R2-9 = yes:** uninstall keeps fonts still referenced by skipped/unresolved settings;
   `--remove-fonts-anyway` removes them. Reverses PLAN Feature 10.
 
+## Decisions (2026-10-12) — remaining O4 adapters
+
+- ✅ M4.14 keybinds D1–D5 accepted (rice user hook / guarded include block, own file outside dotfiles, `hyprctl
+  reload`, login hook in the same file, command path as parameter).
+- ✅ **K3 rule 10b (contract amendment, O4; second owner sign-off pending):** key locations inside a JSON file the
+  app rewrites (`<path>#<dotted.key>`), used by Chromium — fixes M4.7-1 (reset couldn't undo the browser font).
+- ✅ The 8 smaller items: keybind marked block counts as the journal record · Firefox revert allowed while running,
+  Chromium refused · hashed Firefox target ids · reload skipped when Hyprland isn't running · Flatpak `:ro` narrowing
+  accepted · K8 `data_home()` gap accepted for now · extension push path → O2 (M2.4) · native Firefox XDG path added.
+- Qt and Flatpak run automatically on the user's system at apply time; nothing is run against the dev machine.
+- Extension private key: kept by O4, never in the repo; `extension/tools/set_key.py` inserts the public key.
+
 ---
 
 ## Implementation progress (live checklist — update when a card changes state)
@@ -772,9 +784,17 @@ Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 
   (`adapters/conformance.py`, proven against 6 broken adapters) (2026-10-12, review pending)
 - 🟡 M4.2 fontconfig — `adapters/fontconfig.py`: conformance (3 start states) + unit tests ✅, 4-lens review +
   adversarial verify, 12 findings fixed (2026-10-12, review pending). Remaining: real-fontconfig integration test
-  (written, needs O3's bubblewrap runner with `/etc/fonts` + system fonts read-only) · Pango drawn check (M4.13)
-- ⬜ M4.3 GTK (R2-8 decided: Gio) · ⬜ M4.4 Flatpak · ⬜ M4.5 Qt · ⬜ M4.6 Firefox
-- ⬜ M4.7 Chromium · ⬜ M4.8 Browser CSS · ⬜ M4.9 Extension
+  (written, needs O3's bubblewrap runner with `/etc/fonts` + system fonts read-only) · Pango drawn check now wired (M4.13)
+- 🟡 M4.3 GTK — `adapters/gtk.py`: conformance (3 start states) + unit tests ✅, GLib text formatting checked
+  against real GLib, plan checked read-only on the dev machine (2026-10-12, review pending). Remaining:
+  integration test in O3's bubblewrap runner (`GSETTINGS_BACKEND=keyfile`)
+- 🟡 M4.4 Flatpak · 🟡 M4.5 Qt · 🟡 M4.6 Firefox — built, conformance + unit tests ✅, reviewed/verified/fixed
+  (2026-10-12, review pending). Remaining: VM / bubblewrap integration (real flatpak, qt6ct font format, real Firefox)
+- 🟡 M4.7 Chromium — key-level (K3 10b), reset-after-browser-rewrite proven; VM: Chrome accepts the edit
+- 🟡 M4.9 Extension + native host — node 35/35, host tests ✅; needs: O4's public key (set_key.py), O2's push path,
+  real-browser check (M3.4), packaging excludes test/ and tools/ (O3)
+- 🟡 M4.8 Browser CSS — `adapters/browser_css.py`: font family + line height only, code/icon exclusions,
+  unit tests ✅ (2026-10-12, review pending). Remaining: real-browser render check (O3's harness, M3.4)
 - 🟡 M4.10 Journal — **in-memory double** `safety/memory_journal.py` implements all of K4 (2026-10-12);
   SQLite journal ⏳ K9 · ✅ cross-process lock `safety/lock.py` (flock, owner record, close-on-exec) ·
   ✅ IPC socket `safety/ipc.py` (same-user, JSON lines ≤ 1 MiB, stale-socket handling) (2026-10-12, review pending)
@@ -783,8 +803,11 @@ Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 
   (ask the service over IPC, pidfd + process-group takeover of a hung service only, bounded wait for other
   recoveries, journal re-read) — tested with real helper processes in the sandbox (2026-10-12, review pending).
   Remaining: VM scenarios (crash + reboot, keybind → reset) · CLI wiring `reset` / `recover --login` (O2, M2.11)
-- ⬜ M4.13 Verify · ⬜ M4.14 Keybind writer
-- ✅ M4.15 Logging — `safety/logging.py`, canary acceptance test passes; strings only in identifier fields (2026-10-12, review pending)
+- 🟡 M4.13 Verify — `adapters/verify.py` + `adapters/pango_probe.py`: chosen (host + Flatpak) and Pango drawn check,
+  wired into M4.2; 3-lens review, 6 findings fixed; real probe checked read-only on the dev machine (2026-10-12,
+  review pending). Remaining: integration tests in O3's bubblewrap runner
+- 🟡 M4.14 Keybind writer — `safety/keybinds.py`, Lua + classic, ML4W hook, drift-safe block; VM checks listed on card
+- ✅ M4.15 Logging — `scribesense/log.py` (moved from `safety/` 2026-10-12 so adapters may log under R5), canary acceptance test passes; strings only in identifier fields (2026-10-12, review pending)
 
 **§9 recovery slice** — `tests/recovery/` via `safety/testing.make_recovery_system`
 (in-memory journal + reference apply sequence until M2.1 / SQLite journal exist)

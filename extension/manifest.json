@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "ScribeSense",
+  "version": "0.1.0",
+  "description": "Applies your ScribeSense reading style to web pages and opens selected text in the ScribeSense reader.",
+  "permissions": [
+    "nativeMessaging",
+    "scripting",
+    "contextMenus",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "ScribeSense",
+    "default_popup": "popup.html"
+  }
+}

@@ -1,12 +1,14 @@
 """M4.2 — fontconfig adapter: conformance (M4.1) + card acceptance tests, in the unit sandbox.
 
-No real process is launched: fc-match / fc-cache go through a fake runner, the UI font is injected.
+No real process is launched: fc-match / fc-cache / the Pango probe go through a fake runner, the UI font
+is injected.
 """
 
 from __future__ import annotations
 
 import builtins
 import errno
+import json
 import os
 import re
 import stat
@@ -19,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from scribesense.adapters import fontconfig as fc
+from scribesense.adapters import verify as vf
 from scribesense.adapters.conformance import AdapterConformance
 from scribesense.adapters.fontconfig import FontconfigAdapter, rule_path
 from scribesense.contracts.adapter import Adapter, state_sha256
@@ -41,31 +44,49 @@ class FakeProc:
     returncode: int = 0
 
 
+PROBE = "pango-probe"  # command name the fake gives `python -P -m scribesense.adapters.pango_probe ...`
+
+
+def command_name(argv: list[str]) -> str:
+    if argv[:4] == [sys.executable, "-P", "-m", vf.PROBE_MODULE]:
+        return PROBE
+    return argv[0]
+
+
 @dataclass
 class FakeRunner:
-    """Answers fc-match from `answers` (pattern -> family); records every call; can fail per command."""
+    """Answers fc-match from `answers` (pattern -> family) and the Pango probe from `drawn` (families for
+    the query; default: the family fc-match would choose, i.e. every run drawn in it). Records every call;
+    can fail per command (keys: "fc-match", "fc-cache", PROBE)."""
 
     answers: dict[str, str] = field(default_factory=dict)
     default: str = "DejaVu Sans"
-    fail: dict[str, ErrorCode] = field(default_factory=dict)  # argv[0] -> error to raise
-    os_fail: dict[str, OSError] = field(default_factory=dict)  # argv[0] -> launch OSError (as run_cmd lets through)
+    drawn: list[str] | None = None
+    fail: dict[str, ErrorCode] = field(default_factory=dict)  # command -> error to raise
+    os_fail: dict[str, OSError] = field(default_factory=dict)  # command -> launch OSError (as run_cmd lets through)
     calls: list[tuple[list[str], float]] = field(default_factory=list)
 
     def __call__(self, argv: list[str], timeout: float) -> FakeProc:
         self.calls.append((list(argv), timeout))
-        code = self.fail.get(argv[0])
+        name = command_name(argv)
+        code = self.fail.get(name)
         if code is not None:
             raise ScribeSenseError(code)
-        os_exc = self.os_fail.get(argv[0])
+        os_exc = self.os_fail.get(name)
         if os_exc is not None:
             raise os_exc
-        if argv[0] == "fc-match":
+        if name == "fc-match":
             family = re.sub(r"\\(.)", r"\1", argv[-1])  # undo fontconfig pattern escaping
             return FakeProc(self.answers.get(family, self.default).encode())
+        if name == PROBE:
+            query, sample = argv[-2:]
+            assert sample == vf.SAMPLE  # the probe is never given anything but the fixed sample
+            families = self.drawn if self.drawn is not None else [self.answers.get(query, self.default)]
+            return FakeProc(json.dumps({"v": 1, "families": families}).encode())
         return FakeProc(b"")
 
     def commands(self) -> list[str]:
-        return [argv[0] for argv, _ in self.calls]
+        return [command_name(argv) for argv, _ in self.calls]
 
 
 def good_runner(**kw: object) -> FakeRunner:
@@ -296,6 +317,21 @@ def test_names_xml_cannot_carry_are_skipped_and_the_file_stays_well_formed(bad: 
     payload = plan_payload([bad + " 10", "Fira Sans 11"])  # no UnicodeEncodeError, no broken XML
     assert _rules(payload) == [
         ("sans-serif", FONTS.reading_family), ("serif", FONTS.reading_family), ("Fira Sans", FONTS.ui_family)]
+
+
+@pytest.mark.parametrize("bad", ["Foo\u200bBar", "Foo\u00adBar", "Foo\u200eBar", "X" * 201, "X" * 250])
+def test_names_verify_cannot_query_get_no_rule(bad: str) -> None:
+    """Writer and verifier accept the same names: a family verify would refuse never gets a rule."""
+    assert not vf.valid_query(bad)
+    assert fc.ui_families([bad + " 10", "Fira Sans 11"]) == ["Fira Sans"]
+    assert fc.ui_families([], carried=[bad]) == []  # not carried forward from an older rule file either
+    assert _rules(plan_payload([bad + " 10", "Fira Sans 11"])) == [
+        ("sans-serif", FONTS.reading_family), ("serif", FONTS.reading_family), ("Fira Sans", FONTS.ui_family)]
+
+
+def test_longest_queryable_name_still_gets_a_rule() -> None:
+    longest = "X" * vf.MAX_QUERY_LEN
+    assert fc.ui_families([longest + " 10"]) == [longest]
 
 
 @pytest.mark.parametrize("bad", ["\ufffe", "\ud800", "\t"])
@@ -582,13 +618,14 @@ def test_verify_ok_checks_generics_and_ui_families(sandbox) -> None:  # type: ig
     t, _, _ = snap_plan_apply(a)
     runner.calls.clear()
     r = a.verify(t, FONTS)
-    assert (r.chosen_ok, r.drawn_ok, r.detail_code) == (True, None, "OK")
+    assert (r.chosen_ok, r.drawn_ok, r.detail_code) == (True, True, "OK")
     assert [argv for argv, _ in runner.calls] == [
         ["fc-match", "-f", "%{family[0]}", "sans\\-serif"],  # '-' escaped: it starts the size in fc patterns
         ["fc-match", "-f", "%{family[0]}", "serif"],
         ["fc-match", "-f", "%{family[0]}", "Fira Sans"],
+        [sys.executable, "-P", "-m", vf.PROBE_MODULE, "sans-serif", vf.SAMPLE],  # drawn check, fresh process
     ]
-    assert all(timeout == 10.0 for _, timeout in runner.calls)
+    assert [timeout for _, timeout in runner.calls] == [10.0, 10.0, 10.0, fc.TIMEOUTS["other"]]
 
 
 def test_verify_mismatch_on_ui_family(sandbox) -> None:  # type: ignore[no-untyped-def]
@@ -597,7 +634,7 @@ def test_verify_mismatch_on_ui_family(sandbox) -> None:  # type: ignore[no-untyp
     t, _, _ = snap_plan_apply(a)
     runner.answers["Fira Sans"] = "Fira Sans"
     r = a.verify(t, FONTS)
-    assert (r.chosen_ok, r.drawn_ok, r.detail_code) == (False, None, ErrorCode.ADAPTER_VERIFY_FAILED.value)
+    assert (r.chosen_ok, r.drawn_ok, r.detail_code) == (False, True, ErrorCode.ADAPTER_VERIFY_FAILED.value)
 
 
 @pytest.mark.parametrize("generic", fc.READING_GENERICS)
@@ -607,9 +644,10 @@ def test_verify_mismatch_on_a_generic_family_while_ui_is_fine(sandbox, generic: 
     a = make_adapter(runner)
     t, _, _ = snap_plan_apply(a)
     runner.answers[generic] = "DejaVu Sans"
+    runner.drawn = [FONTS.reading_family]  # isolate the chosen check
     r = a.verify(t, FONTS)
-    assert (r.chosen_ok, r.drawn_ok, r.detail_code) == (False, None, ErrorCode.ADAPTER_VERIFY_FAILED.value)
-    assert runner.commands()[-1] == "fc-match" and runner.calls[-1][0][-1] == "Fira Sans"  # UI still checked
+    assert (r.chosen_ok, r.drawn_ok, r.detail_code) == (False, True, ErrorCode.ADAPTER_VERIFY_FAILED.value)
+    assert runner.commands()[-2:] == ["fc-match", PROBE] and runner.calls[-2][0][-1] == "Fira Sans"  # UI still checked
 
 
 def test_verify_mismatch_when_rules_missing(sandbox) -> None:  # type: ignore[no-untyped-def]
@@ -623,11 +661,72 @@ def test_verify_check_unavailable(sandbox, code: ErrorCode) -> None:  # type: ig
     a = make_adapter(good_runner(fail={"fc-match": code}))
     t, _, _ = snap_plan_apply(a)
     r = a.verify(t, FONTS)
-    assert (r.chosen_ok, r.drawn_ok, r.detail_code) == (False, None, ErrorCode.CHECK_UNAVAILABLE.value)
+    # the chosen check could not run; the drawn check still ran and agreed — never "OK" (M4.13)
+    assert (r.chosen_ok, r.drawn_ok, r.detail_code) == (False, True, ErrorCode.CHECK_UNAVAILABLE.value)
+    assert a._run.commands().count("fc-match") == 1  # type: ignore[attr-defined]  # stops at the first failure
+
+
+@pytest.mark.parametrize("drawn", [
+    ["DejaVu Sans"],                                  # the original font is drawn
+    [FONTS.reading_family, "DejaVu Sans"],            # a mix: some runs fall back
+    ["DejaVu Sans", FONTS.reading_family],
+    [FONTS.ui_family],                                # the wrong variant
+])
+def test_verify_drawn_mismatch_fails_even_when_fc_match_agrees(sandbox, drawn: list[str]) -> None:  # type: ignore[no-untyped-def]
+    runner = good_runner(drawn=drawn)
+    a = make_adapter(runner)
+    t, _, _ = snap_plan_apply(a)
+    r = a.verify(t, FONTS)
+    assert (r.chosen_ok, r.drawn_ok, r.detail_code) == (True, False, ErrorCode.ADAPTER_VERIFY_FAILED.value)
+
+
+@pytest.mark.parametrize("failure", [
+    {"fail": {PROBE: ErrorCode.ADAPTER_COMMAND_FAILED}},  # probe exited non-zero (no gi / no Pango)
+    {"fail": {PROBE: ErrorCode.ADAPTER_TIMEOUT}},
+    {"fail": {PROBE: ErrorCode.ADAPTER_UNAVAILABLE}},
+    {"os_fail": {PROBE: PermissionError(errno.EACCES, "denied")}},
+])
+def test_verify_drawn_unavailable_is_never_reported_verified(sandbox, failure: dict) -> None:  # type: ignore[no-untyped-def,type-arg]
+    """Card must-never: no "verified" from fc-match alone where a drawn check is required (A14)."""
+    a = make_adapter(good_runner(**failure))
+    t, _, _ = snap_plan_apply(a)
+    r = a.verify(t, FONTS)
+    assert (r.chosen_ok, r.drawn_ok, r.detail_code) == (True, False, ErrorCode.CHECK_UNAVAILABLE.value)
+
+
+@pytest.mark.parametrize("stdout", [b"", b"not json", b'{"v": 2, "families": ["x"]}', b'{"v": 1, "families": []}'])
+def test_verify_unusable_probe_output_is_check_unavailable(sandbox, stdout: bytes) -> None:  # type: ignore[no-untyped-def]
+    runner = good_runner()
+
+    def patched(argv: list[str], timeout: float) -> FakeProc:
+        proc = runner(argv, timeout)
+        return FakeProc(stdout) if command_name(argv) == PROBE else proc
+
+    a = make_adapter(runner)
+    t, _, _ = snap_plan_apply(a)
+    a._run = patched
+    r = a.verify(t, FONTS)
+    assert (r.chosen_ok, r.drawn_ok, r.detail_code) == (True, False, ErrorCode.CHECK_UNAVAILABLE.value)
+
+
+def test_verify_both_checks_fail_reports_the_mismatch(sandbox) -> None:  # type: ignore[no-untyped-def]
+    a = make_adapter(FakeRunner())  # nothing applied: fc-match and Pango both name DejaVu Sans
+    r = a.verify(target(a), FONTS)
+    assert (r.chosen_ok, r.drawn_ok, r.detail_code) == (False, False, ErrorCode.ADAPTER_VERIFY_FAILED.value)
+
+
+def test_verify_gives_the_probe_only_the_fixed_sample(sandbox) -> None:  # type: ignore[no-untyped-def]
+    runner = good_runner()
+    a = make_adapter(runner)
+    t, _, _ = snap_plan_apply(a)
+    a.verify(t, FONTS)
+    [probe] = [argv for argv, _ in runner.calls if command_name(argv) == PROBE]
+    assert probe[-1] == vf.SAMPLE and probe[-2] == fc.DRAWN_CHECK_QUERY
 
 
 def test_fc_match_pattern_escapes_separators() -> None:
-    assert fc._fc_pattern("Odd-Name: x,y\\z") == "Odd\\-Name\\: x\\,y\\\\z"
+    assert vf.escape_fc_pattern("Odd-Name: x,y\\z") == "Odd\\-Name\\: x\\,y\\\\z"
+    assert not hasattr(fc, "_fc_pattern")  # one shared escaper (verify.py)
 
 
 # ---------------------------------------------------------------- preset switching (no revert in between)
@@ -661,7 +760,7 @@ def test_second_apply_keeps_the_named_ui_family_redirect(sandbox) -> None:  # ty
     runner.calls.clear()
     r = a.verify(t, FONTS2)
     assert (r.chosen_ok, r.detail_code) == (True, "OK")
-    assert runner.calls[-1][0][-1] == "Fira Sans"  # the carried family is still verified
+    assert runner.calls[-2][0][-1] == "Fira Sans"  # the carried family is still verified (before the drawn check)
 
 
 def test_carried_and_current_ui_families_are_merged_and_deduplicated(sandbox) -> None:  # type: ignore[no-untyped-def]
@@ -744,9 +843,11 @@ def test_revert_refuses_foreign_location(sandbox) -> None:  # type: ignore[no-un
 def test_no_real_process_can_start_in_unit_tests() -> None:
     """The default runner is the real run_cmd; the sandbox blocks it, so only fakes can work here."""
     a = FontconfigAdapter(ui_font_source=lambda: [])
-    with pytest.raises(Exception) as exc:  # ProcessLaunchBlocked lives in conftest: match by name
-        a._fc_match("sans-serif")
-    assert type(exc.value).__name__ == "ProcessLaunchBlocked"
+    for check in (lambda: vf.chosen_family(target(a), "sans-serif"), lambda: vf.drawn_family_pango("sans-serif"),
+                  lambda: a.verify(target(a), FONTS)):
+        with pytest.raises(Exception) as exc:  # ProcessLaunchBlocked lives in conftest: match by name
+            check()
+        assert type(exc.value).__name__ == "ProcessLaunchBlocked"
 
 
 # ---------------------------------------------------------------- integration (bubblewrap only)
@@ -801,7 +902,7 @@ def _real(argv: list[str]) -> tuple[str, str]:
 
 
 def _real_match(family: str) -> str:
-    out, err = _real(["fc-match", "-f", "%{family[0]}", fc._fc_pattern(family)])
+    out, err = _real(["fc-match", "-f", "%{family[0]}", vf.escape_fc_pattern(family)])
     assert fc.RULE_FILE_NAME not in err, err  # fontconfig did not reject our rule file
     return out
 
@@ -832,6 +933,9 @@ def test_real_fc_match_resolves_to_the_generated_families_and_back(sandbox) -> N
 
     a = FontconfigAdapter(ui_font_source=lambda: [PROBE_UI_FAMILY + " 11"])
     t = target(a)
+    # original: the real Pango probe must NOT report the reading family, so verify's drawn check fails
+    assert vf.drawn_family_pango(fc.DRAWN_CHECK_QUERY) != (FONTS.reading_family,)
+    assert a.verify(t, FONTS).drawn_ok is False
     [item] = a.snapshot(t)
     [p] = a.plan(t, FONTS, CFG)
     assert (PROBE_UI_FAMILY, FONTS.ui_family) in _rules(p.payload)  # type: ignore[arg-type]
@@ -839,9 +943,35 @@ def test_real_fc_match_resolves_to_the_generated_families_and_back(sandbox) -> N
 
     assert {f: _real_match(f) for f in checked} == {
         "sans-serif": FONTS.reading_family, "serif": FONTS.reading_family, PROBE_UI_FAMILY: FONTS.ui_family}
-    result = a.verify(t, FONTS)
-    assert (result.chosen_ok, result.drawn_ok, result.detail_code) == (True, None, "OK")
+    assert vf.drawn_family_pango(fc.DRAWN_CHECK_QUERY) == (FONTS.reading_family,)
+    result = a.verify(t, FONTS)  # chosen (fc-match) + drawn (Pango probe in a fresh process)
+    assert (result.chosen_ok, result.drawn_ok, result.detail_code) == (True, True, "OK")
 
     a.revert(item, None)
     assert not rule_path().exists()
     assert {f: _real_match(f) for f in checked} == before
+    assert vf.drawn_family_pango(fc.DRAWN_CHECK_QUERY) != (FONTS.reading_family,)
+    assert a.verify(t, FONTS).drawn_ok is False
+
+
+
+def test_ignored_cache_refresh_failure_on_revert_is_logged_without_content() -> None:
+    """The one swallowed failure (fc-cache after revert) leaves a privacy-safe log line."""
+    import json
+
+    from scribesense import log as sslog
+    from scribesense.contracts.adapter import SnapshotItem, state_sha256
+    from scribesense.contracts import paths as _paths
+
+    _paths.fonts_dir().mkdir(parents=True, exist_ok=True)
+
+    def failing_runner(argv, timeout):  # type: ignore[no-untyped-def]
+        raise ScribeSenseError(ErrorCode.ADAPTER_TIMEOUT)
+
+    adapter = FontconfigAdapter(runner=failing_runner, ui_font_source=lambda: [])
+    target = adapter.detect()[0]
+    item = SnapshotItem(target, "file", str(rule_path()), False, None, state_sha256(False, None), None, None)
+    adapter.revert(item, None)  # must not raise
+    records = [json.loads(x) for x in sslog.log_path().read_text().splitlines()]
+    assert records[-1]["code"] == "ADAPTER_TIMEOUT" and records[-1]["step"] == "revert-cache-refresh"
+    assert str(rule_path()) not in sslog.log_path().read_text()
