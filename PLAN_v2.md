@@ -773,7 +773,9 @@ Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 
 - 🟡 M4.2 fontconfig — `adapters/fontconfig.py`: conformance (3 start states) + unit tests ✅, 4-lens review +
   adversarial verify, 12 findings fixed (2026-10-12, review pending). Remaining: real-fontconfig integration test
   (written, needs O3's bubblewrap runner with `/etc/fonts` + system fonts read-only) · Pango drawn check now wired (M4.13)
-- ⬜ M4.3 GTK (R2-8 decided: Gio) · ⬜ M4.4 Flatpak · ⬜ M4.5 Qt · ⬜ M4.6 Firefox
+- 🟡 M4.3 GTK — `adapters/gtk.py`: conformance (3 start states) + unit tests ✅, GLib text formatting checked
+  against real GLib, plan checked read-only on the dev machine (2026-10-12, review pending). Remaining:
+  integration test in O3's bubblewrap runner (`GSETTINGS_BACKEND=keyfile`) · ⬜ M4.4 Flatpak · ⬜ M4.5 Qt · ⬜ M4.6 Firefox
 - ⬜ M4.7 Chromium · ⬜ M4.8 Browser CSS · ⬜ M4.9 Extension
 - 🟡 M4.10 Journal — **in-memory double** `safety/memory_journal.py` implements all of K4 (2026-10-12);
   SQLite journal ⏳ K9 · ✅ cross-process lock `safety/lock.py` (flock, owner record, close-on-exec) ·

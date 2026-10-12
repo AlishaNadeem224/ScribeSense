@@ -1512,6 +1512,18 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Acceptance tests | Conformance; snapshot → plan → apply → revert restores exact values |
 | Done when | Conformance + tests pass in sandbox · reviewed by O4 |
 
+> **Implemented 2026-10-12 (O4):** `src/scribesense/adapters/gtk.py`, target `gtk:user`, three keys of
+> `org.gnome.desktop.interface`: `font-name` → UI family, `document-font-name` → reading family (both keep the
+> user's current font size), `text-scaling-factor` → `text_scale`. `monospace-font-name` is never touched.
+> Reads with `Gio.Settings.get_user_value()` (R2-8; unset = not present), writes with `gsettings set/reset`
+> via `run_cmd`, then reads back (short poll — the settings service may commit a moment later; no match →
+> `ADAPTER_COMMAND_FAILED`). Planned text is **canonical GLib GVariant text** (GLib prints 1.1 as
+> `1.1000000000000001`); a pure-Python formatter is checked against real GLib for every `text_scale` step.
+> Missing schema → `SCHEMA_MISSING` (detect still lists the target, so it shows as NOT_COVERED).
+> `verify` = configuration check (effective values name our families); `drawn_ok=None` (GTK drawn check is
+> harness-only, A14). Checked read-only against the dev machine's real settings. Integration test (real
+> `gsettings` with `GSETTINGS_BACKEND=keyfile`) needs O3's bubblewrap runner.
+
 #### M4.4 Flatpak adapter
 | Field | Spec |
 |---|---|
