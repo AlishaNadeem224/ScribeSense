@@ -14,7 +14,9 @@ Rules every adapter follows:
 8.  Atomic file writes: temp file in the same dir -> copy permissions -> os.replace; fsync per §4.
 9.  External commands only via contracts.paths.run_cmd() with timeouts (DEFAULT_TIMEOUTS,
     overridable in the adapter's TIMEOUTS on its card).
-10. Location format: files = absolute path; settings = "<schema> <key>".
+10. Location format: files = absolute path; settings = "<schema> <key>"; a single value inside a JSON file
+    that its application rewrites (amended 2026-10-12, K3 rule 10b) = "<absolute file path>#<dotted.key.path>"
+    with kind "key": State/hash cover ONLY that value, so the app rewriting the rest of the file is not drift.
 11. Every comparison uses State.sha256 from read_state(). For settings, present = explicitly set by
     the user; an unset key is restored by unsetting it, never by writing its default.
 12. Immediately before apply(), re-read the state; if it no longer equals the snapshot ->

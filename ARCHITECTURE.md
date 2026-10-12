@@ -369,6 +369,12 @@ class Adapter(Protocol):
    2 s → reap → `ADAPTER_TIMEOUT`. Non-zero exit → `ADAPTER_COMMAND_FAILED`. [D R2]
 10. **Location format** [D]: files = absolute path; settings = `"<schema> <key>"`, e.g.
     `"org.gnome.desktop.interface font-name"` — identical in snapshot, applied item and revert.
+    **10b (amended 2026-10-12, decided by O4 — second owner sign-off pending):** a single value inside a JSON
+    file that its application rewrites on every run (Chromium `Preferences`) is its own location of kind
+    `"key"`: `"<absolute file path>#<dotted.key.path>"`, e.g. `".../Default/Preferences#webkit.webprefs.fonts.standard.Zyyy"`.
+    `State` and every hash cover **only that value** (present = the key exists; data = its canonical JSON
+    text), so the browser rewriting the rest of the file is **not** drift and reset/uninstall can still undo
+    our change. Revert writes back the old value, or deletes the key if it was absent (never the whole file).
 11. **Canonical state [D R2]:** every comparison (snapshot, intent, drift, revert) uses `State.sha256`
     from `read_state()` — never ad-hoc strings. For settings, "present" means **explicitly set by the
     user**, so an unset key is restored by unsetting it, never by writing its default.
@@ -1554,6 +1560,13 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Acceptance tests | VM: override applied and reverted; fc-match inside the app |
 | Done when | Conformance + VM test pass · reviewed by O4 |
 
+> **Implemented 2026-10-12 (O4):** `adapters/flatpak.py` — every installed app (detected, no fixed list), one
+> per-app user override keyfile written directly (exact bytes; `[Context] filesystems=` gains
+> `xdg-config/fontconfig:ro`, everything else preserved; GLib keyfile line rules). The global override is never
+> touched. Decisions 2026-10-12: **accepted** that our `:ro` entry can narrow an app whose manifest grants write
+> access to the fontconfig folder (rare; font managers); **accepted for now** that the user Flatpak dir comes
+> from `FLATPAK_USER_DIR` / `XDG_DATA_HOME` / `home()` because K8 has no `data_home()` (known K8 gap).
+
 #### M4.5 Qt adapter
 | Field | Spec |
 |---|---|
@@ -1573,6 +1586,12 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Must never | Set the session environment variable [D] |
 | Acceptance tests | Conformance; not-qt6ct session → NOT_COVERED; menus checked at UI line 1.2 [V system Qt + qt6ct untested] |
 | Done when | Conformance + tests pass · reviewed by O4 |
+
+> **Implemented 2026-10-12 (O4):** `adapters/qt.py` — only when the session already uses qt6ct; edits only
+> `[Fonts] general=` (UI family, size kept, default 11), never `fixed=`; adds `[Fonts]` if missing; writes through
+> symlinks. **[V] in the VM:** the exact Qt 6 `QFont::toString()` field layout, qt6ct's own default size, and that
+> the ScribeSense process sees `QT_QPA_PLATFORMTHEME` (a service started without the session environment would
+> wrongly report Qt as not covered — O2/O3: start the service from the session).
 
 #### M4.6 Firefox adapter
 | Field | Spec |
@@ -1663,6 +1682,15 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Must never | Send page content anywhere except the local app, and only on explicit right-click; make network requests |
 | Acceptance tests | Headless Brave with extension: test page restyled; right-click message delivered |
 | Done when | Tests pass · reviewed by O4 |
+
+> **Implemented 2026-10-12 (O4):** `extension/` (MV3, no libraries, node tests: `node --test
+> 'extension/test/*.test.mjs'`) + native-messaging host `src/scribesense/safety/native_host.py` (K11 framing
+> bridge to the IPC socket). Disconnected → keeps the last styling (K11/R2-5 overrides this card's older "page
+> unchanged"). **Key:** O4 keeps the private key; `extension/tools/set_key.py` inserts only the PUBLIC key and prints
+> the ID (README there has the openssl steps); no key is in the repo. **Note for O2 (decision 2026-10-12):** there
+> is no service push yet — after Apply/Revert/Original the extension only updates when it reconnects; the service
+> (M2.4) must push `style_changed` to the native host for A16's "refreshes after Apply" to hold.
+> **Packaging (O3):** exclude `extension/test/`, `extension/tools/` and any `__pycache__` from the packed extension.
 
 #### M4.10 Journal
 | Field | Spec |
@@ -1778,6 +1806,21 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Must never | Edit other parts of the user's Hyprland config |
 | Acceptance tests | Lua and classic configs; conflict detected |
 | Done when | Tests pass · VM check |
+
+> **Implemented 2026-10-12 (O4) — decisions D1–D5 + review:** `src/scribesense/safety/keybinds.py`.
+> Changeable binds (format-neutral `Keybind(action, mods, key)`; K9 setting strings parsed); a desktop-backend
+> interface with one backend, Hyprland (Lua **and** classic). ScribeSense's own file
+> `config_home()/scribesense/hyprland.{lua,conf}` holds the binds + the login-recovery hook (A3). One marked,
+> guarded include block goes into the rice's user hook (`custom.lua` when `hyprland.lua` loads it — ML4W) or
+> else the entry config; in Lua it is inserted before a final top-level `return`. `hyprctl reload` after
+> changes; **skipped when Hyprland isn't running** (decision 2026-10-12). Conflict check via `hyprctl binds -j`.
+> **"Include line journaled" (postcondition above) is satisfied by the marked block itself (decision
+> 2026-10-12):** removal is byte-exact and drift-aware (a hand-edited block is never touched → `DRIFT_SKIPPED`),
+> so no K4 journal entry is needed. `reset` never removes keybinds (tested); only uninstall does.
+> API for callers (O2 M2.7, O3 M3.8): `install_keybinds(binds, command, *, include_login_hook=True,
+> allow_unchecked=False)`, `remove_keybinds()`, `conflicts(binds)`, `default_keybinds()`,
+> `parse_keybind(text, action)`, `keybind_status()`. **VM checks:** Lua `dofile`/`pcall` allowed, reload re-runs a
+> Lua config, real `hyprctl binds -j` format, `hl.on("hyprland.start")` not stacking on reload.
 
 #### M4.15 Logging
 | Field | Spec |
