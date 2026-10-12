@@ -28,6 +28,12 @@ from scribesense.contracts.config import RANGES, Configuration
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 from scribesense.contracts.fonts import FontSet
 
+# PyGObject 3.56's own GLib overrides warn on import with GLib 2.88 (renamed unix_signal_add_full).
+# It comes from inside gi, not from ScribeSense; silence exactly that message, nothing else.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:GLib.unix_signal_add_full is deprecated:DeprecationWarning"
+)
+
 FONTS = FontSet("abc123", "AccessSans-abc123", "AccessSansUI-abc123", (), ("Regular",))
 CFG = Configuration("Noto Sans", 0.12, 1.5, 1.5, 1.2, 1.15)
 MONO = "monospace-font-name"
