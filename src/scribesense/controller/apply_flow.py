@@ -16,6 +16,9 @@ Safety invariants enforced here (each is checked by a test):
   - A failed per-adapter revert escalates to a whole-tx revert (K5).
   - PLAN_CONFLICT is detected before any adapter's apply() is called.
   - The controller never closes or restarts an app.
+  - After any verify-triggered revert escalates to a terminal state, the
+    controller does NOT attempt AWAITING_CONFIRMATION (K5 forbids the
+    REVERTED/REVERT_FAILED -> AWAITING_CONFIRMATION transition).
 """
 
 from __future__ import annotations
@@ -269,7 +272,14 @@ class ApplyController:
                 continue
             self._verify_target(tx, pt, fonts, coverage, restart_targets, seen)
 
-        # 11. Ready for the confirm flow (M2.3).
+        # 11. If a verify-triggered revert escalated and the tx is already
+        #     terminal, do not attempt AWAITING_CONFIRMATION. K5 forbids both
+        #     REVERTED -> AWAITING_CONFIRMATION and REVERT_FAILED -> AWAITING_CONFIRMATION.
+        current = self._journal.state(tx)
+        if current in (TxState.REVERTED, TxState.REVERT_FAILED):
+            return self._final_report(tx, coverage, fonts, restart_targets)
+
+        # 12. Ready for the confirm flow (M2.3).
         self._journal.set_state(tx, TxState.AWAITING_CONFIRMATION)
         return self._final_report(tx, coverage, fonts, restart_targets)
 
