@@ -17,26 +17,11 @@ Every change is journaled, verified, and reversible. A 30-second keep-or-revert 
 follows each Apply, an automatic revert runs at the next login if a change was never
 confirmed, and a recovery command works without the GUI.
 
-> **This is a B.Tech PBL project (OSDBMS-V-2026-T003). It is in active Phase-II
-> development. It is not a released product.**
+> **This is a B.Tech PBL project. It is in active development. It is not a released product.**
 
 ---
 
-## Status
-
-| Item | State |
-|---|---|
-| Phase | II — implementation started |
-| MVP deadline | 20 October (per team's most recent record; earlier entry recorded a tentative 14 October — to be confirmed) |
-| Contracts | K1–K8, K10, K11 frozen 2026-10-09 · K9 (store) drafted, pending O3 sign-off |
-| Architecture decisions | A1–A20 closed 2026-10-08 |
-| Foundation test suite | 58 passed, 8 skipped, 0 failed (`pytest`, isolated) |
-| Skips | 5 recovery scenarios (waiting for journal) · 2 browser-extension tests · 1 bubblewrap integration test |
-| Formal validation | Phase-III |
-| Mentor review of the Phase-I → Phase-II pivot | pending |
-
-For detail see `ScribeSense_Phase-II_Report.pdf` (progress report),
-`ARCHITECTURE.md` (build specification), and `PLAN_v2.md` (decision log).
+For detail see `ARCHITECTURE.md` (build specification), and `PLAN_v2.md` (decision log).
 
 ---
 
