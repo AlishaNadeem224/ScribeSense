@@ -1,5 +1,69 @@
-"""O2 — CLI entry points (M2.11, contract K10). Not implemented yet."""
+"""O2 — CLI entry points (M2.11, contract K10).
+
+This module is the process's entry point. It must remain importable without
+GTK, because `reset`, `recover`, `uninstall` and `doctor` never load UI code
+(A2). The GTK application is imported only on the branch that needs it.
+
+Routing rules (A1, A15):
+  - `confirm <tx>` never forwards. It runs as a fresh process.
+  - `reset`, `recover`, `uninstall`, `doctor` never need the service (A2).
+  - everything else forwards to the running service, starting it if needed.
+"""
+
+from __future__ import annotations
+
+import sys
+from collections.abc import Sequence
+
+from scribesense.contracts.cli import ExitCode, RECOVERY_COMMANDS
+
+#: Commands that must run as a fresh process and never register with Gio.
+_FRESH: frozenset[str] = frozenset({"confirm"})
 
 
-def main() -> int:
-    raise SystemExit("scribesense: not implemented yet")
+def main(argv: Sequence[str] | None = None) -> int:
+    args = list(sys.argv if argv is None else argv)
+    rest = args[1:]
+    command = rest[0] if rest else ""
+
+    # A15 — `confirm` runs as a fresh process, bypassing single-instance
+    # forwarding entirely. It must not import the GTK app at this stage.
+    if command in _FRESH:
+        # M2.3 will implement the confirm window. Until then, refuse clearly.
+        sys.stderr.write(
+            "scribesense: 'confirm' is not implemented yet (arrives with M2.3)\n"
+        )
+        return int(ExitCode.FAILED)
+
+    # A2 — recovery commands must not load UI code. They are placeholders
+    # until M4.12 / M3.7 / M3.8 land; refuse without importing GTK.
+    if command in RECOVERY_COMMANDS:
+        sys.stderr.write(f"scribesense: '{command}' is not implemented yet\n")
+        return int(ExitCode.FAILED)
+
+    # Everything else goes through the GTK application. Import lazily so the
+    # branches above never pull GTK in.
+    try:
+        from scribesense.ui.app import run as run_app
+    except ImportError as exc:
+        sys.stderr.write(
+            "scribesense: GTK4 / libadwaita (PyGObject) is required but not "
+            f"available: {exc}\n"
+            "Install the system packages, then re-run. "
+            "See `scribesense doctor` for details.\n"
+        )
+        return int(ExitCode.FAILED)
+
+    try:
+        return int(run_app(args))
+    except Exception as exc:  # startup failures must not leave a blank window
+        sys.stderr.write(f"scribesense: failed to start: {exc}\n")
+        sys.stderr.write(
+            "Recovery: run `scribesense reset` (works without the app window) "
+            "or press Ctrl+Alt+Shift+Super+Backspace.\n"
+        )
+        return int(ExitCode.FAILED)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
