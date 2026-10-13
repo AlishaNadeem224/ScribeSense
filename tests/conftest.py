@@ -2,7 +2,7 @@
 
 What this file guarantees for ordinary (unit) tests:
   1. Environment redirected to a per-test temp dir: HOME, XDG_*, SCRIBESENSE_*, FONTCONFIG_FILE.
-     (SCRIBESENSE_DATA_DIR uses a short private /tmp/ss-* dir: Unix socket paths are limited to 108 bytes.)
+     (XDG_RUNTIME_DIR uses a short private /tmp/ss-* dir: Unix socket paths are limited to 108 bytes.)
      Desktop session variables (D-Bus, Wayland, X11, Hyprland) are removed; GSETTINGS_BACKEND=memory.
   2. Process launching is BLOCKED (subprocess, os.system, exec*, spawn*, posix_spawn*, fork).
   3. Unix-socket connections outside the test's temp dir are BLOCKED.
