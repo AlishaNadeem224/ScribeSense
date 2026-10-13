@@ -194,7 +194,6 @@ Commands exposed by the CLI (per contract K10, once implemented):
 | `ARCHITECTURE.md` | The build specification. Contracts K1–K11, the 14-step apply sequence, 43 module cards, safety rules. Treat this as authoritative. |
 | `PLAN_v2.md` | Decision log. Later entries override earlier ones. History, not current plan. |
 | `ScribeSense_Architecture.html` | Visual overview for the mentor and for new readers. |
-| `ScribeSense_Phase-II_Report.pdf` | Formal Phase-II progress report. |
 
 If the documents disagree, the latest explicitly confirmed team decision in
 `ARCHITECTURE.md` wins.
