@@ -73,6 +73,9 @@ class ScribeSenseWindow(Adw.ApplicationWindow):
         self.set_content(self.nav)
         self.nav.push(self._build_placeholder_page())
 
+        # A1: closing hides the window; the service keeps running and the next
+        # launch presents this same window again.
+        self.set_hide_on_close(True)
         self.connect("close-request", self._on_close_request)
 
     def _build_placeholder_page(self) -> Adw.NavigationPage:

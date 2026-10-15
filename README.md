@@ -21,6 +21,16 @@ confirmed, and a recovery command works without the GUI.
 
 ---
 
+## Status
+
+| Item | State |
+|---|---|
+| Contracts | K1–K8, K10, K11 frozen 2026-10-09 · K9 (store) drafted, pending O3 sign-off |
+| Architecture decisions | A1–A20 closed 2026-10-08 |
+| Foundation test suite | 58 passed, 8 skipped, 0 failed (`pytest`, isolated) |
+| Skips | 5 recovery scenarios (waiting for journal) · 2 browser-extension tests · 1 bubblewrap integration test |
+| Formal validation | Pending |
+
 For detail see `ARCHITECTURE.md` (build specification), and `PLAN_v2.md` (decision log).
 
 ---

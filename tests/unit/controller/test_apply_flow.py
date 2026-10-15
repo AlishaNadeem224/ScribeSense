@@ -380,3 +380,175 @@ def test_restart_targets_reported(
     assert report.status == "awaiting_confirmation"
     assert len(report.restart_targets) == 1
     assert report.restart_targets[0].adapter == "gtk"
+
+# --- Review fixes (2026-10-15, O4): each test failed before the fix ---------
+
+def _fc(world: FakeWorld) -> FakeAdapter:
+    world.set_file("/tmp/fc.conf", b"old-fc")
+    return FakeAdapter(world, {"default": ["/tmp/fc.conf"]}, name="fontconfig")
+
+
+def test_existing_file_is_backed_up_and_restored(
+    journal, world, good_build, preset, resolve_fn, round_fn, validate_fn, data_dir,
+):
+    world.set_file("/gtk/settings.ini", b"[Settings]\nuser=1\n")
+    gtk = FakeAdapter(world, {"gtk:default": ["/gtk/settings.ini"]}, name="gtk")
+    fc = _fc(world)
+    report = _controller(journal, [fc, gtk], good_build, resolve_fn, round_fn, validate_fn, data_dir).apply(preset)
+    assert world.state("/gtk/settings.ini").data != b"[Settings]\nuser=1\n"
+
+    from scribesense.safety.revert import Reverter
+
+    assert Reverter(journal, {"gtk": gtk, "fontconfig": fc}).revert_tx(report.tx).ok
+    assert world.state("/gtk/settings.ini").data == b"[Settings]\nuser=1\n"
+    assert world.state("/tmp/fc.conf").data == b"old-fc"
+
+
+def test_partial_target_failure_undoes_its_earlier_writes(
+    journal, world, good_build, preset, resolve_fn, round_fn, validate_fn, data_dir,
+):
+    world.set_key("qt:font", "Old 11")
+    world.set_key("qt:fixed", "Mono 11")
+    qt = FakeAdapter(world, {"qt:default": ["qt:font", "qt:fixed"]}, name="qt")
+    original_apply, calls = qt.apply, []
+
+    def second_write_fails(planned):  # type: ignore[no-untyped-def]
+        calls.append(planned.location)
+        if len(calls) == 2:
+            raise ScribeSenseError(ErrorCode.ADAPTER_TIMEOUT)
+        return original_apply(planned)
+
+    qt.apply = second_write_fails  # type: ignore[method-assign]
+    report = _controller(journal, [_fc(world), qt], good_build, resolve_fn, round_fn, validate_fn,
+                         data_dir).apply(preset)
+
+    assert report.status == "awaiting_confirmation"  # other targets continue
+    assert {e.target.adapter: e.status for e in report.coverage}["qt"] is CoverageStatus.NOT_COVERED
+    assert world.state("qt:font").data == b"Old 11"  # the first write was undone, not orphaned
+
+
+def test_drawn_font_mismatch_is_not_covered_and_reverted(
+    journal, world, good_build, preset, resolve_fn, round_fn, validate_fn, data_dir,
+):
+    world.set_key("gtk:default", "Old 11")
+    gtk = FakeAdapter(world, {"gtk:default": ["gtk:default"]}, name="gtk", drawn_ok=False)
+    report = _controller(journal, [_fc(world), gtk], good_build, resolve_fn, round_fn, validate_fn,
+                         data_dir).apply(preset)
+
+    entry = {e.target.adapter: e for e in report.coverage}["gtk"]
+    assert entry.status is CoverageStatus.NOT_COVERED
+    assert entry.detail_code == ErrorCode.ADAPTER_VERIFY_FAILED
+    assert world.state("gtk:default").data == b"Old 11"
+
+
+def test_every_coverage_entry_is_recorded_in_the_journal(
+    journal, world, good_build, preset, resolve_fn, round_fn, validate_fn, data_dir,
+):
+    recorded = []
+    real = journal.record_coverage
+    journal.record_coverage = lambda tx, entry: (recorded.append(entry), real(tx, entry))  # type: ignore[method-assign]
+    brave = FakeAdapter(world, {"brave:Default": ["/brave/Preferences"]}, name="chromium",
+                        must_be_closed=True, running=frozenset({"brave:Default"}))
+    report = _controller(journal, [_fc(world), brave], good_build, resolve_fn, round_fn, validate_fn,
+                         data_dir).apply(preset)
+    assert recorded == list(report.coverage) and len(recorded) == 2
+
+
+def test_running_app_that_needs_restart_is_restart_needed(
+    journal, world, good_build, preset, resolve_fn, round_fn, validate_fn, data_dir,
+):
+    world.set_key("gtk:default", "Old 11")
+    gtk = FakeAdapter(world, {"gtk:default": ["gtk:default"]}, name="gtk", requires_restart=True,
+                      running=frozenset({"gtk:default"}))
+    report = _controller(journal, [_fc(world), gtk], good_build, resolve_fn, round_fn, validate_fn,
+                         data_dir).apply(preset)
+    statuses = {e.target.adapter: e.status for e in report.coverage}
+    assert statuses == {"fontconfig": CoverageStatus.COVERED, "gtk": CoverageStatus.RESTART_NEEDED}
+
+
+def test_detect_failure_never_leaves_the_tx_open(
+    journal, world, good_build, preset, resolve_fn, round_fn, validate_fn, data_dir,
+):
+    class Broken(FakeAdapter):
+        def detect(self):  # type: ignore[no-untyped-def]
+            raise OSError("permission denied")
+
+    gtk = Broken(world, {"g": ["/g"]}, name="gtk")
+    report = _controller(journal, [_fc(world), gtk], good_build, resolve_fn, round_fn, validate_fn,
+                         data_dir).apply(preset)
+    assert report.status == "awaiting_confirmation"
+    assert {e.target.adapter: e.detail_code for e in report.coverage}["gtk"] == ErrorCode.UNEXPECTED_ADAPTER_ERROR
+
+    journal2 = InMemoryJournal()
+    broken_fc = Broken(world, {"default": ["/tmp/fc.conf"]}, name="fontconfig")
+    report = _controller(journal2, [broken_fc], good_build, resolve_fn, round_fn, validate_fn,
+                         data_dir).apply(preset)
+    assert report.status == "stopped" and report.reason_code == "UNEXPECTED_ADAPTER_ERROR"
+    assert journal2.state(report.tx) is TxState.FAILED_CLEAN and journal2.unfinished() == []
+
+
+def test_store_failure_after_writes_reverts_instead_of_claiming_nothing_written(
+    journal, world, good_build, preset, resolve_fn, round_fn, validate_fn, data_dir,
+):
+    def store_down(*_a):  # type: ignore[no-untyped-def]
+        raise ScribeSenseError(ErrorCode.STORE_IO_ERROR)
+
+    journal.mark_retained = store_down  # type: ignore[method-assign]
+    report = _controller(journal, [_fc(world)], good_build, resolve_fn, round_fn, validate_fn,
+                         data_dir).apply(preset)
+    assert (report.status, report.reason_code) == ("reverted", "STORE_IO_ERROR")
+    assert world.state("/tmp/fc.conf").data == b"old-fc"
+
+
+def test_user_edit_during_apply_is_never_overwritten_by_revert(
+    journal, world, good_build, preset, resolve_fn, round_fn, validate_fn, data_dir,
+):
+    world.set_key("gtk:default", "Old 11")
+    gtk = FakeAdapter(world, {"gtk:default": ["gtk:default"]}, name="gtk", verify_ok=False)
+    original_verify = gtk.verify
+
+    def user_edits_then_verify(target, fonts):  # type: ignore[no-untyped-def]
+        world.external_edit("gtk:default", "User 14")
+        return original_verify(target, fonts)
+
+    gtk.verify = user_edits_then_verify  # type: ignore[method-assign]
+    _controller(journal, [_fc(world), gtk], good_build, resolve_fn, round_fn, validate_fn, data_dir).apply(preset)
+    assert world.state("gtk:default").data == b"User 14"  # drift rule (K4 rule 4)
+
+
+@pytest.mark.parametrize("case,reason", [
+    ("invalid_preset", "OUT_OF_RANGE"), ("build_refused", "BASE_IS_MONOSPACE"),
+    ("busy", "APPLY_IN_PROGRESS"), ("validate", "UNKNOWN_FONT"),
+])
+def test_stopped_reports_say_why(
+    case, reason, journal, world, good_build, preset, resolve_fn, round_fn, validate_fn, data_dir,
+):
+    build, resolve = good_build, resolve_fn
+    if case == "invalid_preset":
+        class PresetResolutionError(ValueError):  # what K2's resolve() raises (M1.2)
+            issues = [Issue("error", "letter_em", "OUT_OF_RANGE")]
+
+        def resolve(values):  # type: ignore[no-untyped-def]
+            raise PresetResolutionError()
+    elif case == "build_refused":
+        build = lambda c: FontBuildResult("refused", None, "BASE_IS_MONOSPACE")  # noqa: E731
+    elif case == "busy":
+        journal.begin("apply", None)
+    else:
+        resolve = lambda v: Configuration("Comic Sans", 0.12, 1.5, 1.5, 1.2, 1.0)  # noqa: E731
+    report = _controller(journal, [_fc(world)], build, resolve, round_fn, validate_fn, data_dir).apply(preset)
+    assert (report.status, report.tx, report.reason_code) == ("stopped", None, reason)
+    assert world.state("/tmp/fc.conf").data == b"old-fc"
+
+
+def test_keyboard_interrupt_is_not_swallowed(
+    journal, world, good_build, preset, resolve_fn, round_fn, validate_fn, data_dir,
+):
+    fc = _fc(world)
+
+    def interrupted(_planned):  # type: ignore[no-untyped-def]
+        raise KeyboardInterrupt
+
+    fc.apply = interrupted  # type: ignore[method-assign]
+    with pytest.raises(KeyboardInterrupt):
+        _controller(journal, [fc], good_build, resolve_fn, round_fn, validate_fn, data_dir).apply(preset)

@@ -28,7 +28,7 @@ def test_confirm_is_fresh_process_and_not_forwarded(
     assert "M2.3" in err
 
 
-@pytest.mark.parametrize("command", ["reset", "recover", "uninstall", "doctor"])
+@pytest.mark.parametrize("command", ["reset", "recover", "uninstall"])
 def test_recovery_commands_do_not_load_ui(
     command: str,
     capsys: pytest.CaptureFixture[str],
@@ -39,27 +39,51 @@ def test_recovery_commands_do_not_load_ui(
 
     code = cli.main(["scribesense", command])
     assert code == int(ExitCode.FAILED)
-    assert command in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert command in err and "M3.1" in err  # says what it is waiting for
 
 
-def test_unknown_command_falls_through_to_app(
-    monkeypatch: pytest.MonkeyPatch,
+def test_doctor_runs_without_ui(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A2 + M3.7: doctor runs O3's checks and never imports GTK.
+    import scribesense.doctor
+
+    monkeypatch.setitem(sys.modules, "scribesense.ui.app", None)
+    monkeypatch.setattr(scribesense.doctor, "run_doctor", lambda: ExitCode.OK, raising=False)
+    assert cli.main(["scribesense", "doctor"]) == int(ExitCode.OK)
+
+
+def test_unknown_command_is_a_usage_error_without_ui(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setitem(sys.modules, "scribesense.ui.app", None)
+    assert cli.main(["scribesense", "definitely-not-a-command"]) == int(ExitCode.USAGE)
+    assert "unknown command" in capsys.readouterr().err
+
+
+class _CommandLine:
+    def __init__(self, argv: list[str]) -> None:
+        self.argv, self.status = argv, None
+
+    def get_arguments(self) -> list[str]:
+        return self.argv
+
+    def set_exit_status(self, status: int) -> None:
+        self.status = status
+
+
+def test_the_service_runs_commands_itself_and_quit_quits() -> None:
+    # A1: this instance IS the service; later launches arrive in do_command_line.
     pytest.importorskip("gi")
-
-    captured: dict[str, list[str]] = {}
-
     from scribesense.ui import app as ui_app  # type: ignore[import-not-found]
 
-    def _fake_run(argv: list[str]) -> int:
-        captured["argv"] = argv
-        return int(ExitCode.USAGE)
-
-    monkeypatch.setattr(ui_app, "run", _fake_run)
-
-    code = cli.main(["scribesense", "definitely-not-a-command"])
-    assert code == int(ExitCode.USAGE)
-    assert captured["argv"] == ["scribesense", "definitely-not-a-command"]
+    app = ui_app.ScribeSenseApp()
+    quit_calls: list[bool] = []
+    app.quit = lambda: quit_calls.append(True)  # type: ignore[method-assign]
+    assert app.do_command_line(_CommandLine(["scribesense", "quit"])) == int(ExitCode.OK)
+    assert quit_calls == [True]
+    # apply is answered here (not forwarded to a socket nobody serves); its body is M2.11.
+    assert app.do_command_line(_CommandLine(["scribesense", "apply", "default"])) == int(ExitCode.FAILED)
+    assert app.do_command_line(_CommandLine(["scribesense", "confirm", "1"])) == int(ExitCode.FAILED)
 
 
 def test_no_arguments_falls_through_to_app(monkeypatch: pytest.MonkeyPatch) -> None:

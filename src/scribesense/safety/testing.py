@@ -3,9 +3,8 @@
 TEST SUPPORT ONLY — no production module imports this file.
 
 `make_recovery_system(world, adapters)` wires the in-memory journal (M4.10 double), revert (M4.11) and
-recovery (M4.12) to FakeAdapters. Its `apply()` is a REFERENCE apply sequence that follows the K4 rule 2
-order and the M2.1 failure rules needed by the scenarios. It is NOT the production controller: when O2's
-apply controller (M2.1) exists, `apply()` must call it instead, and the scenarios must still pass.
+recovery (M4.12) to FakeAdapters. Its `apply()` runs O2's real apply controller (M2.1) — the §9 scenarios
+are part of that card's acceptance — with K1/K2/K7 stubbed out (fonts are not what these scenarios test).
 """
 
 from __future__ import annotations
@@ -17,9 +16,10 @@ from datetime import datetime
 from scribesense.adapters.fake import FakeAdapter, FakeWorld
 from scribesense.contracts.adapter import Adapter
 from scribesense.contracts.config import Configuration
-from scribesense.contracts.fonts import FontSet
-from scribesense.contracts.journal import ActiveConfig, ItemId, TxId
-from scribesense.contracts.states import TxState
+from scribesense.contracts.fonts import FontBuildResult, FontSet
+from scribesense.contracts.journal import ActiveConfig, TxId
+from scribesense.contracts.presets import Preset, PresetValues, WordSpacing
+from scribesense.controller.apply_flow import ApplyController
 from scribesense.safety.memory_journal import InMemoryJournal
 from scribesense.safety.recovery import reset as recovery_reset
 from scribesense.safety.revert import Reverter, RevertReport
@@ -42,41 +42,24 @@ class RecoverySystem:
     # ---------------------------------------------------------------- reference apply (K4 rule 2)
 
     def apply(self, config: Configuration, *, keep: bool) -> TxId:
-        j = self.journal
         fonts = fake_fontset(config)
-        tx = j.begin("apply", None)
-        by_target: dict[tuple[str, str], dict[str, ItemId]] = {}
-        targets = [(a, t) for a in self._adapter_list for t in a.detect()]
-        for adapter, target in targets:
-            ids = by_target.setdefault((adapter.name, target.target_id), {})
-            for item in adapter.snapshot(target):
-                backup = adapter.read_state(item.location).data if item.kind == "file" and item.existed else None
-                ids[item.location] = j.record_snapshot(tx, item, backup)
-        j.set_state(tx, TxState.SNAPSHOTTED)
-        j.set_state(tx, TxState.APPLYING)
-        for adapter, target in targets:
-            ids = by_target[(adapter.name, target.target_id)]
-            for planned in adapter.plan(target, fonts, config):
-                j.record_intent(tx, ids[planned.location], planned)
-                j.record_applied(tx, ids[planned.location], adapter.apply(planned))
-        j.set_state(tx, TxState.VERIFYING)
-        reverter = Reverter(j, self.adapters)
-        for adapter, target in targets:
-            ids = list(by_target[(adapter.name, target.target_id)].values())
-            result = adapter.verify(target, fonts)
-            # "verify passed" = chosen_ok AND drawn_ok is not False (M4.13 note); None = no drawn check here.
-            if result.chosen_ok and result.drawn_ok is not False:
-                for item_id in ids:
-                    j.mark_retained(tx, item_id)
-                continue
-            # M2.1: verify failed -> revert that adapter only; if that revert fails -> roll back the whole tx (K5)
-            if not reverter.revert_items(tx, ids).ok:
-                reverter.finish_tx(tx)
-                return tx
-        j.set_state(tx, TxState.AWAITING_CONFIRMATION)
-        if keep:
-            j.keep(tx, ActiveConfig(config, fonts.key, None, 0))
-        return tx
+        controller = ApplyController(
+            journal=self.journal,
+            adapters=self._adapter_list,
+            generator=lambda _c: FontBuildResult("built", fonts, None),
+            resolve=lambda _values: config,
+            round_to_steps=lambda c: c,
+            validate=lambda _c: [],
+            disk_space_min_bytes=0,
+        )
+        values = PresetValues(config.base_family, config.letter_em, WordSpacing("multiplier", config.word_scale),
+                              config.reading_line, config.ui_line, config.text_scale)
+        report = controller.apply(Preset("default", "Default", values, "builtin"))
+        if report.tx is None:
+            raise AssertionError(f"apply stopped before a tx: {report.reason_code}")
+        if keep and report.status == "awaiting_confirmation":
+            self.journal.keep(report.tx, ActiveConfig(config, fonts.key, None, 0))
+        return report.tx
 
     # ---------------------------------------------------------------- the rest of the harness interface
 

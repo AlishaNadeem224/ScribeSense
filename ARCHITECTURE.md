@@ -1052,6 +1052,26 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > `chosen_ok` is True. On failure: revert that adapter only (row above); if that revert fails, roll back the
 > whole tx (K5). The reference apply in `safety/testing.py` already follows this rule and has tests for it.
 
+> **Review fixes (2026-10-15, done by O4 during review of `team/O2` 55356a5, at O4's request — O2 to
+> review).** Each fix has a test in `tests/unit/controller/test_apply_flow.py` that failed before it:
+> - **File backups:** `record_snapshot` now gets the file's bytes (`read_state().data` for an existing file);
+>   they were always `None`, so reverting an existing file (e.g. GTK `settings.ini`) failed and lost it.
+> - **Reverts go through M4.11** (`safety.revert.Reverter`): per-target `revert_items`, whole-tx `finish_tx`.
+>   The controller's own revert skipped the K4 rule 4 drift check and never undid a target whose 2nd write
+>   failed (its 1st write stayed on disk, unretained, so `reset` could not undo it either).
+> - **No exception leaves the tx open:** after `begin()` any failure ends FAILED_CLEAN (nothing planned) or
+>   REVERTED/REVERT_FAILED; before, an `OSError` from `detect()` left the tx CREATED holding the lock, and a
+>   store error after writes reported "stopped". `except BaseException` → `except Exception`.
+> - **Verify rule** above applied (`drawn_ok=False` was reported COVERED). **`record_coverage`** is called for
+>   every entry. A verified, running, `requires_restart` target is **`RESTART_NEEDED`** (the M2.2 banner reads
+>   that status; it never appeared). A failing `detect()` of a non-fontconfig adapter → that adapter
+>   NOT_COVERED (target `"<adapter>:*"`); fontconfig failing to detect/snapshot/plan stops the apply.
+> - **Interface [P] extended:** `ApplyReport.reason_code` — why it stopped/reverted (an `ErrorCode` value, or a
+>   K1 `IssueCode` for an invalid configuration). K2 `resolve()`'s `ValueError` (with `.issues`) and
+>   `begin()`'s `APPLY_IN_PROGRESS` now return a stopped report instead of raising. PLAN_CONFLICT is checked on
+>   the plans made after snapshot (plan() is no longer called twice).
+> - **§9 hook switched:** `safety/testing.py` `RecoverySystem.apply` now runs this controller; the scenarios pass.
+
 #### M2.2 Restart notice
 | Field | Spec |
 |---|---|
@@ -1252,6 +1272,15 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Load UI code for `reset`, `recover`, `uninstall`, `doctor` [D A2] |
 | Acceptance tests | Each command; import test proves recovery commands load no UI modules |
 | Done when | Tests pass · reviewed |
+
+> **Review fixes (2026-10-15, O4 — O2 to review), M2.4 + M2.11:** the app instance **is** the service (A1):
+> a later launch's argv arrives in `do_command_line`, so `apply`/`preset`/`read` are answered there (bodies
+> still M2.11/M2.9) instead of being sent to the K4 socket, which nothing served (always exit 4). `quit` now
+> quits (it opened the window). The app calls `hold()` and the window hides on close, so closing the window
+> no longer stops the service (A1). `cli.main`: unknown command → exit 2 without GTK; `doctor` → O3's
+> `run_doctor()` (M3.7); `reset`/`recover`/`uninstall` say they wait for the store (M3.1) — `safety.recovery`
+> is ready but needs the real journal. Open (O2): who serves the socket (`confirm` M2.3, reset requests,
+> native host), and the `style_changed` push for the extension.
 
 ### O3 — Data & Platform
 

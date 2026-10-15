@@ -7,7 +7,9 @@ GTK, because `reset`, `recover`, `uninstall` and `doctor` never load UI code
 Routing rules (A1, A15):
   - `confirm <tx>` never forwards. It runs as a fresh process.
   - `reset`, `recover`, `uninstall`, `doctor` never need the service (A2).
-  - everything else forwards to the running service, starting it if needed.
+  - an unknown command is a usage error (exit 2) without loading GTK.
+  - everything else goes to the GTK application: the first launch becomes the
+    single-instance service, later launches are forwarded to it by Gio (A1).
 """
 
 from __future__ import annotations
@@ -19,6 +21,12 @@ from scribesense.contracts.cli import ExitCode, RECOVERY_COMMANDS
 
 #: Commands that must run as a fresh process and never register with Gio.
 _FRESH: frozenset[str] = frozenset({"confirm"})
+
+#: First word of every K10 command ("" = open / focus the app).
+_KNOWN: frozenset[str] = frozenset({"", "apply", "preset", "read", "quit"}) | _FRESH | RECOVERY_COMMANDS
+
+#: Why a recovery command cannot run yet (it needs the SQLite journal, K9 / M3.1).
+_NEEDS_STORE = "needs the journal store (M3.1), which is not built yet"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -35,10 +43,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return int(ExitCode.FAILED)
 
-    # A2 — recovery commands must not load UI code. They are placeholders
-    # until M4.12 / M3.7 / M3.8 land; refuse without importing GTK.
+    if command not in _KNOWN:
+        sys.stderr.write(
+            f"scribesense: unknown command '{command}'\n"
+            "Commands: apply <preset-id> · preset next · read --selection|--clipboard · reset · "
+            "recover --login · uninstall · doctor · confirm <tx> · quit\n"
+        )
+        return int(ExitCode.USAGE)
+
+    # A2 — recovery commands must not load UI code.
+    if command == "doctor":
+        try:
+            from scribesense.doctor import run_doctor  # M3.7 (O3)
+        except ImportError:
+            sys.stderr.write("scribesense: 'doctor' is not implemented yet (M3.7)\n")
+            return int(ExitCode.FAILED)
+        return int(run_doctor())
     if command in RECOVERY_COMMANDS:
-        sys.stderr.write(f"scribesense: '{command}' is not implemented yet\n")
+        # M4.11/M4.12 exist (safety.recovery) but run on the real journal only.
+        sys.stderr.write(f"scribesense: '{command}' {_NEEDS_STORE}\n")
         return int(ExitCode.FAILED)
 
     # Everything else goes through the GTK application. Import lazily so the

@@ -29,20 +29,19 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio  # noqa: E402
 
 from scribesense.contracts.cli import ExitCode  # noqa: E402
-from scribesense.contracts.errors import ErrorCode, ScribeSenseError  # noqa: E402
-from scribesense.contracts.messages import PROTOCOL_VERSION  # noqa: E402
-from scribesense.safety import ipc  # noqa: E402
 from scribesense.ui import APP_ID  # noqa: E402
 from scribesense.ui.window import ScribeSenseWindow  # noqa: E402
 
 
-#: Commands forwarded to a running service over the K4 rule 5 socket. The
-#: service side of these arrives with M2.11 / M4.12; until then, a forward to
-#: a non-listening service correctly returns SERVICE_UNAVAILABLE.
-_FORWARD_TO_SERVICE: frozenset[str] = frozenset({"apply", "preset", "read"})
-
-#: Commands handled locally by the app (focus the window).
-_LOCAL: frozenset[str] = frozenset({"", "quit"})
+#: Commands the service runs itself. This instance IS the service (A1): Gio
+#: delivers a later launch's argv here, so nothing is forwarded over the K4
+#: rule 5 socket — that socket is for `confirm`, `reset` and the native host.
+#: command -> (action, card that implements it)
+_SERVICE_COMMANDS: dict[str, tuple[str, str]] = {
+    "apply": ("apply", "M2.11"),
+    "preset": ("preset-next", "M2.11"),
+    "read": ("open-reader", "M2.9"),
+}
 
 #: The one command that must never be forwarded and never registers with Gio.
 _FRESH_PROCESS: frozenset[str] = frozenset({"confirm"})
@@ -79,10 +78,16 @@ class ScribeSenseApp(Adw.Application):
             # A1: only an explicit Quit stops the service.
             self.quit()
             return
-        # Not implemented yet; report rather than silently do nothing.
+        # Not implemented yet (M2.9, M2.11); report rather than silently do nothing.
         sys.stderr.write(f"scribesense: '{name}' is not implemented yet\n")
 
     # ---------------------------------------------------------- app lifecycle
+
+    def do_startup(self) -> None:
+        Adw.Application.do_startup(self)
+        # A1: the service outlives its window. Without a hold, Gio quits the
+        # application when the last window closes; only Quit stops it.
+        self.hold()
 
     def do_activate(self) -> None:
         if self._window is None:
@@ -115,13 +120,14 @@ class ScribeSenseApp(Adw.Application):
             command_line.set_exit_status(int(ExitCode.FAILED))
             return int(ExitCode.FAILED)
 
-        if command in _LOCAL:
-            self.activate()
+        if command == "quit":
+            # A1: `scribesense quit` stops the background service.
+            self.quit()
             command_line.set_exit_status(int(ExitCode.OK))
             return int(ExitCode.OK)
 
-        if command in _FORWARD_TO_SERVICE:
-            status = self._forward(command, rest[1:])
+        if command in _SERVICE_COMMANDS:
+            status = self._run_service_command(command, rest[1:])
             command_line.set_exit_status(int(status))
             return int(status)
 
@@ -129,29 +135,12 @@ class ScribeSenseApp(Adw.Application):
         command_line.set_exit_status(int(ExitCode.USAGE))
         return int(ExitCode.USAGE)
 
-    def _forward(self, command: str, args: Sequence[str]) -> ExitCode:
-        """Send one request to the running service over the K4 rule 5 socket."""
-        message = {
-            "v": PROTOCOL_VERSION,
-            "type": command,
-            "args": list(args),
-        }
-        try:
-            reply = ipc.request(message, timeout=5.0)
-        except ScribeSenseError as exc:
-            # SERVICE_UNREACHABLE is the expected case when nothing listens.
-            sys.stderr.write(f"scribesense: service unavailable ({exc.code.value})\n")
-            return ExitCode.SERVICE_UNAVAILABLE
-        except OSError as exc:
-            # Defensive: ipc.request already converts these, but be explicit.
-            sys.stderr.write(f"scribesense: service unavailable ({exc!s})\n")
-            return ExitCode.SERVICE_UNAVAILABLE
-
-        if not reply.get("ok", False):
-            sys.stderr.write(f"scribesense: {reply.get('error', 'command failed')}\n")
-            return ExitCode.FAILED
-        return ExitCode.OK
-
+    def _run_service_command(self, command: str, args: Sequence[str]) -> ExitCode:
+        """Run a K10 service command in this (the service) process."""
+        _action, card = _SERVICE_COMMANDS[command]
+        # The bodies arrive with their cards; until then, refuse clearly.
+        sys.stderr.write(f"scribesense: '{command}' is not implemented yet ({card})\n")
+        return ExitCode.FAILED
 
 def run(argv: Sequence[str] | None = None) -> int:
     """Entry point used by cli.main. Ensures a GLib main loop exists and runs."""
