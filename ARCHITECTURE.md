@@ -1548,7 +1548,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Install from repo with `uv`/pip; uninstall with full revert. [D F10] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | M3.7, M4.11, M4.14, M1.7 |
 | Used by | user |
 | Provides | install steps, `scribesense uninstall [--delete-data]` |
@@ -1562,6 +1562,28 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Delete user data without explicit confirmation; overwrite a user's later change [D] |
 | Acceptance tests | VM: install → apply → uninstall → every touched file byte-identical to baseline (except skipped ones) |
 | Done when | VM test passes · reviewed by O4 |
+
+> **Implemented 2026-10-15 (O3, M3.8) — review by O4 pending; VM acceptance test not run.** `src/scribesense/uninstall.py` (a top-level
+> recovery module like `doctor.py`: no Gtk/Adw, added to the A2 `RECOVERY_ROOTS` in `tests/unit/test_import_rules.py`) and
+> `docs/INSTALL.md` (install steps + uninstall + what is not wired). `uninstall(journal, adapters, *, store, policy, delete_data,
+> remove_fonts_anyway, confirm, fonts, keybind_remover) -> UninstallReport`; `run_uninstall(...)` prints the report and returns the K10
+> exit code (0 / 1 / 3, never 4).
+> - **Flow (card order):** `safety.recovery.reset` (K4 rule 4 steps 1+2; drift is skipped, never overwritten) → remove generated fonts via
+>   `fontgen.cache` except those a skipped/unresolved location still names (`managed_font_key`) or whose use cannot be determined
+>   (R2-9; `--remove-fonts-anyway` overrides) → `safety.keybinds.remove_keybinds` (this also removes the login check: `recover --login`
+>   lives in our keybind file; a hand-edited block is left and reported) → data kept unless `--delete-data` AND confirmed.
+> - **Failure rules:** one failing item/font/keybind step is reported and the rest continue ("offer `reset`"). If the reset itself cannot
+>   run (`LOCK_TIMEOUT`/`APPLY_IN_PROGRESS` → exit 3; any other journal error → exit 1), nothing else is touched: the recovery hooks stay
+>   until the originals are back.
+> - **Data:** `--delete-data` asks (type `delete`; without a terminal the answer is no). With obligations left (unresolved/managed) only
+>   preferences go (`RECOVERY_OBLIGATIONS_REMAIN` logged); otherwise `delete_recovery_data` + `delete_preferences`, then the db files and the
+>   log are removed; the stable lock file is never removed (K4 rule 1).
+> - **For O2 (`cli.py`):** call `uninstall.run_uninstall(journal, adapters, store=Store(default_path()), policy=LockPolicy(lock, "uninstall"),
+>   delete_data=…, remove_fonts_anyway=…)` for `scribesense uninstall`. Needs O4's SQLite journal (M4.10) on `store.JournalTables` — not built yet,
+>   which is why the command line still says "not wired".
+> - **Ownership note:** the new top-level module is O3's by analogy with `doctor.py`; the ownership table in AGENTS.md does not list it. O2/O4 to
+>   confirm.
+> - 21 unit tests (fake desktop, fonts, keybinds; both outcomes of every failure rule) + 2 sandbox tests with the real font cache.
 
 #### M3.9 CI and import rules
 | Field | Spec |

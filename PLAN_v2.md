@@ -776,7 +776,7 @@ Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 
 
 **O3 — Data & Platform**
 - ✅ K9 **signed off by O3 2026-10-15** (O4 accepted the journal decisions D1/D2/D4/D5/D7 the same day — `store/journal_tables.py` is O3's to write; D3 for O1 to confirm; decisions in `ARCHITECTURE.md`, reasoning in `docs/K9_draft.md`) · 🟡 M3.1 Store (built 2026-10-15: `store/` core + 5 repos + `journal_tables.py` for O4's journal; 126 unit tests + 3-process test in the runner; review by O4 pending; `cli` reset/recover/uninstall can now use it) · 🟡 M3.2 Retention (built 2026-10-15: `store/retention.py` `prune(journal, now)` — 30 days / last 10, no pruning while a tx is active, errors skip pruning; 28 tests on both journals; review by O4 pending; O4: the in-memory double lacks the newest-COMPLETED-apply rule (F2); the start-up call is O2/O4's) · ✅ M3.3 Sandbox (unit fixture + bubblewrap runner; 10/10 escape tests pass, 2026-10-14; full runner: 14 pass, 1 fail = O4 GTK read-back bug, review by O4 pending)
-- 🟡 M3.4 Render checks (`harness/render.py`: pango engine + unit tests ✅; pango ✅ and qt ✅ verified in the bubblewrap runner (3 passed, 2026-10-15); firefox/chromium engines NOT implemented (known gap, 2026-10-15: they need a live browser process and a protocol — Marionette / DevTools — but `run_cmd` (K3 rule 9) only runs a command to completion, so O4 must approve an exception for the harness; Firefox is `dnf`-installable, Brave is not in Fedora's repos so the Chromium family would use `chromium`) — they report "not implemented" and skip; 2026-10-14) · 🟡 M3.5 VM tests (guard + Hyprland feasibility check + runbook in `vm/`, tested without a VM, 2026-10-14; hypervisor/snapshot decision open; scenarios wait for CLI wiring + M3.8) · 🟡 M3.6 Manual checklist (written `docs/manual-checklist.md`, 2026-10-14; O2 review pending, not yet run) · ✅ M3.7 Doctor (acceptance tests pass, real-host run checked, 2026-10-14; `cli.py` wiring is O2, review by O4 pending) · ⬜ M3.8 Install/uninstall
+- 🟡 M3.4 Render checks (`harness/render.py`: pango engine + unit tests ✅; pango ✅ and qt ✅ verified in the bubblewrap runner (3 passed, 2026-10-15); firefox/chromium engines NOT implemented (known gap, 2026-10-15: they need a live browser process and a protocol — Marionette / DevTools — but `run_cmd` (K3 rule 9) only runs a command to completion, so O4 must approve an exception for the harness; Firefox is `dnf`-installable, Brave is not in Fedora's repos so the Chromium family would use `chromium`) — they report "not implemented" and skip; 2026-10-14) · 🟡 M3.5 VM tests (guard + Hyprland feasibility check + runbook in `vm/`, tested without a VM, 2026-10-14; hypervisor/snapshot decision open; scenarios wait for CLI wiring + M3.8) · 🟡 M3.6 Manual checklist (written `docs/manual-checklist.md`, 2026-10-14; O2 review pending, not yet run) · ✅ M3.7 Doctor (acceptance tests pass, real-host run checked, 2026-10-14; `cli.py` wiring is O2, review by O4 pending) · 🟡 M3.8 Install/uninstall (built 2026-10-15: `uninstall.py` + `docs/INSTALL.md`; 21 unit tests + 2 real-font-cache sandbox tests; NOT wired into `cli.py` (O2) and needs O4's SQLite journal (M4.10); VM acceptance test (byte-identical) waits for M3.5; review by O4 pending)
 - 🟡 M3.9 CI + import rules (import rules ✅ incl. deliberate-violation self-test; CI now has a bubblewrap `integration` job, 2026-10-14 — NOT yet run on GitHub; branch protection optional)
 
 **O4 — System Integration & Safety**
@@ -845,3 +845,44 @@ The new `integration` CI job (Ubuntu 24.04 runner, Python 3.12.3, Pango 1.52.1) 
    has the same limit on that runner.
 
 Until both are fixed the `integration` job stays red; it must not be made a required check yet.
+
+## Open items per owner (2026-10-15, O3) — what each person still has to review, decide or build
+
+Built by O3 and waiting for review: M3.1 store · M3.2 retention · M3.3 sandbox · M3.7 doctor · M3.8 uninstall (details in the cards'
+notes in `ARCHITECTURE.md`). K9 is signed off (2026-10-15); the journal part was accepted by O4.
+
+**O4 — System Integration & Safety**
+- **Review:** M3.1, M3.2, M3.3, M3.7, M3.8; also M3.4, M3.5, M3.9 (O4 is the named reviewer on those cards).
+- **Build the SQLite journal (M4.10) on `store.JournalTables`** (API: the M3.1 note in `ARCHITECTURE.md`; `harness/table_journal.py` shows
+  the K4-name mapping). Until it exists `reset` / `recover` / `uninstall` cannot run on the real store.
+- **Fix `safety/memory_journal.py`:** `prune_history` does not keep the newest COMPLETED apply (K9 D4 / finding F2, accepted by O4); the SQL
+  layer does, so the in-memory double and the SQL journal differ there.
+- **Confirm D7:** `journal_tables.is_managed_location_shape()` exists and agrees with `adapters/conformance.py`, but it is not enforced inside
+  `add_item` because the fake adapter uses free location names.
+- **Confirm ownership of `src/scribesense/uninstall.py`** (new top-level recovery module, put under O3 like `doctor.py`; not in the AGENTS.md table).
+- **CI:** check the `integration` job on Ubuntu 24.04 after the Pango/GTK fixes; then remove the diagnostic step in `.github/workflows/tests.yml` (O3 does that).
+- **K1 amendment `NOT_A_NUMBER`** (added by O4, "sign-off by one other owner pending"): needs one other owner's sign-off — O1 or O3.
+- **Fontfield inspection for `remove_unused()`** (see the O1/O3 gap below): the fifth K7 rule 3 source — live settings found by inspecting each target's
+  font fields — needs adapter support.
+
+**O1 — Configuration & Fonts**
+- **K9 D3:** confirm `custom` is stored as one row with the reserved id `custom` (the code in `config/presets.py` already matches).
+- **K9 D8:** confirm the font key's inputs are `base_family`, `letter_em`, `word_scale`, `reading_line`, `ui_line` (not `text_scale`).
+- **Uninstall:** confirm that using `fontgen.cache.installed_keys()` and `remove()` is the intended way to remove generated fonts.
+- **Open on O1's side:** base fonts are not bundled yet (`build()` refuses with `BUNDLED_FONT_MISSING`); `GENERATOR_ERROR` is proposed for the error codes.
+- **Gap, not yet owned by anyone:** `fontgen.generator.remove_unused()` needs a `ReferenceSource` (`transaction_active()`, `references() -> References(keys,
+  complete)`); the code says nothing implements it. The store now holds four of K7 rule 3's five sources (active config, saved presets, unfinished
+  transactions, location records); the fifth (live settings per target) needs the adapters. A store-only source cannot honestly report `complete=True`,
+  so `remove_unused()` would still remove nothing. Decide who writes it (O3 can supply the four store-backed sources).
+
+**O2 — User Experience**
+- **Wire `cli.py`:** `uninstall` → `uninstall.run_uninstall(journal, adapters, store=Store(default_path()), policy=LockPolicy(lock, "uninstall"), …)`
+  (exact call in the M3.8 note); `reset` / `recover` once O4's journal exists. `doctor` is already wired.
+- **At service start-up:** call `store.recover_interrupted_builds()` once and `prune(journal, now)` once (not on every `Store` open).
+- **Review `docs/manual-checklist.md`** (M3.6).
+- **Agree with O3** on who owns the uninstall wiring (flow = O3, command line = O2).
+
+**Repo owner:** mark the `integration` CI job as a required check once it is green.
+
+**O3 (still open):** M3.4 Firefox / Chromium engines (needs a browser installed; O4 approved the harness exception) · M3.5 VM scenarios (needs a VM with a
+graphical session) · M3.6 graphical checklist sections · M3.8 byte-identical VM test · diagnostic step removal in CI.
