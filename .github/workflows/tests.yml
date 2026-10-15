@@ -58,7 +58,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap fontconfig pango1.0-tools gsettings-desktop-schemas \
-            libglib2.0-bin python3-gi python3-pytest lua5.4
+            libglib2.0-bin python3-gi gir1.2-pango-1.0 gir1.2-freedesktop python3-pytest lua5.4
 
       - name: Allow unprivileged user namespaces (Ubuntu 24.04 restricts them via AppArmor)
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
