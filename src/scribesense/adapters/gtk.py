@@ -8,8 +8,9 @@ Target: one, "gtk:user". Locations (K3 rule 10, kind "key"), schema org.gnome.de
 
 Reading (R2-8, decided 2026-10-12): Gio.Settings.get_user_value() — returns nothing for an unset key, so
 "present" means "explicitly set by the user" (K3 rule 11) and follows the active GSETTINGS_BACKEND (the
-test sandbox and production behave the same). Gio is imported lazily; the schema is looked up first,
-because constructing Gio.Settings for a missing schema aborts the process.
+test sandbox and production behave the same). Since 2026-10-15 every read runs in a FRESH process
+(gsettings_probe): a long-running process saw stale values after `gsettings set` (O3 CI finding). The schema
+is looked up first, because constructing Gio.Settings for a missing schema aborts the process.
 Writing: `gsettings set <schema> <key> <value>` (type-checked) and `gsettings reset` for an unset original,
 through run_cmd (K3 rule 9). After a write the value is read back; it must equal the planned hash.
 
@@ -27,8 +28,10 @@ All storage access goes through an injectable SettingsStore so tests need neithe
 
 from __future__ import annotations
 
+import json
 import math
 import re
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -131,46 +134,64 @@ class SettingsStore(Protocol):
 
 
 class GioSettingsStore:
-    """Production store: reads through Gio (R2-8), writes through `gsettings` via run_cmd."""
+    """Production store. Reads (R2-8, Gio get_user_value) run in a FRESH process — the gsettings_probe module —
+    so a long-running process never sees a stale cached backend (O3 CI finding 2026-10-15; see that module).
+    Writes go through `gsettings set/reset` via run_cmd. Only canonical() runs in-process (pure GLib formatting)."""
+
+    PROBE_MODULE = "scribesense.adapters.gsettings_probe"
 
     def __init__(self, runner: Runner = run_cmd) -> None:
         self._run = runner
+        self._schema_present: dict[str, bool] = {}  # a schema doesn't appear or vanish during one run
 
-    def _gio(self) -> Any:
+    def _glib(self) -> Any:
         try:
             import gi
 
-            gi.require_version("Gio", "2.0")
-            from gi.repository import Gio, GLib
+            gi.require_version("GLib", "2.0")
+            from gi.repository import GLib
         except (ImportError, ValueError):
             raise ScribeSenseError(ErrorCode.ADAPTER_UNAVAILABLE) from None
-        return Gio, GLib
+        return GLib
+
+    def _probe(self, schema: str, keys: tuple[str, ...]) -> dict[str, Any]:
+        argv = [sys.executable, "-P", "-m", self.PROBE_MODULE, schema, *keys]
+        try:
+            done = self._run(argv, DEFAULT_TIMEOUTS["gsettings"])
+        except ScribeSenseError:
+            raise
+        except OSError:
+            raise ScribeSenseError(ErrorCode.ADAPTER_UNAVAILABLE) from None
+        try:
+            result = json.loads(done.stdout.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, AttributeError):
+            raise ScribeSenseError(ErrorCode.ADAPTER_COMMAND_FAILED) from None
+        if not isinstance(result, dict) or result.get("v") != 1 or not isinstance(result.get("values"), dict):
+            raise ScribeSenseError(ErrorCode.ADAPTER_COMMAND_FAILED)
+        self._schema_present[schema] = bool(result.get("schema"))
+        if keys and not result.get("schema"):
+            raise ScribeSenseError(ErrorCode.SCHEMA_MISSING)
+        if keys and set(result["values"]) != set(keys):
+            raise ScribeSenseError(ErrorCode.ADAPTER_COMMAND_FAILED)
+        return result
 
     def schema_exists(self, schema: str) -> bool:
-        Gio, _ = self._gio()
-        source = Gio.SettingsSchemaSource.get_default()
-        return source is not None and source.lookup(schema, True) is not None
-
-    def _settings(self, schema: str) -> Any:
-        if not self.schema_exists(schema):
-            raise ScribeSenseError(ErrorCode.SCHEMA_MISSING)  # never construct: it would abort the process
-        Gio, _ = self._gio()
-        return Gio.Settings.new(schema)
-
-    @staticmethod
-    def _key_value(variant: Any) -> KeyValue:
-        return KeyValue(variant.print_(False), variant.get_type_string(), variant.unpack())
+        if schema not in self._schema_present:
+            self._probe(schema, ())
+        return self._schema_present[schema]
 
     def user_value(self, schema: str, key: str) -> KeyValue | None:
-        variant = self._settings(schema).get_user_value(key)
-        return None if variant is None else self._key_value(variant)
+        entry = self._probe(schema, (key,))["values"][key]
+        if entry["user"] is None:
+            return None
+        return KeyValue(entry["user"], entry["type"], entry["user_value"])
 
     def effective_value(self, schema: str, key: str) -> KeyValue:
-        return self._key_value(self._settings(schema).get_value(key))
+        entry = self._probe(schema, (key,))["values"][key]
+        return KeyValue(entry["effective"], entry["type"], entry["value"])
 
     def canonical(self, value_type: str, value: Any) -> str:
-        _, GLib = self._gio()
-        return GLib.Variant(value_type, value).print_(False)
+        return self._glib().Variant(value_type, value).print_(False)
 
     def set(self, schema: str, key: str, text: str) -> None:
         self._run(["gsettings", "set", schema, key, text], DEFAULT_TIMEOUTS["gsettings"])

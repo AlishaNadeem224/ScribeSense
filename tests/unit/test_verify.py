@@ -263,57 +263,44 @@ class Nameless:
     family: str | None = None
 
 
-def _run(family: str | None) -> object:
-    desc = _FakeFontDescription()
-    desc.set_family(family)
-    font = types.SimpleNamespace(describe=lambda: desc)
-    return types.SimpleNamespace(item=types.SimpleNamespace(analysis=types.SimpleNamespace(font=font)))
-
-
-class _FakeIter:
-    def __init__(self, runs: list[object | None]) -> None:
-        self.runs, self.i = runs, 0
-
-    def get_run(self) -> object | None:
-        return self.runs[self.i]
-
-    def next_run(self) -> bool:
-        self.i += 1
-        return self.i < len(self.runs)
-
-
 @dataclass
 class FakePango:
-    """Draws the sample as runs of `drawn` (None = end of line); records what the layout was given."""
+    """Fontset model: each sample character is drawn with `default`, unless `overrides` names another
+    family (a str), an unnamed font (Nameless) or no font at all (None). Records what the probe asked."""
 
-    drawn: list[str | Nameless | None]
+    default: str | Nameless | None = READING
+    overrides: dict[str, str | Nameless | None] = field(default_factory=dict)
     seen: dict[str, object] = field(default_factory=dict)
-    fail_on_layout: bool = False
+    fail_on_fontset: bool = False
+    no_fontset: bool = False
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = self
         required: list[tuple[str, str]] = []
+        asked: list[str] = []
 
-        class Layout:
-            @staticmethod
-            def new(context: object) -> Layout:
-                if fake.fail_on_layout:
-                    raise RuntimeError(f"boom {probe.SAMPLE}")
-                fake.seen["context"] = context
-                return Layout()
+        def font_for(drawn: str | Nameless | None) -> object | None:
+            if drawn is None:
+                return None
+            desc = _FakeFontDescription()
+            desc.set_family(drawn.family if isinstance(drawn, Nameless) else drawn)
+            return types.SimpleNamespace(describe=lambda: desc)
 
-            def set_font_description(self, desc: _FakeFontDescription) -> None:
-                fake.seen["family"], fake.seen["size"] = desc.family, desc.size
+        class Fontset:
+            def get_font(self, codepoint: int) -> object | None:
+                ch = chr(codepoint)
+                asked.append(ch)
+                return font_for(fake.overrides.get(ch, fake.default))
 
-            def set_text(self, text: str, length: int) -> None:
-                fake.seen["text"] = text
+        def load_fontset(context: object, desc: _FakeFontDescription, language: object) -> Fontset | None:
+            if fake.fail_on_fontset:
+                raise RuntimeError(f"boom {probe.SAMPLE}")
+            fake.seen.update(context=context, family=desc.family, size=desc.size, language=language)
+            return None if fake.no_fontset else Fontset()
 
-            def get_iter(self) -> _FakeIter:
-                return _FakeIter([None if f is None else _run(f.family if isinstance(f, Nameless) else f)
-                                  for f in fake.drawn])
-
-        fontmap = types.SimpleNamespace(create_context=lambda: "ctx")
-        pango = types.SimpleNamespace(SCALE=1024, Layout=Layout, FontDescription=_FakeFontDescription)
+        fontmap = types.SimpleNamespace(create_context=lambda: "ctx", load_fontset=load_fontset)
+        pango = types.SimpleNamespace(SCALE=1024, FontDescription=_FakeFontDescription,
+                                      Language=types.SimpleNamespace(from_string=lambda tag: f"lang:{tag}"))
         pangocairo = types.SimpleNamespace(FontMap=types.SimpleNamespace(get_default=lambda: fontmap))
         gi = types.ModuleType("gi")
         gi.require_version = lambda name, version: required.append((name, version))  # type: ignore[attr-defined]
@@ -324,24 +311,35 @@ class FakePango:
         monkeypatch.setitem(sys.modules, "gi", gi)
         monkeypatch.setitem(sys.modules, "gi.repository", repo)
         self.seen["required"] = required
+        self.seen["asked"] = asked
 
 
-def test_probe_prints_families_of_the_runs(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    # A new family appears only AFTER a line end, and the runs end with None like real Pango: a probe
-    # that stopped at the first line end would miss ORIGINAL.
-    fake = FakePango([READING, None, ORIGINAL, None])
+def test_probe_reports_the_families_drawing_each_character(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    # 'q' is the 5th distinct character: a probe that looked only at the first one would miss ORIGINAL.
+    fake = FakePango(READING, {"q": ORIGINAL})
     fake.install(monkeypatch)
     assert probe.main(["sans-serif", probe.SAMPLE]) == 0
     out, err = capsys.readouterr()
     assert json.loads(out) == {"v": 1, "families": [READING, ORIGINAL]} and err == ""
     assert fake.seen["family"] == "sans-serif" and fake.seen["size"] == 12 * 1024
-    assert fake.seen["text"] == probe.SAMPLE and fake.seen["context"] == "ctx"
+    assert fake.seen["context"] == "ctx" and fake.seen["language"] == "lang:en"
+    asked = fake.seen["asked"]
+    assert asked == [c for c in dict.fromkeys(probe.SAMPLE) if not c.isspace()]  # every character, once
     assert ("Pango", "1.0") in fake.seen["required"] and ("PangoCairo", "1.0") in fake.seen["required"]  # type: ignore[operator]
     assert not any(name in ("Gtk", "Adw", "Gdk") for name, _ in fake.seen["required"])  # type: ignore[attr-defined]
 
 
+def test_probe_never_touches_layout_runs() -> None:
+    """Regression (O3 CI 2026-10-15): run.item.analysis.font segfaulted on Ubuntu 24.04 / Pango 1.52."""
+    import ast
+
+    tree = ast.parse(Path(probe.__file__).read_text())
+    used = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    assert not used & {"analysis", "get_run", "get_run_readonly", "get_iter", "item"}
+
+
 def test_probe_output_round_trips_through_drawn_family_pango(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    FakePango([READING]).install(monkeypatch)
+    FakePango(READING).install(monkeypatch)
 
     def runner(argv: list[str], timeout: float) -> Proc:
         assert probe.main(argv[4:]) == 0  # argv[:4] = python -P -m module
@@ -351,7 +349,7 @@ def test_probe_output_round_trips_through_drawn_family_pango(monkeypatch, capsys
 
 
 def test_probe_family_is_set_literally_not_parsed(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    fake = FakePango([READING])
+    fake = FakePango(READING)
     fake.install(monkeypatch)
     assert probe.main(["Foo Bold 2", probe.SAMPLE]) == 0
     assert fake.seen["family"] == "Foo Bold 2"
@@ -368,22 +366,25 @@ def test_probe_without_gi_exits_non_zero_silently(monkeypatch, capsys) -> None: 
 
 
 def test_probe_failure_while_drawing_prints_no_traceback(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    fake = FakePango([READING], fail_on_layout=True)  # the error message contains the sample
+    fake = FakePango(READING, fail_on_fontset=True)  # the error message contains the sample
     fake.install(monkeypatch)
     _assert_silent_failure(probe.main(["sans-serif", probe.SAMPLE]), capsys)
 
 
-def test_probe_with_no_runs_fails(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    FakePango([None]).install(monkeypatch)
+@pytest.mark.parametrize("fake", [FakePango(no_fontset=True), FakePango(READING, {"x": None})],
+                         ids=["no-fontset", "no-font-for-a-character"])
+def test_probe_without_a_font_fails(monkeypatch, capsys, fake) -> None:  # type: ignore[no-untyped-def]
+    fake.install(monkeypatch)
     _assert_silent_failure(probe.main(["sans-serif", probe.SAMPLE]), capsys)
 
 
-@pytest.mark.parametrize("drawn", [
-    [READING, Nameless(None)], [READING, Nameless("")], [Nameless(None), READING], [READING, None, Nameless(None)],
+@pytest.mark.parametrize("default, overrides", [
+    (READING, {"z": Nameless(None)}), (READING, {"z": Nameless("")}), (Nameless(None), {"T": READING}),
+    (READING, {"9": Nameless(None)}),
 ])
-def test_probe_fails_closed_on_a_run_without_a_family_name(monkeypatch, capsys, drawn) -> None:  # type: ignore[no-untyped-def]
-    """An unidentified run must not let the rest pass as "every run is the reading family"."""
-    FakePango(drawn).install(monkeypatch)
+def test_probe_fails_closed_on_a_font_without_a_family_name(monkeypatch, capsys, default, overrides) -> None:  # type: ignore[no-untyped-def]
+    """An unidentified font must not let the rest pass as "every character is the reading family"."""
+    FakePango(default, overrides).install(monkeypatch)
     _assert_silent_failure(probe.main(["sans-serif", probe.SAMPLE]), capsys)
 
 
@@ -391,16 +392,16 @@ def test_probe_fails_closed_on_a_run_without_a_family_name(monkeypatch, capsys, 
                                   ["a\nb", probe.SAMPLE], ["x" * 201, probe.SAMPLE],
                                   ["sans-serif", probe.SAMPLE, "extra"]])
 def test_probe_refuses_bad_arguments_before_loading_pango(monkeypatch, capsys, args: list[str]) -> None:  # type: ignore[no-untyped-def]
-    fake = FakePango([READING])
+    fake = FakePango(READING)
     fake.install(monkeypatch)
     _assert_silent_failure(probe.main(args), capsys)
-    assert "text" not in fake.seen
+    assert "family" not in fake.seen
     assert fake.seen["required"] == []  # gi / Pango never loaded
 
 
 @pytest.mark.filterwarnings("ignore:.*found in sys.modules:RuntimeWarning")  # runpy: module already imported
 def test_probe_runs_as_a_module(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    FakePango([READING]).install(monkeypatch)
+    FakePango(READING).install(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["pango_probe", "sans-serif", probe.SAMPLE])
     with pytest.raises(SystemExit) as exc:
         runpy.run_module("scribesense.adapters.pango_probe", run_name="__main__")

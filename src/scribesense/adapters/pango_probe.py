@@ -2,8 +2,8 @@
 
     python -m scribesense.adapters.pango_probe <query> <sample>
 
-Lays out `sample` with a font description whose family is `query` and prints which font families Pango
-actually used for the runs, as ONE JSON line on stdout:
+Asks Pango which font families it draws the characters of `sample` with, for a font description whose
+family is `query`, and prints them as ONE JSON line on stdout:
 
     {"v": 1, "families": ["AccessSans-abc123"]}
 
@@ -61,31 +61,37 @@ def _load_pango():  # type: ignore[no-untyped-def]
 
 
 def drawn_families(query: str, sample: str) -> list[str]:
-    """Distinct families Pango used for the runs of `sample`, in first-use order. Raises on any failure."""
+    """Distinct families Pango draws the characters of `sample` with, in first-use order. Raises on any failure.
+
+    Asks the FONTSET — the object Pango itself uses to pick a font for every character when it itemizes
+    text — which font covers each (non-space) character of the fixed sample. Changed 2026-10-15: the old
+    path through layout runs (`run.item.analysis.font`) segfaulted on Ubuntu 24.04 / Pango 1.52 inside
+    PyGObject (O3 CI finding); the fontset path uses only plain method calls.
+    """
     Pango, PangoCairo = _load_pango()
-    context = PangoCairo.FontMap.get_default().create_context()
-    layout = Pango.Layout.new(context)
+    fontmap = PangoCairo.FontMap.get_default()
+    context = fontmap.create_context()
     desc = Pango.FontDescription()
     # set_family, not from_string: a family ending in a style word or a number ("Foo Bold", "Foo 2")
     # must not be parsed as style / size.
     desc.set_family(query)
     desc.set_size(PROBE_SIZE_PT * Pango.SCALE)
-    layout.set_font_description(desc)
-    layout.set_text(sample, -1)
-
+    fontset = fontmap.load_fontset(context, desc, Pango.Language.from_string("en"))
+    if fontset is None:
+        raise ValueError("no fontset")
     families: list[str] = []
-    it = layout.get_iter()
-    while True:
-        run = it.get_run()
-        if run is not None:  # None marks the end of a line
-            family = run.item.analysis.font.describe().get_family()
-            if not isinstance(family, str) or not family:
-                # Fail closed: a run from an unidentified font must not count as the reading family.
-                raise ValueError("run without a family name")
-            if family not in families:
-                families.append(family)
-        if not it.next_run():
-            break
+    for ch in dict.fromkeys(sample):  # each distinct character once, in order
+        if ch.isspace():
+            continue
+        font = fontset.get_font(ord(ch))
+        if font is None:
+            raise ValueError("no font for a sample character")
+        family = font.describe().get_family()
+        if not isinstance(family, str) or not family:
+            # Fail closed: a character from an unidentified font must not count as the reading family.
+            raise ValueError("font without a family name")
+        if family not in families:
+            families.append(family)
     return families
 
 

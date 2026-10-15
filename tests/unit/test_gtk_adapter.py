@@ -4,6 +4,8 @@ backend (GSETTINGS_BACKEND=memory from the sandbox) and only to read — never a
 from __future__ import annotations
 
 import builtins
+import json
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -335,7 +337,7 @@ def test_verify_unavailable_when_settings_cannot_be_read() -> None:
 
 # ------------------------------------------------------------------ the production store
 
-def test_gio_store_without_pygobject_is_adapter_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_canonical_without_pygobject_is_adapter_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     real_import = builtins.__import__
 
     def no_gi(name: str, *a: Any, **kw: Any) -> Any:
@@ -345,7 +347,7 @@ def test_gio_store_without_pygobject_is_adapter_unavailable(monkeypatch: pytest.
 
     monkeypatch.setattr(builtins, "__import__", no_gi)
     with pytest.raises(ScribeSenseError) as exc:
-        GioSettingsStore().schema_exists(SCHEMA)
+        GioSettingsStore(runner=lambda *_: None).canonical("d", 1.0)
     assert exc.value.code is ErrorCode.ADAPTER_UNAVAILABLE
 
 
@@ -357,21 +359,117 @@ def test_gio_store_writes_through_gsettings_commands_only() -> None:
     assert calls == [["gsettings", "set", SCHEMA, TEXT_SCALE, "1.25"], ["gsettings", "reset", SCHEMA, FONT_NAME]]
 
 
-def test_gio_store_reads_user_values_from_the_memory_backend() -> None:
-    """Real Gio, in-memory backend (sandbox GSETTINGS_BACKEND=memory): unset -> None; set -> exact text."""
+# ---- reads run in a FRESH process (O3 CI finding 2026-10-15: a long-running process saw stale values)
+
+class _Done:
+    def __init__(self, payload: Any) -> None:
+        self.stdout = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+
+
+def _probe_reply(user: str | None = "1.25", schema: bool = True) -> dict[str, Any]:
+    entry = {"type": "d", "user": user, "user_value": None if user is None else float(user),
+             "effective": user or "1.0", "value": float(user or 1.0)}
+    return {"v": 1, "schema": schema, "values": {TEXT_SCALE: entry} if schema else {}}
+
+
+def test_reads_run_the_probe_in_a_fresh_python_process() -> None:
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], timeout: float) -> _Done:
+        calls.append(argv)
+        return _Done(_probe_reply("1.25") if len(argv) > 5 else {"v": 1, "schema": True, "values": {}})
+
+    store = GioSettingsStore(runner=runner)
+    assert store.schema_exists(SCHEMA) and store.schema_exists(SCHEMA)  # cached: one probe
+    kv = store.user_value(SCHEMA, TEXT_SCALE)
+    assert kv == KeyValue("1.25", "d", 1.25)
+    assert store.effective_value(SCHEMA, TEXT_SCALE).text == "1.25"
+    assert calls[0] == [sys.executable, "-P", "-m", "scribesense.adapters.gsettings_probe", SCHEMA]
+    assert calls[1] == [sys.executable, "-P", "-m", "scribesense.adapters.gsettings_probe", SCHEMA, TEXT_SCALE]
+    assert len(calls) == 3  # every value read is a new process — never a cached in-process backend
+
+
+def test_unset_key_reads_as_none_and_missing_schema_is_schema_missing() -> None:
+    store = GioSettingsStore(runner=lambda argv, t: _Done(_probe_reply(None)))
+    assert store.user_value(SCHEMA, TEXT_SCALE) is None
+    gone = GioSettingsStore(runner=lambda argv, t: _Done(_probe_reply(schema=False)))
+    assert gone.schema_exists(SCHEMA) is False
+    with pytest.raises(ScribeSenseError) as exc:
+        gone.user_value(SCHEMA, TEXT_SCALE)
+    assert exc.value.code is ErrorCode.SCHEMA_MISSING
+
+
+@pytest.mark.parametrize("reply, code", [
+    (b"not json", ErrorCode.ADAPTER_COMMAND_FAILED),
+    ({"v": 2, "schema": True, "values": {}}, ErrorCode.ADAPTER_COMMAND_FAILED),
+    ({"v": 1, "schema": True, "values": {}}, ErrorCode.ADAPTER_COMMAND_FAILED),  # asked key missing
+])
+def test_bad_probe_output_is_an_error(reply: Any, code: ErrorCode) -> None:
+    store = GioSettingsStore(runner=lambda argv, t: _Done(reply))
+    with pytest.raises(ScribeSenseError) as exc:
+        store.user_value(SCHEMA, TEXT_SCALE)
+    assert exc.value.code is code
+
+
+@pytest.mark.parametrize("error, code", [
+    (ScribeSenseError(ErrorCode.ADAPTER_TIMEOUT), ErrorCode.ADAPTER_TIMEOUT),
+    (ScribeSenseError(ErrorCode.ADAPTER_COMMAND_FAILED), ErrorCode.ADAPTER_COMMAND_FAILED),
+    (PermissionError("no exec"), ErrorCode.ADAPTER_UNAVAILABLE),
+])
+def test_probe_launch_errors_are_scribesense_errors(error: BaseException, code: ErrorCode) -> None:
+    def runner(argv: list[str], t: float) -> _Done:
+        raise error
+
+    with pytest.raises(ScribeSenseError) as exc:
+        GioSettingsStore(runner=runner).user_value(SCHEMA, TEXT_SCALE)
+    assert exc.value.code is code
+
+
+# ---- the probe itself, run in-process against Gio's memory backend (sandbox GSETTINGS_BACKEND=memory)
+
+def test_probe_reads_user_and_effective_values(capsys: pytest.CaptureFixture[str]) -> None:
     gi = pytest.importorskip("gi")
     gi.require_version("Gio", "2.0")
     from gi.repository import Gio, GLib
 
-    store = GioSettingsStore(runner=lambda *_: None)
-    if not store.schema_exists(SCHEMA):
+    from scribesense.adapters import gsettings_probe as probe
+
+    source = Gio.SettingsSchemaSource.get_default()
+    if source is None or source.lookup(SCHEMA, True) is None:
         pytest.skip("org.gnome.desktop.interface schema not installed")
-    assert store.user_value(SCHEMA, TEXT_SCALE) is None
+    assert probe.main([SCHEMA, TEXT_SCALE]) == 0
+    unset = json.loads(capsys.readouterr().out)["values"][TEXT_SCALE]
+    assert unset["user"] is None and unset["type"] == "d"
     Gio.Settings.new(SCHEMA).set_value(TEXT_SCALE, GLib.Variant("d", 1.15))
-    kv = store.user_value(SCHEMA, TEXT_SCALE)
-    assert kv is not None and kv.text == format_double(1.15) and kv.value_type == "d"
+    assert probe.main([SCHEMA, TEXT_SCALE]) == 0
+    entry = json.loads(capsys.readouterr().out)["values"][TEXT_SCALE]
+    assert entry["user"] == format_double(1.15) and entry["user_value"] == 1.15
     Gio.Settings.new(SCHEMA).reset(TEXT_SCALE)
-    assert store.user_value(SCHEMA, TEXT_SCALE) is None
+
+
+def test_probe_missing_schema_bad_args_and_failures(capsys: pytest.CaptureFixture[str],
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    from scribesense.adapters import gsettings_probe as probe
+
+    pytest.importorskip("gi")
+    assert probe.main(["org.example.does.not.exist", "font-name"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"v": 1, "schema": False, "values": {}}
+    for bad in ([], ["bad schema"], [SCHEMA, "Bad_Key"], [SCHEMA, "x", "x"], [SCHEMA, "a;b"]):
+        assert probe.main(bad) == probe.EXIT_BAD_ARGS
+    monkeypatch.setattr(probe, "_load_gio", lambda: (_ for _ in ()).throw(ImportError("no gi")))
+    assert probe.main([SCHEMA, TEXT_SCALE]) == probe.EXIT_FAILED
+    assert capsys.readouterr().out == ""  # fails silently: nothing that could echo values
+
+
+def test_probe_imports_no_gtk() -> None:
+    import ast
+    from pathlib import Path
+
+    from scribesense.adapters import gsettings_probe as probe
+
+    tree = ast.parse(Path(probe.__file__).read_text())
+    names = {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
+    assert not names & {"Gtk", "Adw", "Gdk"}
 
 
 @pytest.mark.integration
