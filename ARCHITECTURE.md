@@ -1397,7 +1397,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Prune old **transaction history** (and its per-tx backups). Never `LocationRecord`s or baseline backups. [D F8, R2] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | M3.1 |
 | Used by | app startup [P] |
 | Provides | `prune(now)` |
@@ -1411,6 +1411,18 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Delete baselines or unfinished transactions |
 | Acceptance tests | 30-day/last-10 rule; baselines survive |
 | Done when | Tests pass · reviewed |
+
+> **Implemented 2026-10-15 (O3, M3.2) — review by O4 pending.** `src/scribesense/store/retention.py`: `prune(journal, now) -> int`,
+> `RETENTION_DAYS = 30`, `KEEP_LAST = 10`. It takes any K4 journal (O4's SQLite journal, which holds the apply lock, or the in-memory
+> double) and calls `journal.prune_history(now - 30 days, 10)`; the SQL rules (D4) are in `JournalTables.prune_history` (M3.1).
+> - **For the service start-up (O2/O4):** call `prune(journal, datetime.now(timezone.utc))` once, after the store is open and no apply is running.
+>   If any tx is unfinished (or the journal reports the lock is held) it prunes nothing and returns 0 — the card's precondition.
+> - **Failure rule:** any storage error (`ScribeSenseError` or `sqlite3.Error`) → nothing is deleted (the delete is one transaction), the error
+>   *code* is logged (category `retention`) and `0` is returned; start-up never fails because of housekeeping. Logged on success: code `OK` and the count.
+> - 28 tests, each policy test on both journals: the 40-day example, the strict "older than 30 days" boundary, last-10, baselines and managed
+>   records survive, backups removed only when unreferenced, no pruning while a tx is active, rollback on a mid-prune failure, log privacy.
+> - **Finding for O4:** `safety/memory_journal.py` `prune_history` does not yet keep the newest COMPLETED apply (D4 / draft F2, accepted
+>   by O4); the SQL layer does. Until it does, the in-memory double and the SQL journal differ there (only the SQL test covers it).
 
 #### M3.3 Test sandbox
 | Field | Spec |
