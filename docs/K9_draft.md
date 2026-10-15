@@ -15,7 +15,7 @@ Date: 2026-10-14 · Sources: ARCHITECTURE.md K4, K9, M3.1, M3.2, R2-1…R2-6; co
 |---|---|---|---|
 | D1 | `JournalItem.intent` is a `PlannedWrite` (has `payload`) but K9 stores only `intent_sha256`. | Store the payload (`TEXT` for keys, `BLOB` for files). No contract change. Recovery only needs the hash, but the K4 type promises the payload. Payloads are tool-config bytes (fontconfig / CSS / gsettings text), never reader text. | O4 (confirms nothing in K4 expects less) |
 | D2 | `Target` has 4 fields; `running` is transient. | Persist `adapter`, `target_id`, `display_name` as three columns. On read set `running=False` (stale by definition; callers re-detect). Never store window titles. | O4 |
-| D3 | `Preset.kind` is `"builtin" \| "user" \| "custom"`; K9 only says "built-in → `PRESET_READ_ONLY`". | Built-ins are **not stored**: `PresetRepo.list()` merges `config.BUILTINS` (needs `store` → `config` import; allowed, the reverse is forbidden). Only `"user"` is persisted. `save()` of `"custom"` → `ValueError` (it is unsaved editing state). | **O1** (meaning of `"custom"`) |
+| D3 | **(revised 2026-10-15 after O1's handoff, see §8)** `Preset.kind` is `"builtin" \| "user" \| "custom"`; K9 only says "built-in → `PRESET_READ_ONLY`". | Built-ins are **not stored**: `PresetRepo.list()` merges `config.BUILTINS` (needs `store` → `config` import; allowed, the reverse is forbidden). Only `"user"` is persisted. `save()` of `"custom"` → `ValueError` (it is unsaved editing state). | **O1** (meaning of `"custom"`) |
 | D4 | Retention wording differs: K9 "outside the newest `keep_last`" vs M3.2 "30 days / last 10". | A terminal tx is deleted only if **older than the cutoff AND outside the newest `keep_last` terminal txs AND not referenced** (i.e. kept if recent *or* among the last N). Plus a new rule: **always keep the newest `COMPLETED` apply** (see §5, finding F2). | O4 (they implement the journal API) |
 | D5 | Who writes SQL for the journal tables? Import rule R3: **only `store/` imports `sqlite3`**, so `safety/` (O4's M4.10 journal) cannot. | `store/` provides the SQL layer for the journal tables (a private `store/journal_tables.py`, written by O3 to O4's K4 spec). O4's `safety/journal.py` calls it. Alternative: relax R3 for one file — rejected, it weakens the one rule that keeps SQLite in one place. | **O4** (this changes who writes what in M4.10) |
 | D6 | The DB file name is not defined (K8 has `data_dir()` but no DB path). | `store.default_path() = data_dir() / "scribesense.db"`; `Store(path)` stays as in K9. No K8 change. | O3 only |
@@ -238,3 +238,40 @@ already restricts `sqlite3` to `store/`.
 - [ ] Matches the planned implementation (D1–D7 decided)
 - [ ] The 12 acceptance tests accepted (plus F2, F3, F4)
 - [ ] Journal tables return everything in `JournalItem` / `LocationRecord` (§3, with O4's answer to D1/D2/D5)
+
+
+---
+
+## 8. O1 preset handoff (received 2026-10-15) — review
+
+Source: two files from O1 (`presets_handoff.json` and a prose handoff). **Not yet read from the O1 branch** (the local copy of `origin/O1` is
+stale, last commit 2026-10-11); this review is of what was pasted. Scope: **only the preset / `Configuration` part** of the store.
+It does not cover `font_registry`, `settings`, samples, or any journal table (K4, O4), so it is not "all the fields of the database".
+
+**Checked against the frozen contracts:** field names, ranges, steps and the `ui_line` advisory (1.3) match `contracts/config.py` and K2. The
+three built-in intents and their resolved values match the K2 table in `contracts/presets.py`.
+
+**Answers O1 gives to my open decisions**
+* **D3 (revised):** `custom` is a real, persisted row — the user's working set, same six fields, written only once the user has values, never seeded
+  with defaults. `original` is never stored. Built-ins are code (`config.BUILTINS`). → `presets.kind CHECK (kind IN ('user','custom'))`; `custom` uses the
+  reserved id `custom` (one row); `save()` of a built-in or of `original` is refused; user ids are `uuid4`. Reserved ids: `default`, `reading`,
+  `high-separation`, `custom`, `original`.
+* **Resolved configs next to presets:** do not persist them. Recompute with `resolve()` on read (O1's own regeneration rule, §8.2.5, then never applies).
+  Stored resolved configs in `font_registry` / `active_config` are history and stay as written (K9 "Presets vs active").
+* **Candidate presets (Table C):** keep out of the database; K2 is frozen at three built-ins.
+
+**Conflicts / new findings**
+* **F6 — real bug in the K9 rule "same key, different config → `FONT_IDENTITY_CONFLICT`".** The M1.5 key deliberately **excludes `text_scale`**
+  (card acceptance test: "`text_scale` never changes the key"). Two registry entries with the same key but different `text_scale` would be a false conflict.
+  Proposed **D8:** compare only the font-building fields (`base_family`, `letter_em`, `word_scale`, `reading_line`, `ui_line`) plus files and hashes; or store only
+  those fields in `font_registry.config`.
+* **Storage format:** O1 proposes typed columns with decimal types; K9 says versioned JSON. SQLite has **no decimal type** (NUMERIC stores binary floats), so
+  "use decimal so equality works" cannot be honoured literally. Proposed **D9:** keep K9's JSON (`{"v":1,…}`) with fixed-decimal strings, validate with `validate()`
+  (O1's rule 7), and add only cheap CHECKs (`kind`, `word_mode`). Alternative: integers in hundredths — your call.
+* **`word` mode + value** must be stored together (confirmed; already inside the intent JSON in my draft).
+* **Unreproduced contract differences (check on her branch):** she lists error code `NOT_A_NUMBER`, which is **not** in `contracts/config.py` `IssueCode`
+  (contract has `NON_FINITE`, `OUT_OF_RANGE`, `UNKNOWN_FONT`, `NOT_ON_STEP`, `UI_LINE_ABOVE_RECOMMENDED`); and she names `config.settings.Configuration` /
+  `config.presets.resolve`, while the contract types live in `scribesense.contracts.config` / `contracts.presets`. If she defined a second `Configuration`
+  or added a code, that is a contract change (AGENTS.md §4) and needs a decision entry.
+* **Provisional input:** `target_em` presets resolve through a provisional 0.25 em space width (Default flips between 1.5 and 1.75 near 0.256 em).
+  Nothing stored in the store may depend on that being final; another reason not to persist resolved configs beside presets.
