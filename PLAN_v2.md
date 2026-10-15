@@ -831,3 +831,17 @@ The O3 dev machine is a **CLI-only Fedora aarch64 server and itself a QEMU guest
   (after `dnf install gobject-introspection`), `vm.check_hyprland` (prints a report only), checklist sections F–G that are
   shell-only (doctor, install/uninstall, privacy greps).
 - The GUI/browser items stay ⬜ until a machine with a graphical session (the test VM, M3.5) exists. They are **not** counted as passed.
+
+## Note (2026-10-15, O3) — CI findings for O4
+
+The new `integration` CI job (Ubuntu 24.04 runner, Python 3.12.3, Pango 1.52.1) fails two tests; both are in O4's code:
+
+1. `adapters/gtk.py` `_read_back`: under the keyfile backend Gio returns a stale value until the GLib main context is iterated
+   (reproduced locally). Fix: drain `GLib.MainContext.default()` before each read.
+2. `adapters/pango_probe.py` `drawn_families()`: `run.item.analysis.font.describe().get_family()` **segfaults** (exit 139) on
+   Ubuntu 24.04 — with and without the sandbox (verified in CI, staged script with `faulthandler`; stages 1–8 pass, stage 9
+   crashes). It works on Fedora (Pango 1.57.1). It is a production bug, not a CI setup problem. O4 to find an access path
+   that does not crash (and re-test on Ubuntu 24.04). `harness/render.py` (M3.4) reuses this function, so the Pango engine
+   has the same limit on that runner.
+
+Until both are fixed the `integration` job stays red; it must not be made a required check yet.
