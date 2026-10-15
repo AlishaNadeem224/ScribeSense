@@ -2,14 +2,17 @@
 
 What this file guarantees for ordinary (unit) tests:
   1. Environment redirected to a per-test temp dir: HOME, XDG_*, SCRIBESENSE_*, FONTCONFIG_FILE.
-     (XDG_RUNTIME_DIR uses a short private /tmp/ss-* dir: Unix socket paths are limited to 108 bytes.)
+     (XDG_RUNTIME_DIR is a short private /tmp/ss-*/run dir: the service socket lives there (K8) and
+     Unix socket paths are limited to 108 bytes. The data dir sits beside it, OUTSIDE the temp HOME, so
+     tests that fingerprint HOME see only what the code under test wrote there.)
      Desktop session variables (D-Bus, Wayland, X11, Hyprland) are removed; GSETTINGS_BACKEND=memory.
   2. Process launching is BLOCKED (subprocess, os.system, exec*, spawn*, posix_spawn*, fork).
   3. Unix-socket connections outside the test's temp dir are BLOCKED.
 
 A temp dir is defence in depth, NOT the sandbox. Tests that touch real desktop tooling are
 `@pytest.mark.integration` and run ONLY inside the bubblewrap runner (M3.3, O3), which sets
-SCRIBESENSE_SANDBOX=bwrap. Outside it they are skipped — fail closed, never run unsandboxed.
+SCRIBESENSE_SANDBOX=bwrap. Outside it they are skipped — fail closed, never run unsandboxed. With SCRIBESENSE_REQUIRE_SANDBOX=1
+(CI, release runs) a missing sandbox is a test FAILURE instead of a skip, so it cannot hide as "green".
 
 `@pytest.mark.real_subprocess` — only for tests of contracts.paths.run_cmd itself: processes may be
 launched, but ONLY the current Python interpreter or files inside the test's temp dir.
@@ -32,6 +35,7 @@ from scribesense.contracts.errors import ErrorCode
 
 SANDBOX_ENV = "SCRIBESENSE_SANDBOX"
 SANDBOX_VALUE = "bwrap"
+REQUIRE_ENV = "SCRIBESENSE_REQUIRE_SANDBOX"
 
 _SESSION_VARS = (
     "DBUS_SESSION_BUS_ADDRESS",
@@ -61,30 +65,45 @@ class Sandbox:
 def require_sandbox(env: dict[str, str] | os._Environ[str]) -> None:
     """Fail closed: integration tests run only inside the bubblewrap runner."""
     if env.get(SANDBOX_ENV) != SANDBOX_VALUE:
-        pytest.skip(f"{ErrorCode.SANDBOX_UNAVAILABLE}: integration tests run only inside the bubblewrap runner (M3.3)")
+        message = f"{ErrorCode.SANDBOX_UNAVAILABLE}: integration tests run only inside the bubblewrap runner (M3.3)"
+        if env.get(REQUIRE_ENV) == "1":
+            pytest.fail(message, pytrace=False)
+        pytest.skip(message)
 
 
 @pytest.fixture(autouse=True)
 def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> Sandbox:
     if request.node.get_closest_marker("integration"):
         require_sandbox(os.environ)
+        # Inside bubblewrap the runner has already set a private HOME / XDG_* / GSETTINGS_BACKEND=keyfile
+        # and removed the session variables; do not override that environment.
+        home = Path(os.environ["HOME"])
+        runtime = Path(os.environ["XDG_RUNTIME_DIR"])
+        _clear_dir(home, runtime)  # one HOME per session: start (and end) every test empty (M3.3 postcondition)
+        request.addfinalizer(lambda: _clear_dir(home, runtime))
+        return Sandbox(root=home, home=home, config_home=Path(os.environ["XDG_CONFIG_HOME"]),
+                       data_dir=Path(os.environ["SCRIBESENSE_DATA_DIR"]),
+                       fonts_dir=Path(os.environ["SCRIBESENSE_FONTS_DIR"]),
+                       runtime_dir=Path(os.environ["XDG_RUNTIME_DIR"]))
 
     root = tmp_path / "sandbox"
-    # Unix socket paths are limited to 108 bytes and pytest's tmp_path is long, so the data dir
-    # (which holds service.sock) lives in a short private dir under /tmp, removed after the test.
+    # service.sock lives in XDG_RUNTIME_DIR (K8). Unix socket paths are limited to 108 bytes and
+    # pytest's tmp_path is long, so the runtime dir is a short private dir under /tmp, removed after the test.
+    # The data dir is kept beside it, outside the temp HOME: O4's tests compare HOME before/after.
     short = Path(tempfile.mkdtemp(prefix="ss-", dir="/tmp"))
     request.addfinalizer(lambda: shutil.rmtree(short, ignore_errors=True))
     sb = Sandbox(
         root=root,
         home=root / "home",
         config_home=root / "home" / ".config",
-        data_dir=short / "scribesense",
+        data_dir=short / "data",
         fonts_dir=root / "home" / ".local" / "share" / "fonts" / "scribesense",
-        runtime_dir=root / "run",
+        runtime_dir=short / "run",
     )
     for d in (sb.home, sb.config_home, sb.runtime_dir):
         d.mkdir(parents=True, exist_ok=True)
     sb.runtime_dir.chmod(0o700)
+    assert len(str(sb.runtime_dir / "scribesense" / "service.sock")) < 108
 
     monkeypatch.setenv("HOME", str(sb.home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(sb.config_home))
@@ -99,10 +118,21 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fix
     for var in _SESSION_VARS:
         monkeypatch.delenv(var, raising=False)
 
-    if not request.node.get_closest_marker("integration"):
-        _block_processes(monkeypatch, allow=bool(request.node.get_closest_marker("real_subprocess")), root=tmp_path)
-        _block_foreign_unix_sockets(monkeypatch, roots=(tmp_path, short))
+    _block_processes(monkeypatch, allow=bool(request.node.get_closest_marker("real_subprocess")), root=tmp_path)
+    _block_foreign_unix_sockets(monkeypatch, roots=(tmp_path, short))
     return sb
+
+
+def _clear_dir(*dirs: Path) -> None:
+    """Empty private sandbox dirs between tests. Only ever under the bwrap tmpfs (/tmp); refuses anything else."""
+    for d in dirs:
+        if not d.is_absolute() or d.parts[:2] != ("/", "tmp") or len(d.parts) < 3:
+            raise RuntimeError(f"refusing to clear {d}: not a private sandbox dir")
+        for child in d.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
 
 
 def _block_processes(monkeypatch: pytest.MonkeyPatch, *, allow: bool, root: Path) -> None:

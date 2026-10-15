@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
-from scribesense.contracts.paths import run_cmd
+from scribesense.contracts.paths import run_cmd, socket_path
 
 
 def _blocked_error_type() -> type[BaseException]:
@@ -20,12 +20,15 @@ def _blocked_error_type() -> type[BaseException]:
 
 
 def test_home_and_xdg_point_into_the_test_dir(sandbox, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
-    for var in ("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR",
-                "SCRIBESENSE_FONTS_DIR", "FONTCONFIG_FILE"):
+    for var in ("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "SCRIBESENSE_FONTS_DIR", "FONTCONFIG_FILE"):
         assert Path(os.environ[var]).is_relative_to(tmp_path), var
-    data_dir = Path(os.environ["SCRIBESENSE_DATA_DIR"])  # short private dir (socket path limit)
-    assert data_dir == sandbox.data_dir and data_dir.parent.name.startswith("ss-")
-    assert len(str(data_dir / "service.sock")) < 108
+    data_dir = Path(os.environ["SCRIBESENSE_DATA_DIR"])  # beside the runtime dir, outside the temp HOME
+    assert data_dir == sandbox.data_dir and data_dir.parent == sandbox.runtime_dir.parent
+    assert not data_dir.is_relative_to(sandbox.home)
+    runtime = Path(os.environ["XDG_RUNTIME_DIR"])  # short private dir (socket path limit, K8)
+    assert runtime == sandbox.runtime_dir and runtime.parent.name.startswith("ss-")
+    assert len(str(socket_path())) < 108
+    assert socket_path() == runtime / "scribesense" / "service.sock"
     assert os.environ["GSETTINGS_BACKEND"] == "memory"
 
 
@@ -81,6 +84,19 @@ def test_require_sandbox_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     module.require_sandbox({"SCRIBESENSE_SANDBOX": "bwrap"})  # inside the runner: allowed
 
 
+def test_require_sandbox_can_be_made_a_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_conftest_strict", Path(__file__).parents[1] / "conftest.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    with pytest.raises(pytest.fail.Exception, match=ErrorCode.SANDBOX_UNAVAILABLE.value):
+        module.require_sandbox({"SCRIBESENSE_REQUIRE_SANDBOX": "1"})
+
+
+@pytest.mark.skipif(os.environ.get("SCRIBESENSE_SANDBOX") == "bwrap", reason="canary: only meaningful outside the runner")
 @pytest.mark.integration
 def test_integration_marker_never_runs_outside_the_runner() -> None:
     raise AssertionError("integration test executed outside the bubblewrap runner")  # must be skipped

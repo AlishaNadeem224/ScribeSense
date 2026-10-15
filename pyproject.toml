@@ -28,6 +28,7 @@ python-preference = "only-system"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # lets tests import the repo-root `harness` package (O3)
 addopts = "--import-mode=importlib -m 'not gui'"
 markers = [
     "gui: needs a real GTK display — local only, never in CI",
