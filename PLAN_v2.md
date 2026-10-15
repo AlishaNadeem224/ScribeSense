@@ -860,7 +860,7 @@ notes in `ARCHITECTURE.md`). K9 is signed off (2026-10-15); the journal part was
 - **Confirm D7:** `journal_tables.is_managed_location_shape()` exists and agrees with `adapters/conformance.py`, but it is not enforced inside
   `add_item` because the fake adapter uses free location names.
 - **Confirm ownership of `src/scribesense/uninstall.py`** (new top-level recovery module, put under O3 like `doctor.py`; not in the AGENTS.md table).
-- **CI:** check the `integration` job on Ubuntu 24.04 after the Pango/GTK fixes; then remove the diagnostic step in `.github/workflows/tests.yml` (O3 does that).
+- **CI:** check the `integration` job on Ubuntu 24.04 after the Pango/GTK fixes. (O3 removed the diagnostic step 2026-10-15; the job was green.)
 - **K1 amendment `NOT_A_NUMBER`** (added by O4, "sign-off by one other owner pending"): needs one other owner's sign-off — O1 or O3.
 - **Fontfield inspection for `remove_unused()`** (see the O1/O3 gap below): the fifth K7 rule 3 source — live settings found by inspecting each target's
   font fields — needs adapter support.
@@ -885,4 +885,4 @@ notes in `ARCHITECTURE.md`). K9 is signed off (2026-10-15); the journal part was
 **Repo owner:** mark the `integration` CI job as a required check once it is green.
 
 **O3 (still open):** M3.4 Firefox / Chromium engines (needs a browser installed; O4 approved the harness exception) · M3.5 VM scenarios (needs a VM with a
-graphical session) · M3.6 graphical checklist sections · M3.8 byte-identical VM test · diagnostic step removal in CI.
+graphical session) · M3.6 graphical checklist sections · M3.8 byte-identical VM test · (done 2026-10-15: the CI diagnostic step was removed after the `integration` job turned green on Ubuntu).
