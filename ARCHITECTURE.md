@@ -662,7 +662,7 @@ owner + one other; existing codes are never renamed or reused. K1 validation cod
 | Reader / capture (O2) | `NOTHING_SELECTED` · `CLIPBOARD_EMPTY` · `SELECTION_UNAVAILABLE` · `TOO_LARGE` |
 | Extension / IPC (O4 + O2) | `APP_NOT_RUNNING` · `HOST_MISSING` · `BAD_MESSAGE` |
 
-### K9 — Store repositories (owner O3) — DRAFT 2026-10-09 · **PARTIALLY SIGNED OFF by O3 2026-10-15** (journal tables pending O4)
+### K9 — Store repositories (owner O3) — DRAFT 2026-10-09 · **SIGNED OFF by O3 2026-10-15** (journal part accepted by O4 the same day; D3 for O1 to confirm)
 
 Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9). Nothing else.
 
@@ -681,9 +681,14 @@ Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9).
 > - **D4** retention rule (applies when M3.2 is built): delete a terminal tx only if older than the cutoff **and** outside the newest
 >   `keep_last` terminal txs **and** unreferenced; **always keep the newest `COMPLETED` apply**.
 > - **D7** stored `location` / `target_id` values are tool-config locations ScribeSense itself manages — never user documents; a test checks this.
-> **Still pending (not signed off):** the journal tables (`transactions`, `journal_items`, `backups`, `location_records`, `active_config`, `coverage`)
-> and `store/journal_tables.py` — waiting for **O4** on D1 (store the intent payload), D2 (do not store `Target.running`), D5 (the SQL layer
-> lives in `store/`, because only `store/` may import `sqlite3`). The `Store.transaction()` requirement for an atomic `keep()` (draft F4) applies there.
+> **Journal tables — signed off 2026-10-15.** O4 accepted D1 (store the planned-write payload: text for keys, blob for files),
+> D2 (`Target` as three columns, `running=False` on read), D4 and D7 (see the note "K9 journal decisions accepted by O4"), and
+> **D5: the SQL for the journal tables lives in `store/journal_tables.py`, written by O3 to K4's spec; M4.10 (`safety/journal.py`) calls it.**
+> Requirements carried into M3.1: `Store.transaction()` must let several journal writes share one transaction so `keep()` is atomic (draft F4);
+> `active_config` is one permanent row whose `style_revision` survives "Original" (F3); retention never deletes the newest `COMPLETED` apply (F2);
+> the D7 pattern test must accept K3 rule 10b locations (`<Preferences path>#<key>`).
+> **Open:** O1 has not confirmed D3 (`custom` as one stored row). The K1 amendment `NOT_A_NUMBER` (added by O4, "sign-off by one other owner
+> pending") is a contract change that O3 may sign as that other owner — O3's decision, not part of K9.
 
 ```python
 # ---- Records ----

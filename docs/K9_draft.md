@@ -1,6 +1,6 @@
 # K9 store — working draft (O3)
 
-**Status: PARTIALLY SIGNED OFF by O3 on 2026-10-15** (record in `ARCHITECTURE.md`, K9 section). Signed off: store core, presets, settings, samples, font registry, D3/D4/D6/D7/D8/D9. **Pending O4:** journal tables (D1, D2, D5). Nothing here is built yet.
+**Status: SIGNED OFF by O3 on 2026-10-15** (record in `ARCHITECTURE.md`, K9 section). O4 accepted the journal decisions D1, D2, D4, D5, D7 the same day. D3 is for O1 to confirm. Nothing here is built yet; M3.1 builds it.
 `contracts/store.py` is frozen text and is **not** edited by this draft (AGENTS.md §4). `store/` is **not** built (K9 is a draft
 until O3 signs off). When you sign off, the accepted decisions go into `ARCHITECTURE.md` (K9 section) and `PLAN_v2.md`; any item
 marked **needs O4 / O1** needs that owner before it can be accepted.
@@ -37,10 +37,11 @@ Per connection (not in the SQL file): WAL, `synchronous=FULL`, `foreign_keys=ON`
 CREATE TABLE presets (
   id         TEXT PRIMARY KEY,                      -- str(uuid4()); built-ins are NOT stored (D3)
   name       TEXT NOT NULL,
-  kind       TEXT NOT NULL CHECK (kind = 'user'),
+  kind       TEXT NOT NULL CHECK (kind IN ('user','custom')),   -- D3: 'custom' = the one working-set row
   data       TEXT NOT NULL,                         -- Preset values, JSON v1
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  CHECK ((kind = 'custom') = (id = 'custom'))        -- the custom row has the reserved id; nothing else may
 );
 CREATE TABLE settings (
   name  TEXT PRIMARY KEY,                           -- must be a key of SETTINGS (checked in code)
@@ -55,7 +56,7 @@ CREATE TABLE recommendation_samples (
 -- ---- font registry (content owner: M1.8) ----
 CREATE TABLE font_registry (
   key            TEXT PRIMARY KEY,
-  config         TEXT NOT NULL,                     -- Configuration JSON v1
+  config         TEXT NOT NULL,                     -- Configuration JSON v1 (D8: create() compares only the font-building fields, never text_scale)
   reading_family TEXT NOT NULL,
   ui_family      TEXT NOT NULL,
   styles         TEXT NOT NULL,                     -- JSON array
@@ -238,8 +239,8 @@ already restricts `sqlite3` to `store/`.
 
 - [x] Column types (§2) — non-journal tables, 2026-10-15
 - [x] Matches the planned implementation — D3, D4, D6, D7, D8, D9 decided
-- [x] The 12 acceptance tests accepted (plus F2, F3, F4) — non-journal ones now; F2–F4 and tests 10–11 with the journal tables
-- [ ] Journal tables return everything in `JournalItem` / `LocationRecord` (§3) — **pending O4 (D1, D2, D5)**
+- [x] The 12 acceptance tests accepted (plus F2, F3, F4)
+- [x] Journal tables return everything in `JournalItem` / `LocationRecord` (§3) — O4 accepted D1, D2, D5, 2026-10-15
 
 
 ---
