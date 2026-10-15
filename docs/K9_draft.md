@@ -1,6 +1,6 @@
 # K9 store — working draft (O3)
 
-**Status: PROPOSAL. Not signed off. Nothing here is built.**
+**Status: PARTIALLY SIGNED OFF by O3 on 2026-10-15** (record in `ARCHITECTURE.md`, K9 section). Signed off: store core, presets, settings, samples, font registry, D3/D4/D6/D7/D8/D9. **Pending O4:** journal tables (D1, D2, D5). Nothing here is built yet.
 `contracts/store.py` is frozen text and is **not** edited by this draft (AGENTS.md §4). `store/` is **not** built (K9 is a draft
 until O3 signs off). When you sign off, the accepted decisions go into `ARCHITECTURE.md` (K9 section) and `PLAN_v2.md`; any item
 marked **needs O4 / O1** needs that owner before it can be accepted.
@@ -236,10 +236,10 @@ already restricts `sqlite3` to `store/`.
 
 ## 7. Sign-off checklist (K9, from ARCHITECTURE.md) — all open
 
-- [ ] Column types (§2 reviewed)
-- [ ] Matches the planned implementation (D1–D7 decided)
-- [ ] The 12 acceptance tests accepted (plus F2, F3, F4)
-- [ ] Journal tables return everything in `JournalItem` / `LocationRecord` (§3, with O4's answer to D1/D2/D5)
+- [x] Column types (§2) — non-journal tables, 2026-10-15
+- [x] Matches the planned implementation — D3, D4, D6, D7, D8, D9 decided
+- [x] The 12 acceptance tests accepted (plus F2, F3, F4) — non-journal ones now; F2–F4 and tests 10–11 with the journal tables
+- [ ] Journal tables return everything in `JournalItem` / `LocationRecord` (§3) — **pending O4 (D1, D2, D5)**
 
 
 ---

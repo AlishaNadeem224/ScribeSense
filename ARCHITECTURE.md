@@ -649,9 +649,28 @@ owner + one other; existing codes are never renamed or reused. K1 validation cod
 | Reader / capture (O2) | `NOTHING_SELECTED` · `CLIPBOARD_EMPTY` · `SELECTION_UNAVAILABLE` · `TOO_LARGE` |
 | Extension / IPC (O4 + O2) | `APP_NOT_RUNNING` · `HOST_MISSING` · `BAD_MESSAGE` |
 
-### K9 — Store repositories (owner O3) — DRAFT 2026-10-09, **O3 sign-off required**
+### K9 — Store repositories (owner O3) — DRAFT 2026-10-09 · **PARTIALLY SIGNED OFF by O3 2026-10-15** (journal tables pending O4)
 
 Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9). Nothing else.
+
+> **Sign-off record (2026-10-15, O3) — partial.** Working draft and reasoning: `docs/K9_draft.md` (D1–D9, schema, tests).
+> **Signed off — M3.1 may build these:** the store core (`Store`, pragmas, migration runner, recovery mode), `presets`, `settings`,
+> `recommendation_samples`, `font_registry`, and the DB-wide rules below. Decisions taken (the draft's recommendations):
+> - **D3** built-ins are not stored (they come from `config.BUILTINS`); `custom` is one persisted row with the reserved id `custom`,
+>   written only when the user has values, never seeded with defaults; `original` is never stored; user ids are `uuid4`.
+>   Reserved ids: `default`, `reading`, `high-separation`, `custom`, `original`. *(Taken from O1's handoff — O1 to confirm.)*
+> - **D6** the database file is `data_dir()/scribesense.db` (`store.default_path()`); no K8 change.
+> - **D8** `FontRegistryRepo.create()` raises `FONT_IDENTITY_CONFLICT` only when the **font-building** fields differ
+>   (`base_family`, `letter_em`, `word_scale`, `reading_line`, `ui_line`) or the files/hashes differ — **never because of `text_scale`**
+>   (M1.5: `text_scale` is not part of the key).
+> - **D9** presets and configurations are stored as versioned JSON `{"v":1,…}` with fixed-decimal strings, validated by `validate()`;
+>   only cheap CHECKs in SQL (`kind`, word mode). No decimal columns (SQLite has none). Resolved configs are not persisted next to presets.
+> - **D4** retention rule (applies when M3.2 is built): delete a terminal tx only if older than the cutoff **and** outside the newest
+>   `keep_last` terminal txs **and** unreferenced; **always keep the newest `COMPLETED` apply**.
+> - **D7** stored `location` / `target_id` values are tool-config locations ScribeSense itself manages — never user documents; a test checks this.
+> **Still pending (not signed off):** the journal tables (`transactions`, `journal_items`, `backups`, `location_records`, `active_config`, `coverage`)
+> and `store/journal_tables.py` — waiting for **O4** on D1 (store the intent payload), D2 (do not store `Target.running`), D5 (the SQL layer
+> lives in `store/`, because only `store/` may import `sqlite3`). The `Store.transaction()` requirement for an atomic `keep()` (draft F4) applies there.
 
 ```python
 # ---- Records ----
@@ -713,7 +732,7 @@ class FontRegistryRepo:
 class CoverageRepo:
     def last_completed_apply(self) -> list[CoverageEntry]
         # historical: the latest completed apply — not proof of what is active now
-
+oo
 class SettingsRepo:
     def get(self, name: str) -> object              # unknown → KeyError; default if never set
     def set(self, name: str, value: object) -> None
