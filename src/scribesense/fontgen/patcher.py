@@ -56,8 +56,9 @@ from pathlib import Path
 from fontTools.ttLib import TTFont
 from fontTools.varLib import instancer
 
-from config.rules import latin_glyphs, open_font
-from config.settings import Configuration, validate
+from scribesense.config.rules import latin_glyphs, open_font
+from scribesense.config.settings import Configuration, validate
+from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 
 __all__ = [
     "LIGATURE_FEATURES",
@@ -71,11 +72,11 @@ __all__ = [
     "space_advance",
 ]
 
-PATCH_UNSUPPORTED = "PATCH_UNSUPPORTED"
+PATCH_UNSUPPORTED = ErrorCode.PATCH_UNSUPPORTED.value
 """Reason code surfaced through K7's ``FontBuildResult.reason_code``."""
 
 
-class PatchUnsupported(Exception):
+class PatchUnsupported(ScribeSenseError):
     """The font cannot be patched safely; no output was written.
 
     The card requires the patcher to "raise ``PATCH_UNSUPPORTED``". That names a
@@ -85,11 +86,9 @@ class PatchUnsupported(Exception):
     ``refused`` status.
     """
 
-    code = PATCH_UNSUPPORTED
-
     def __init__(self, detail: str) -> None:
-        self.detail = detail
-        super().__init__(f"{PATCH_UNSUPPORTED}: {detail}")
+        super().__init__(ErrorCode.PATCH_UNSUPPORTED)
+        self.detail = detail  # diagnosis only; the message is the bare code (errors contract)
 
 
 SPACE_CODEPOINT = 0x20

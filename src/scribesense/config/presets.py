@@ -6,10 +6,11 @@ there is never a second authoritative value. [D A9, A10]
 
 This module owns the built-in values and the resolution rules. It does **not** own the
 configuration vocabulary: every range, step, tolerance and validation rule is imported
-from `config.settings` (M1.1). No bound and no validation logic is restated here.
+from `scribesense.config.settings` (M1.1). No bound and no validation logic is restated here.
 
 Persistence is M3.1's job -- nothing in this module reads or writes storage. It is
-platform-independent: stdlib imports only, no paths, no display-server logic. The
+platform-independent: no display-server logic. The only file it reads is the bundled
+Regular face, to measure its space width for ``target_em`` (K2 ``resolve``). The
 `ui_line` and `text_scale` fields it carries are applied by the application's
 rendering layer; nothing here assumes Wayland can impose them on other applications.
 
@@ -26,7 +27,10 @@ The three preset kinds
     and must not be given default values", so `custom_preset` requires explicit
     values and this module defines no Custom constant.
 
-`ORIGINAL` is **not** a preset at all. See its docstring.
+`ORIGINAL` is **not** a preset at all. See the note on it below.
+
+The types (`WordSpacing`, `PresetValues`, `Preset`) and the constants `BUILTIN_IDS` and
+`ORIGINAL` are K2's (`scribesense.contracts.presets`) and are re-exported unchanged.
 
 Evidence note
 -------------
@@ -45,10 +49,12 @@ from __future__ import annotations
 
 import math
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Callable, Literal
 
-from config.settings import (
+from scribesense.config import bundled
+from scribesense.config.bundled import base_font_files
+from scribesense.config.settings import (
     NON_FINITE,
     NOT_A_NUMBER,
     RANGES,
@@ -56,6 +62,13 @@ from config.settings import (
     Issue,
     round_to_steps,
     validate,
+)
+from scribesense.contracts.presets import (
+    BUILTIN_IDS,
+    ORIGINAL,
+    Preset,
+    PresetValues,
+    WordSpacing,
 )
 
 __all__ = [
@@ -75,6 +88,7 @@ __all__ = [
     "PresetValues",
     "SpaceWidthUnavailable",
     "WordSpacing",
+    "base_font_files",
     "builtin",
     "catalogue",
     "custom_preset",
@@ -92,37 +106,36 @@ __all__ = [
 # Sentinel and identifiers
 # --------------------------------------------------------------------------- #
 
-ORIGINAL = "original"
-"""Sentinel meaning "revert everything" -- **not a preset**. [D]
-
-Per K2 and Research2 C.5, `ORIGINAL` selects the unmodified source font binary and
-bypasses the transformation pipeline entirely. It is therefore:
-
-* excluded from preset enumeration -- it never appears in `BUILTINS` or `catalogue`;
-* excluded from preset validation -- it has no field values to validate;
-* implemented as a short-circuit by the caller, which returns the original font,
-  **not** as a `Configuration` with all fields set to neutral values.
-
-That last distinction is the one that matters and the one most likely to be
-implemented wrongly. Zeroing the six fields is *not* equivalent to Original: a
-neutral-valued configuration still goes through the pipeline, which may substitute a
-different family or apply baseline normalisation. Original must not reach `resolve`.
-
-Its purpose is to be the honest comparison baseline for user testing, and an escape
-hatch if a generated variant misbehaves.
-"""
+# ORIGINAL (K2, imported) = "original".
+# Sentinel meaning "revert everything" -- **not a preset**. [D]
+#
+# Per K2 and Research2 C.5, `ORIGINAL` selects the unmodified source font binary and
+# bypasses the transformation pipeline entirely. It is therefore:
+#
+# * excluded from preset enumeration -- it never appears in `BUILTINS` or `catalogue`;
+# * excluded from preset validation -- it has no field values to validate;
+# * implemented as a short-circuit by the caller, which returns the original font,
+#   **not** as a `Configuration` with all fields set to neutral values.
+#
+# That last distinction is the one that matters and the one most likely to be
+# implemented wrongly. Zeroing the six fields is *not* equivalent to Original: a
+# neutral-valued configuration still goes through the pipeline, which may substitute a
+# different family or apply baseline normalisation. Original must not reach `resolve`.
+#
+# Its purpose is to be the honest comparison baseline for user testing, and an escape
+# hatch if a generated variant misbehaves.
 
 DEFAULT_ID = "default"
 READING_ID = "reading"
 HIGH_SEPARATION_ID = "high-separation"
 
-BUILTIN_IDS: frozenset[str] = frozenset({DEFAULT_ID, READING_ID, HIGH_SEPARATION_ID})
-"""The three fixed built-in IDs (K2 rule 1). Names are display-only; IDs are not."""
+# BUILTIN_IDS (K2, imported) = (DEFAULT_ID, READING_ID, HIGH_SEPARATION_ID): the three
+# fixed built-in IDs (K2 rule 1). Names are display-only; IDs are not.
 
 CUSTOM_ID = "custom"
 """ID of the transient Custom entry. Reserved so a saved preset cannot take it."""
 
-RESERVED_IDS: frozenset[str] = BUILTIN_IDS | {CUSTOM_ID, ORIGINAL}
+RESERVED_IDS: frozenset[str] = frozenset(BUILTIN_IDS) | {CUSTOM_ID, ORIGINAL}
 """IDs a user preset may never claim.
 
 Enforces the card's "must never: let a user preset overwrite a built-in", and extends
@@ -195,14 +208,10 @@ measured. See `MEASURED_SPACE_WIDTH_EM`.
 MEASURED_SPACE_WIDTH_EM: dict[str, float] = {}
 """Real space advances in em, per family, measured from the **bundled** font files.
 
-Deliberately empty. [V] Populate it from the Regular face of each bundled family once
-K2's ``base_font_files()`` and the ``fonts/`` tree exist (neither does yet -- see the
-module report). Values must be measured, never estimated: ``space_advance / unitsPerEm``
-for the ``space`` glyph of the Regular face.
-
-Until then every family falls back to `REFERENCE_SPACE_WIDTH_EM`, which means the
-``target_em`` machinery is structurally correct but numerically provisional, and
-`with_base_family` cannot yet produce a different result per family.
+Filled lazily by `default_space_width_em` from the Regular face K2's `base_font_files`
+returns: ``space_advance / unitsPerEm`` (`bundled.space_width_em`). Values are measured,
+never estimated. A family that is not bundled yet is **not** cached, so it falls back to
+`REFERENCE_SPACE_WIDTH_EM` until its files land -- `space_width_source` says which.
 """
 
 
@@ -212,7 +221,12 @@ def default_space_width_em(family: str) -> float:
     This is the default provider used by `resolve`. Inject a different one (for a real
     font-metric reader, or for a test) via ``resolve(..., space_width_em=...)``.
     """
-    return MEASURED_SPACE_WIDTH_EM.get(family, REFERENCE_SPACE_WIDTH_EM)
+    if family not in MEASURED_SPACE_WIDTH_EM:
+        try:
+            MEASURED_SPACE_WIDTH_EM[family] = bundled.space_width_em(family)
+        except (bundled.BundledFontMissing, ValueError, OSError):
+            return REFERENCE_SPACE_WIDTH_EM
+    return MEASURED_SPACE_WIDTH_EM[family]
 
 
 def space_width_source(family: str) -> Literal["measured", "fallback"]:
@@ -221,6 +235,7 @@ def space_width_source(family: str) -> Literal["measured", "fallback"]:
     Exists so the UI and the report can be honest about it: a `target_em` preset
     resolved from a fallback width should not be presented as a precise value.
     """
+    default_space_width_em(family)
     return "measured" if family in MEASURED_SPACE_WIDTH_EM else "fallback"
 
 
@@ -229,69 +244,30 @@ def space_width_source(family: str) -> Literal["measured", "fallback"]:
 # --------------------------------------------------------------------------- #
 
 
-@dataclass(frozen=True)
-class WordSpacing:
-    """How a preset expresses word spacing (K2).
-
-    Two modes, and the difference is the whole point of storing intent rather than a
-    resolved number:
-
-    ``"target_em"``
-        ``value`` is the extra space, in em, the user wants added to the word gap.
-        Because different families have different native space widths, this is
-        **recalculated whenever the base font changes** -- the stored em target stays
-        put and the resolved multiplier moves.
-    ``"multiplier"``
-        ``value`` is a factor on the font's own space advance; 1.0 means unchanged.
-        This is **kept as-is across a font change**, preserving the user's relative
-        intent.
-
-    Research2 classes the family→word-spacing dependency (row P-BF → P-WS) as
-    HYP/DIR, enforcement WARN, confidence **Low**, and its change-impact rule R-07 is
-    marked *Provisional*: "preserve letter_em (relative); re-derive word_scale only if
-    multiplicative". The K2 UI rule implemented here is consistent with that, but it
-    is an architectural choice, not an evidence-backed one.
-    """
-
-    mode: Literal["target_em", "multiplier"]
-    value: float
-
-    def __post_init__(self) -> None:
-        if self.mode not in ("target_em", "multiplier"):
-            raise ValueError(
-                f"WordSpacing.mode must be 'target_em' or 'multiplier', got {self.mode!r}"
-            )
-
-
-@dataclass(frozen=True)
-class PresetValues:
-    """All six fields, always present (K2) [D A10].
-
-    Mirrors `Configuration` except that ``word`` holds intent (`WordSpacing`) rather
-    than the resolved ``word_scale``. Like `Configuration`, it carries **no defaults**:
-    the Default preset in `BUILTINS` is the only source of default values.
-    """
-
-    base_family: str
-    letter_em: float
-    word: WordSpacing
-    reading_line: float
-    ui_line: float
-    text_scale: float
-
-
-@dataclass(frozen=True)
-class Preset:
-    """A named set of `PresetValues` (K2).
-
-    ``id`` is the stable identity -- fixed strings for built-ins, ``str(uuid4())`` for
-    user presets. ``name`` is for display only: it may repeat and may change.
-    """
-
-    id: str
-    name: str
-    values: PresetValues
-    kind: Literal["builtin", "user", "custom"]
+# WordSpacing, PresetValues and Preset are K2's (imported). On `WordSpacing`:
+#
+# How a preset expresses word spacing (K2).
+#
+# Two modes, and the difference is the whole point of storing intent rather than a
+# resolved number:
+#
+# ``"target_em"``
+#     ``value`` is the extra space, in em, the user wants added to the word gap.
+#     Because different families have different native space widths, this is
+#     **recalculated whenever the base font changes** -- the stored em target stays
+#     put and the resolved multiplier moves.
+# ``"multiplier"``
+#     ``value`` is a factor on the font's own space advance; 1.0 means unchanged.
+#     This is **kept as-is across a font change**, preserving the user's relative
+#     intent.
+#
+# Research2 classes the family→word-spacing dependency (row P-BF → P-WS) as
+# HYP/DIR, enforcement WARN, confidence **Low**, and its change-impact rule R-07 is
+# marked *Provisional*: "preserve letter_em (relative); re-derive word_scale only if
+# multiplicative". The K2 UI rule implemented here is consistent with that, but it
+# is an architectural choice, not an evidence-backed one.
+#
+# K2's `WordSpacing` does not check ``mode``; `resolve` rejects an unknown one.
 
 
 # --------------------------------------------------------------------------- #
@@ -481,6 +457,8 @@ def resolve(
     provider = default_space_width_em if space_width_em is None else space_width_em
     word = values.word
 
+    if word.mode not in ("target_em", "multiplier"):
+        raise ValueError(f"WordSpacing.mode must be 'target_em' or 'multiplier', got {word.mode!r}")
     if word.mode == "target_em":
         if not isinstance(word.value, (int, float)) or isinstance(word.value, bool):
             raise PresetResolutionError(
@@ -627,6 +605,6 @@ def is_original(value: object) -> bool:
 
 # Guard the invariant that the rest of the module depends on. Cheap, and it fails at
 # import time rather than in whichever downstream module first trusted it.
-assert {p.id for p in BUILTINS} == BUILTIN_IDS, "BUILTINS and BUILTIN_IDS disagree"
+assert tuple(p.id for p in BUILTINS) == BUILTIN_IDS, "BUILTINS and BUILTIN_IDS disagree"
 assert all(p.kind == "builtin" for p in BUILTINS), "a non-builtin leaked into BUILTINS"
 assert set(RANGES), "M1.1 ranges failed to import"

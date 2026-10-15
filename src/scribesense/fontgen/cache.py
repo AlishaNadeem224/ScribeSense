@@ -74,27 +74,28 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from fontgen.naming import (
+from scribesense.contracts import paths
+from scribesense.contracts.errors import ErrorCode, ScribeSenseError
+from scribesense.fontgen.naming import (
     GENERATOR_VERSION,
     KEY_LENGTH,
+    fc_pattern,
     file_sha256,
     is_content_key,
     reading_family,
     ui_family,
     variant_filename,
 )
-from fontgen.validate import ValidationResult
-from fontgen.variants import STYLES, VARIANT_KINDS, variant_of
+from scribesense.fontgen.validate import ValidationResult, run_text
+from scribesense.fontgen.variants import STYLES, VARIANT_KINDS, variant_of
 
 __all__ = [
-    "APPLICATION",
     "DIR_MODE",
     "FC_CACHE",
     "FC_MATCH",
@@ -134,19 +135,6 @@ __all__ = [
 # Where things go
 # --------------------------------------------------------------------------- #
 
-APPLICATION = "scribesense"
-"""The directory this module owns inside the user's font directory.
-
-The card's example path is ``~/.local/share/fonts/scribesense/<key>/`` and Research2 H.1
-carries the same one forward ("I have carried this forward exactly and have not
-substituted a guessed path"). One level of application namespacing is what makes the
-must-never -- "write outside ``fonts_dir()``" -- enforceable: everything this module
-touches is under one directory that belongs to nobody else, so a user's own fonts in
-``~/.local/share/fonts`` can never be in scope for a removal.
-"""
-
-FONTS_SUBDIR = "fonts"
-"""XDG: user fonts live in ``$XDG_DATA_HOME/fonts``, which fontconfig scans by default."""
 
 MANIFEST_NAME = "manifest.json"
 MANIFEST_VERSION = 1
@@ -188,31 +176,17 @@ cannot leave rubbish behind indefinitely.
 
 
 def fonts_dir() -> Path:
-    """``$XDG_DATA_HOME/fonts/scribesense`` -- the only directory this module may write.
+    """The only directory this module may write: K8's `contracts.paths.fonts_dir()`.
 
-    **This is K8's function, implemented here provisionally.** The card lists ``K8`` as a
-    dependency and the repository has no paths contract and no module that provides one;
-    M1.5 hit the same gap with K2's `base_font_files` and resolved it the same way (K7
-    E5). When K8 lands, this body should *delegate* to it and the constants above move
-    with it -- what must not happen is a second path appearing elsewhere, because the
-    whole of this module's safety argument is that one function names the one directory.
-
-    XDG Base Directory: ``XDG_DATA_HOME`` wins when it is set to an **absolute** path,
-    and is ignored otherwise, which is what the specification requires and not merely a
-    convenience -- a relative value would make the font directory depend on the working
-    directory of whichever process launched the application. The fallback is
-    ``~/.local/share``, so the default is the card's path exactly.
+    ``$SCRIBESENSE_FONTS_DIR``, else ``~/.local/share/fonts/scribesense``. Delegating
+    rather than re-deriving it is the point -- the whole of this module's safety
+    argument is that one function names the one directory, and the adapters (M4.x),
+    the test sandbox (M3.3) and this cache must all agree on which one that is.
 
     The directory is not created here. A lookup (`is_installed`) must not have the side
     effect of creating anything; `install_set` creates it when it actually installs.
     """
-    data_home = os.environ.get("XDG_DATA_HOME", "")
-    base = (
-        Path(data_home)
-        if data_home and os.path.isabs(data_home)
-        else Path(os.path.expanduser("~")) / ".local" / "share"
-    )
-    return base / FONTS_SUBDIR / APPLICATION
+    return paths.fonts_dir()
 
 
 def key_dir(key: str) -> Path:
@@ -262,7 +236,7 @@ def _staging_dir() -> Path:
 # Reason codes
 # --------------------------------------------------------------------------- #
 
-INSTALL_FAILED = "INSTALL_FAILED"
+INSTALL_FAILED = ErrorCode.INSTALL_FAILED.value
 """The card's named failure, and the only code M1.8 puts in ``FontBuildResult``.
 
 Every way an install can fail carries this code, so the K7 mapping is one line
@@ -332,7 +306,7 @@ W_INSTALL_STALE_STAGING = "W_INSTALL_STALE_STAGING"
 """An abandoned staging directory from an earlier crash was cleared away."""
 
 
-class InstallFailed(Exception):
+class InstallFailed(ScribeSenseError):
     """An install did not happen, and nothing was left behind.
 
     ``code`` is always `INSTALL_FAILED` -- what M1.8 passes into
@@ -347,27 +321,27 @@ class InstallFailed(Exception):
     intact or there is none, and no staging directory survives.
     """
 
-    code = INSTALL_FAILED
-
     def __init__(self, cause_code: str, detail: str) -> None:
+        super().__init__(ErrorCode.INSTALL_FAILED)
         self.cause_code = cause_code
-        self.detail = detail
-        super().__init__(f"{INSTALL_FAILED} ({cause_code}): {detail}")
+        self.detail = detail  # diagnosis only; the message is the bare code (errors contract)
 
 
-class RemoveRefused(Exception):
+class RemoveRefused(ScribeSenseError):
     """A removal was refused, and nothing was deleted.
 
     Distinct from `InstallFailed` because the two are answered differently: an install
     failure is a build that did not complete, while a refused removal usually means the
-    font is still in use and the correct response is to leave it alone. ``code`` is one
-    of `REMOVE_CODES`.
+    font is still in use and the correct response is to leave it alone. ``reason_code``
+    is one of `REMOVE_CODES`; ``code`` is ``FONT_IN_USE`` for a referenced or in-progress
+    key and ``INSTALL_FAILED`` (the font directory could not be changed) otherwise.
     """
 
     def __init__(self, code: str, detail: str) -> None:
-        self.code = code
+        in_use = code in (REMOVE_REFERENCED, REMOVE_IN_PROGRESS)
+        super().__init__(ErrorCode.FONT_IN_USE if in_use else ErrorCode.INSTALL_FAILED)
+        self.reason_code = code
         self.detail = detail
-        super().__init__(f"{code}: {detail}")
 
 
 # --------------------------------------------------------------------------- #
@@ -434,31 +408,18 @@ class Fontconfig:
             missing.append(FC_MATCH)
         return tuple(missing)
 
-    def _run(self, argv: Sequence[str]) -> subprocess.CompletedProcess:
+    def _run(self, argv: Sequence[str]) -> str:
         try:
-            return subprocess.run(
-                list(argv),
-                env={**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"},
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise FontconfigError(f"{argv[0]} timed out after {self.timeout}s") from exc
+            return run_text(argv, {"LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"}, self.timeout)
+        except ScribeSenseError as exc:
+            raise FontconfigError(f"{Path(argv[0]).name} failed: {exc.code}") from exc
         except OSError as exc:
             raise FontconfigError(f"{argv[0]} could not be run: {exc}") from exc
 
     def refresh(self, directory: Path) -> str:
         if not self.fc_cache:
             raise FontconfigError(f"{FC_CACHE} is not installed")
-        finished = self._run([self.fc_cache, "-f", str(directory)])
-        if finished.returncode != 0:
-            raise FontconfigError(
-                f"{FC_CACHE} failed (exit {finished.returncode}): "
-                f"{finished.stderr.strip()[:200]}"
-            )
-        return finished.stdout.strip()
+        return self._run([self.fc_cache, "-f", str(directory)]).strip()
 
     def resolve_family(self, family: str) -> tuple[str, str]:
         """What fontconfig would actually use for ``family``.
@@ -470,13 +431,10 @@ class Fontconfig:
         """
         if not self.fc_match:
             raise FontconfigError(f"{FC_MATCH} is not installed")
-        finished = self._run([self.fc_match, "--format=%{family}\n%{file}\n", family])
-        lines = [line.strip() for line in finished.stdout.splitlines() if line.strip()]
-        if finished.returncode != 0 or len(lines) < 2:
-            raise FontconfigError(
-                f"{FC_MATCH} failed for {family!r} (exit {finished.returncode}): "
-                f"{finished.stderr.strip()[:200]}"
-            )
+        out = self._run([self.fc_match, "--format=%{family}\n%{file}\n", fc_pattern(family)])
+        lines = [line.strip() for line in out.splitlines() if line.strip()]
+        if len(lines) < 2:
+            raise FontconfigError(f"{FC_MATCH} gave no family and file for {family!r}")
         return lines[0], lines[1]
 
 

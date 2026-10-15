@@ -86,20 +86,25 @@ import shutil
 import tempfile
 import threading
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from config.settings import Configuration, round_to_steps, validate
-from fontgen import cache as install_cache
-from fontgen.naming import GENERATOR_VERSION
-from fontgen.patcher import PatchUnsupported
-from fontgen.validate import ValidationResult, validate_font
-from fontgen.variants import (
+from scribesense.config.settings import Configuration, round_to_steps, validate
+from scribesense.contracts import fonts as k7
+from scribesense.contracts.errors import ErrorCode, ScribeSenseError
+from scribesense.contracts.fonts import FontSet
+from scribesense.fontgen import cache as install_cache
+from scribesense.fontgen.naming import GENERATOR_VERSION
+from scribesense.fontgen.patcher import PatchUnsupported
+from scribesense.fontgen.validate import ValidationResult, validate_font
+from scribesense.fontgen.variants import (
+    GENERATOR_ERROR,
     BaseFontIneligible,
     BuildPlan,
     BundledFontMissing,
     build_variant_set,
+    error_code_for,
     plan as plan_build,
 )
 
@@ -140,15 +145,10 @@ needed, it belongs in the reason_code, not in a new status."
 SUCCESS_STATUSES: tuple[str, ...] = ("built", "cached")
 """The two that promise an installed, validated font set."""
 
-GENERATOR_ERROR = "GENERATOR_ERROR"
-"""Orchestration itself raised -- the one code this module owns.
-
-Every other `FontBuildResult.reason_code` is passed through from the module that
-produced it. This one exists for the same reason M1.6's ``VALIDATION_ERROR`` does: the
-one outcome `build` may never have is an exception escaping to the UI, which would leave
-the caller in neither the "installed" nor the "refused" state. A bug is reported as a
-failure, never as a pass.
-"""
+# GENERATOR_ERROR (defined in `variants`, beside `error_code_for`): orchestration itself
+# raised. The one outcome `build` may never have is an exception escaping to the UI,
+# which would leave the caller in neither the "installed" nor the "refused" state; a bug
+# is reported as a failure, never as a pass. Proposed as an ErrorCode (O1 area).
 
 W_REGISTRY_WRITE_FAILED = "W_REGISTRY_WRITE_FAILED"
 """The fonts are installed and valid, but the registry row was not written.
@@ -172,30 +172,20 @@ W_PREVIEW_TEMP_LEAK = "W_PREVIEW_TEMP_LEAK"
 # --------------------------------------------------------------------------- #
 
 
-@dataclass(frozen=True)
-class FontSet:
-    """One installed generated font set -- K7, unchanged.
-
-    ``files`` is a tuple of **strings**, as K7 spells it ("installed file paths"), not
-    of ``Path``: it crosses a process boundary into the registry and the UI, and it is
-    what a JSON registry row stores. `installed_paths` is here for callers that want
-    them back as paths rather than re-wrapping them by hand.
-    """
-
-    key: str
-    reading_family: str
-    ui_family: str
-    files: tuple[str, ...]
-    styles: tuple[str, ...]
-
-    @property
-    def installed_paths(self) -> tuple[Path, ...]:
-        return tuple(Path(name) for name in self.files)
+# FontSet is K7's (`scribesense.contracts.fonts.FontSet`), re-exported unchanged.
 
 
 @dataclass(frozen=True)
-class FontBuildResult:
-    """The outcome of one `build` -- K7, plus ``warnings`` (K7 H2).
+class FontBuildResult(k7.FontBuildResult):
+    """The outcome of one `build` -- K7's `FontBuildResult`, plus diagnostics.
+
+    A subclass, so every caller of the K7 type sees exactly K7's three fields; the two
+    added ones have defaults and are for logs, tests and the developer:
+
+    * ``warnings`` -- advisory codes (K7 H2), e.g. ``Italic:VARIABLE_FONT``.
+    * ``detail`` -- the pipeline's own fine-grained code (``VALIDATION_ADVANCE_MISMATCH``,
+      ``INSTALL_IO_ERROR``, ...) when ``reason_code`` had to fold it into an `ErrorCode`
+      (`error_code_for`). ``None`` when the two are the same.
 
     The invariants in ``__post_init__`` are the card's must-never in executable form.
     They are checked on construction rather than asserted by the caller because this
@@ -209,10 +199,8 @@ class FontBuildResult:
       could mistake for an installed font.
     """
 
-    status: Status
-    fonts: FontSet | None = None
-    reason_code: str | None = None
     warnings: tuple[str, ...] = ()
+    detail: str | None = None
 
     def __post_init__(self) -> None:
         if self.status not in STATUSES:
@@ -234,7 +222,7 @@ class FontBuildResult:
         return self.status in SUCCESS_STATUSES
 
 
-class PreviewUnavailable(Exception):
+class PreviewUnavailable(ScribeSenseError):
     """`build_preview` could not produce a preview.
 
     **Contract addition, M1.8 (K7 H3).** K7 gives ``build_preview`` the return type
@@ -245,63 +233,43 @@ class PreviewUnavailable(Exception):
     (``cached``, ``built``) that a preview can never have. So it raises, carrying the
     same ``reason_code`` vocabulary `build` reports, and the UI shows the same message
     it would for a refused Apply.
+
+    ``code`` is ``PREVIEW_UNAVAILABLE`` (errors contract); ``reason_code`` is what `build`
+    would have reported for the same configuration.
     """
 
     def __init__(self, reason_code: str, detail: str = "") -> None:
-        self.reason_code = reason_code
-        self.detail = detail
-        super().__init__(f"{reason_code}: {detail}" if detail else reason_code)
+        super().__init__(ErrorCode.PREVIEW_UNAVAILABLE)
+        self.reason_code = error_code_for(reason_code)
+        self.detail = f"{reason_code}: {detail}" if detail else reason_code
 
 
-@dataclass
-class PreviewFonts:
-    """Temporary, private font files for the preview -- K7 rule 2 (K7 H3 defines it).
+@dataclass(frozen=True)
+class PreviewFonts(k7.PreviewFonts):
+    """Temporary, private font files for the preview -- K7's `PreviewFonts`, K7 rule 2.
 
-    K7 names the type and never gives its fields; these are the ones the preview needs
-    and nothing more. The files are in a directory of their own, outside `fonts_dir()`,
-    and **nothing installs them**: they are loaded privately by the preview (K7 rule 2,
-    A5 [V]) and deleted when it closes.
+    Exactly K7's fields (``reading_family``, ``ui_family``, ``files``, ``styles``,
+    ``temp_dir``); the subclass only adds a way to honour the contract's cleanup rule.
+    The files are in a directory of their own, outside `fonts_dir()`, and **nothing
+    installs them**: they are loaded privately by the preview (K7 rule 2, A5 [V]).
 
-    Deleting them is the caller's job and the contract says so, so this is a context
-    manager -- ``with build_preview(config) as preview:`` is the shape that cannot leak.
-    `close` is idempotent and never raises; a directory that will not go away sets
-    `warnings` instead, because failing a preview teardown would be a strange way to
-    tell a user their sample text is ready.
+    K7: the caller owns ``temp_dir`` and deletes it when the preview closes. `close` does
+    that, and the object is a context manager -- ``with build_preview(config) as p:`` is
+    the shape that cannot leak. There is deliberately **no** ``__del__``: a preview whose
+    files are still loaded must not lose them because the Python object was collected.
     """
 
-    key: str
-    reading_family: str
-    ui_family: str
-    styles: tuple[str, ...]
-    files: tuple[Path, ...]
-    directory: Path
-    warnings: tuple[str, ...] = ()
-    closed: bool = field(default=False, init=False)
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        self.closed = True
-        try:
-            shutil.rmtree(self.directory)
-        except OSError:
-            self.warnings = (*self.warnings, W_PREVIEW_TEMP_LEAK)
+    def close(self) -> bool:
+        """Delete ``temp_dir``. Idempotent, never raises; ``False`` if it is still there
+        (`W_PREVIEW_TEMP_LEAK`)."""
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        return not os.path.exists(self.temp_dir)
 
     def __enter__(self) -> PreviewFonts:
         return self
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
-
-    def __del__(self) -> None:  # pragma: no cover -- a net, not the mechanism
-        # A preview dropped without close() still has to go: K7 rule 2 is "files are
-        # deleted when the preview closes", and a UI that forgets would otherwise leak
-        # a font set per keystroke. Not a substitute for close() -- the interpreter may
-        # never call this -- which is why the context manager exists.
-        try:
-            self.close()
-        except Exception:
-            pass
 
 
 # --------------------------------------------------------------------------- #
@@ -474,9 +442,9 @@ def build(
         except BundledFontMissing as exc:
             return _refused(exc.code, warnings)
         except BaseFontIneligible as exc:
-            # M1.3's own code -- BASE_IS_MONOSPACE, NO_LATIN_COVERAGE, ... -- passed
-            # through unchanged (K7 E3). The user needs the diagnosis, not "refused".
-            return _refused(exc.code, warnings)
+            # M1.3's own code -- BASE_IS_MONOSPACE, NO_LATIN_COVERAGE, ... -- kept as the
+            # detail; reason_code is its ErrorCode (K7 E3, `error_code_for`).
+            return _refused(exc.reason_code, warnings)
 
         warnings.extend(f"{style}:{code}" for style, code in prepared.warnings)
         warnings.extend(f"{style}:{code}" for style, code in prepared.skipped)
@@ -571,7 +539,7 @@ def _build_artifacts(
     except install_cache.InstallFailed as exc:
         # M1.7 guarantees the filesystem is as it was: either the previous installation
         # of this key or none.
-        return _refused(exc.code, warnings, status="failed")
+        return _refused(exc.cause_code, warnings, status="failed")
 
     warnings.extend(installed.warnings)
     fonts = FontSet(
@@ -622,30 +590,27 @@ def build_preview(
 
     try:
         prepared = plan_build(config, files=files)
-    except (BundledFontMissing, BaseFontIneligible) as exc:
-        raise PreviewUnavailable(exc.code, str(exc)) from exc
+    except BundledFontMissing as exc:
+        raise PreviewUnavailable(exc.code.value, exc.detail) from exc
+    except BaseFontIneligible as exc:
+        raise PreviewUnavailable(exc.reason_code, exc.style) from exc
 
     directory = Path(tempfile.mkdtemp(prefix=f"scribesense-preview-{prepared.key}-"))
     try:
         variants = build_variant_set(config, out_dir=directory, plan=prepared)
     except PatchUnsupported as exc:
         _discard(directory)
-        raise PreviewUnavailable(exc.code, str(exc)) from exc
+        raise PreviewUnavailable(exc.code.value, exc.detail) from exc
     except Exception as exc:
         _discard(directory)
         raise PreviewUnavailable(GENERATOR_ERROR, repr(exc)) from exc
 
     return PreviewFonts(
-        key=variants.key,
         reading_family=variants.reading_family,
         ui_family=variants.ui_family,
-        styles=variants.styles,
-        files=variants.files,
-        directory=directory,
-        warnings=tuple(
-            f"{style}:{code}"
-            for style, code in (*prepared.warnings, *prepared.skipped)
-        ),
+        files=tuple(str(path) for path in variants.files),
+        styles=tuple(_style_of(path) for path in variants.files),
+        temp_dir=str(directory),
     )
 
 
@@ -759,16 +724,26 @@ def _refused(
 ) -> FontBuildResult:
     """A `FontBuildResult` with no `FontSet` -- the only way a failure is spelled.
 
-    ``detail`` is appended to ``warnings`` as ``"<code>:<detail>"`` rather than given a
-    field of its own. It is used for one thing -- the exception text behind a
-    `GENERATOR_ERROR` -- and a free-text field on K7's result would invite callers to
-    parse prose; the code is what they branch on, and the text is there so a bug report
-    says what actually happened.
+    ``reason_code`` may be one of the pipeline's fine-grained codes; the result carries
+    its `ErrorCode` (`error_code_for`) and keeps the original in ``detail``.
+
+    ``detail`` (the argument) is appended to ``warnings`` as ``"<code>:<detail>"``. It is
+    used for one thing -- the exception text behind a `GENERATOR_ERROR` -- and a free-text
+    field on K7's result would invite callers to parse prose; the code is what they
+    branch on, and the text is there so a bug report says what actually happened.
     """
     collected = list(warnings)
     if detail:
         collected.append(f"{reason_code}:{detail}")
-    return FontBuildResult(status, None, reason_code, tuple(collected))
+    code = error_code_for(reason_code)
+    return FontBuildResult(
+        status, None, code, tuple(collected), None if code == reason_code else reason_code
+    )
+
+
+def _style_of(path: Path) -> str:
+    """The style of one built file: names are ``<family>-<style><suffix>`` (M1.5)."""
+    return path.stem.rsplit("-", 1)[1]
 
 
 def _record(

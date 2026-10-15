@@ -55,9 +55,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from config.rules import is_eligible
-from config.settings import Configuration, SHORTLIST, validate
-from fontgen.naming import (
+from scribesense.config.bundled import (
+    FONT_SUFFIXES,
+    FONTS_ROOT,
+    OPTIONAL_STYLES,
+    REQUIRED_STYLE,
+    STYLES,
+    BundledFontMissing,
+    base_font_files,
+)
+from scribesense.config.rules import (
+    FONT_TOO_LARGE,
+    MISSING_TABLE,
+    NO_LATIN_COVERAGE,
+    NO_UPM,
+    is_eligible,
+)
+from scribesense.contracts.config import IssueCode
+from scribesense.contracts.errors import ErrorCode, ScribeSenseError
+from scribesense.config.settings import Configuration, validate
+from scribesense.fontgen.naming import (
     FAMILY_PATTERN,
     GENERATOR_VERSION,
     READING_FAMILY_PREFIX,
@@ -68,10 +85,11 @@ from fontgen.naming import (
     ui_family,
     variant_filename,
 )
-from fontgen.patcher import patch
+from scribesense.fontgen.patcher import patch
 
 __all__ = [
     "BUNDLED_FONT_MISSING",
+    "error_code_for",
     "FONTS_ROOT",
     "OPTIONAL_STYLES",
     "REQUIRED_STYLE",
@@ -100,139 +118,67 @@ _KIND_BY_PREFIX: Mapping[str, VariantKind] = {
     UI_FAMILY_PREFIX: "ui",
 }
 
-REQUIRED_STYLE = "Regular"
-"""The one style every base family must provide [D R2]."""
-
-OPTIONAL_STYLES: tuple[str, ...] = ("Bold", "Italic", "BoldItalic")
-"""Built when the base family ships them; their absence is not an error [D R2]."""
-
-STYLES: tuple[str, ...] = (REQUIRED_STYLE, *OPTIONAL_STYLES)
-"""Every style this module knows, in the order `VariantSet.styles` reports them.
-
-A fixed order matters beyond tidiness: ``styles`` reaches the user through K7's
-``FontSet`` and is compared between builds, so it must not depend on directory
-iteration order, which differs between filesystems and between Windows and Fedora.
-"""
-
-BUNDLED_FONT_MISSING = "BUNDLED_FONT_MISSING"
-"""Reason code for a base family with no usable Regular [K2, M1.5 card]."""
-
-FONTS_ROOT = Path(__file__).resolve().parents[1] / "fonts"
-"""Repository root of the bundled font tree, per K2's layout.
-
-Resolved from this file rather than the working directory, so a build behaves the same
-whatever the process was started from.
-"""
-
-_SUFFIXES = (".ttf", ".otf")
-
-_STYLE_ALIASES: Mapping[str, str] = {
-    "regular": "Regular",
-    "bold": "Bold",
-    "italic": "Italic",
-    "oblique": "Italic",
-    "bolditalic": "BoldItalic",
-    "boldoblique": "BoldItalic",
-}
-"""Filename style tokens, lowercased, mapped onto `STYLES`.
-
-Oblique is folded into Italic because the two occupy the same slot in a four-style
-family -- a face is offered to the user as "italic" whether its designer slanted or
-redrew it. Anything else (``Light``, ``SemiBold``, ``Condensed``, a variable font's
-``VF``) is ignored rather than guessed at: a four-style family is what K2's manifest
-describes, and silently promoting ``SemiBold`` to ``Bold`` would ship a weight the user
-did not choose.
-"""
-
-
 # --------------------------------------------------------------------------- #
 # Failures
 # --------------------------------------------------------------------------- #
 
+BUNDLED_FONT_MISSING = ErrorCode.BUNDLED_FONT_MISSING.value
+"""Reason code for a base family with no usable Regular [K2, M1.5 card]."""
 
-class BundledFontMissing(Exception):
-    """The base family has no usable Regular style.
+GENERATOR_ERROR = "GENERATOR_ERROR"
+"""An unexpected exception inside the pipeline (M1.8). Proposed ErrorCode, see `error_code_for`."""
 
-    The card's only hard failure: "Missing Regular -> ``BUNDLED_FONT_MISSING``; other
-    missing styles are not an error". K2 names the same code for `base_font_files`, so
-    one code covers "the family is not bundled", "its directory is empty" and "it ships
-    everything except a Regular" -- from the caller's side these are one situation, and
-    M1.8 maps all of them to ``status="refused"`` with this ``reason_code``.
+_UNREADABLE_DETAILS = frozenset({FONT_TOO_LARGE, MISSING_TABLE, NO_UPM})
+
+
+def error_code_for(detail: str) -> str:
+    """The K7 ``reason_code`` for one of this package's detailed codes.
+
+    K7's ``reason_code`` and every ``ScribeSenseError`` carry an `ErrorCode` (errors
+    contract: one stable list for logs, reports and UI). The pipeline diagnoses far more
+    finely than that list -- ``VALIDATION_ADVANCE_MISMATCH``, ``INSTALL_IO_ERROR`` and so
+    on -- so the detail is kept beside the code (``FontBuildResult.detail``, an
+    exception's ``.reason_code``) and folded here into the card-level code:
+
+    * an `ErrorCode` value passes through unchanged;
+    * a K1 `IssueCode` (an invalid configuration was refused) passes through unchanged;
+    * ``VALIDATION_*`` -> ``VALIDATION_FAILED`` and ``INSTALL_*`` -> ``INSTALL_FAILED``;
+    * M1.3's ``FONT_TOO_LARGE``, ``MISSING_TABLE``, ``NO_UPM`` -> ``FONT_UNREADABLE``;
+    * ``NO_LATIN_COVERAGE`` -> ``PATCH_UNSUPPORTED`` (there is nothing the patcher may change);
+    * anything else -> `GENERATOR_ERROR`.
     """
+    if detail in ErrorCode.__members__ or detail in IssueCode.__members__:
+        return detail
+    if detail.startswith("VALIDATION_"):
+        return ErrorCode.VALIDATION_FAILED.value
+    if detail.startswith("INSTALL_"):
+        return ErrorCode.INSTALL_FAILED.value
+    if detail in _UNREADABLE_DETAILS:
+        return ErrorCode.FONT_UNREADABLE.value
+    if detail == NO_LATIN_COVERAGE:
+        return ErrorCode.PATCH_UNSUPPORTED.value
+    return GENERATOR_ERROR
 
-    code = BUNDLED_FONT_MISSING
 
-    def __init__(self, detail: str) -> None:
-        self.detail = detail
-        super().__init__(f"{BUNDLED_FONT_MISSING}: {detail}")
-
-
-class BaseFontIneligible(Exception):
+class BaseFontIneligible(ScribeSenseError):
     """The Regular style exists but M1.3 refuses it.
 
     Carries M1.3's own code -- ``BASE_IS_MONOSPACE``, ``NO_LATIN_COVERAGE``,
-    ``FONT_UNREADABLE`` and the rest of K7 C1 -- unchanged on ``.code``, so M1.8 can
-    pass it straight into ``FontBuildResult.reason_code`` the way K7 already requires
-    for a direct `is_eligible` refusal. Re-coding it here would lose the diagnosis; the
-    user needs to know the font is monospaced, not merely that something failed.
+    ``FONT_UNREADABLE`` and the rest of K7 C1 -- unchanged on ``.reason_code``, and the
+    `ErrorCode` it folds into (`error_code_for`) on ``.code``. Monospace and icon fonts
+    keep their own ErrorCode, so the user still learns the font is monospaced, not
+    merely that something failed.
 
     Distinct from `BundledFontMissing` because the two mean different things to whoever
     bundled the font: one file is absent, the other is present and unsuitable.
     """
 
     def __init__(self, style: str, reason_code: str, path: Path) -> None:
+        code = error_code_for(reason_code)
+        super().__init__(ErrorCode(code) if code in ErrorCode.__members__ else ErrorCode.FONT_UNREADABLE)
         self.style = style
-        self.code = reason_code
+        self.reason_code = reason_code
         self.path = path
-        super().__init__(f"{reason_code}: {style} style at {path}")
-
-
-# --------------------------------------------------------------------------- #
-# Base fonts
-# --------------------------------------------------------------------------- #
-
-
-def base_font_files(family: str) -> dict[str, Path]:
-    """Bundled ``style -> file`` map for one family, per K2's ``fonts/`` layout.
-
-    **Provisional implementation of a K2 interface, not an M1.5 one.** K2 specifies
-    ``base_font_files(family) -> dict[str, Path]`` raising ``BUNDLED_FONT_MISSING``, and
-    records that neither it nor the ``fonts/`` tree exists yet -- M1.2 hit the same gap
-    and resolved it by injection (K2 B1). M1.5 cannot: the card's interface is
-    ``build_variants(config)`` with no second argument, so a default reader has to
-    exist. When K2's own lands, import it here and delete this body; the signature and
-    the failure code are already its.
-
-    Styles are inferred from file names (``NotoSans-BoldItalic.ttf`` -> ``BoldItalic``,
-    a stem with no ``-`` -> ``Regular``), which is the convention the four shortlisted
-    upstreams use. That inference is the part K2's ``manifest.toml`` will replace, and
-    it is the weaker half: the manifest *declares* the mapping instead of guessing it.
-    Where two files claim one style, the first in sorted order wins -- arbitrary, but
-    deterministic, which is the property that matters to the key.
-
-    Raises `BundledFontMissing` when the family is unknown, its directory is absent, or
-    it ships no Regular.
-    """
-    if family not in SHORTLIST:
-        raise BundledFontMissing(f"{family!r} is not in SHORTLIST")
-
-    directory = FONTS_ROOT / family
-    if not directory.is_dir():
-        raise BundledFontMissing(f"no bundled directory for {family!r}: {directory}")
-
-    found: dict[str, Path] = {}
-    for path in sorted(directory.iterdir()):
-        if not path.is_file() or path.suffix.lower() not in _SUFFIXES:
-            continue
-        stem = path.stem
-        token = stem.rsplit("-", 1)[-1] if "-" in stem else "regular"
-        style = _STYLE_ALIASES.get(token.replace(" ", "").lower())
-        if style is not None:
-            found.setdefault(style, path)
-
-    if REQUIRED_STYLE not in found:
-        raise BundledFontMissing(f"{family!r} ships no {REQUIRED_STYLE} style")
-    return found
 
 
 def _usable_styles(
@@ -537,7 +483,7 @@ def build_variant_set(
                 continue
             suffix = source.suffix.lower()
             out_path = directory / variant_filename(
-                family, style, suffix if suffix in _SUFFIXES else ".ttf"
+                family, style, suffix if suffix in FONT_SUFFIXES else ".ttf"
             )
             # family_name is what keeps the artifact from shadowing the original
             # (Research2 E.7): it carries the key, so it can never equal the source

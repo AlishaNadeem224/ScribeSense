@@ -64,7 +64,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import tempfile
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
@@ -75,9 +74,12 @@ from xml.sax.saxutils import escape
 
 from fontTools.ttLib import TTFont
 
-from config.rules import latin_glyphs, open_font
-from config.settings import Configuration, validate
-from fontgen.patcher import (
+from scribesense.config.rules import latin_glyphs, open_font
+from scribesense.config.settings import Configuration, validate
+from scribesense.contracts.errors import ScribeSenseError
+from scribesense.contracts.paths import run_cmd
+from scribesense.fontgen.naming import fc_pattern
+from scribesense.fontgen.patcher import (
     LIGATURE_FEATURES,
     SPACE_CODEPOINT,
     USE_TYPO_METRICS,
@@ -85,7 +87,7 @@ from fontgen.patcher import (
     line_gap_units,
     space_advance,
 )
-from fontgen.variants import (
+from scribesense.fontgen.variants import (
     REQUIRED_STYLE,
     STYLES,
     BundledFontMissing,
@@ -395,9 +397,12 @@ class PangoRenderer:
         and a measurement that moved with ``LANG`` would not be comparable between a
         developer's machine and a user's.
         """
+        return {**os.environ, **self.overrides(config_file)}
+
+    def overrides(self, config_file: Path) -> dict[str, str]:
+        """The variables `environment` changes; what `_run` actually passes."""
         config_file = Path(config_file)
         return {
-            **os.environ,
             "FONTCONFIG_FILE": str(config_file),
             "FONTCONFIG_PATH": str(config_file.parent),
             "XDG_CACHE_HOME": str(config_file.parent / "cache"),
@@ -405,18 +410,11 @@ class PangoRenderer:
             "LANG": "C.UTF-8",
         }
 
-    def _run(self, argv: Sequence[str], config_file: Path) -> subprocess.CompletedProcess:
+    def _run(self, argv: Sequence[str], config_file: Path) -> str:
         try:
-            return subprocess.run(
-                list(argv),
-                env=self.environment(config_file),
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RenderFailed(f"{argv[0]} timed out after {self.timeout}s") from exc
+            return run_text(argv, self.overrides(config_file), self.timeout)
+        except ScribeSenseError as exc:
+            raise RenderFailed(f"{Path(argv[0]).name} failed: {exc.code}") from exc
         except OSError as exc:
             raise RenderFailed(f"{argv[0]} could not be run: {exc}") from exc
 
@@ -443,15 +441,12 @@ class PangoRenderer:
         """
         if not self.fc_match:
             raise RenderFailed(f"{FC_MATCH} is not installed")
-        finished = self._run(
-            [self.fc_match, "--format=%{family}\n%{file}\n", family], config_file
+        out = self._run(
+            [self.fc_match, "--format=%{family}\n%{file}\n", fc_pattern(family)], config_file
         )
-        lines = [line.strip() for line in finished.stdout.splitlines() if line.strip()]
-        if finished.returncode != 0 or len(lines) < 2:
-            raise RenderFailed(
-                f"{FC_MATCH} failed for {family!r} "
-                f"(exit {finished.returncode}): {finished.stderr.strip()[:200]}"
-            )
+        lines = [line.strip() for line in out.splitlines() if line.strip()]
+        if len(lines) < 2:
+            raise RenderFailed(f"{FC_MATCH} gave no family and file for {family!r}")
         return lines[0], lines[1]
 
     def measure(
@@ -467,7 +462,7 @@ class PangoRenderer:
             raise RenderFailed(f"{PANGO_VIEW} is not installed")
         self._renders += 1
         out_path = Path(workdir) / f"render-{self._renders:03d}.png"
-        finished = self._run(
+        self._run(
             [
                 self.pango_view,
                 "-q",
@@ -480,11 +475,6 @@ class PangoRenderer:
             ],
             config_file,
         )
-        if finished.returncode != 0:
-            raise RenderFailed(
-                f"{PANGO_VIEW} failed for {family!r} "
-                f"(exit {finished.returncode}): {finished.stderr.strip()[:200]}"
-            )
         try:
             data = out_path.read_bytes()
         except OSError as exc:
@@ -503,6 +493,17 @@ def _png_size(data: bytes) -> RenderedSize:
     return RenderedSize(
         int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
     )
+
+
+def run_text(argv: Sequence[str], overrides: Mapping[str, str], timeout: float) -> str:
+    """Run ``argv`` through `run_cmd` (K3 rule 9) with ``overrides`` added to the environment.
+
+    `run_cmd` takes no environment, so the variables go in front as ``env NAME=value ...``;
+    the child still inherits everything else. Returns decoded stdout. Every failure --
+    missing tool, non-zero exit, timeout -- raises `ScribeSenseError` with run_cmd's code.
+    """
+    finished = run_cmd(["env", *(f"{k}={v}" for k, v in overrides.items()), *argv], timeout=timeout)
+    return finished.stdout.decode("utf-8", errors="replace")
 
 
 # --------------------------------------------------------------------------- #

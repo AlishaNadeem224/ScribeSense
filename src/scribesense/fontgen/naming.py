@@ -58,11 +58,13 @@ from collections.abc import Mapping
 from hashlib import sha256
 from pathlib import Path
 
-from config.settings import Configuration, RANGES, validate
-from fontgen.patcher import LIGATURE_FEATURES
+from scribesense.config.settings import RANGES, Configuration, decimals_of, validate
+from scribesense.contracts import fonts as k7
+from scribesense.fontgen.patcher import LIGATURE_FEATURES
 
 __all__ = [
     "FAMILY_PATTERN",
+    "fc_pattern",
     "GENERATOR_VERSION",
     "KEYED_FIELDS",
     "KEY_LENGTH",
@@ -109,10 +111,10 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _VERSION_RE = re.compile(r"^[0-9A-Za-z._+-]{1,64}$")
 _STYLE_RE = re.compile(r"^[0-9A-Za-z]{1,32}$")
 
-READING_FAMILY_PREFIX = "AccessSans"
+READING_FAMILY_PREFIX = k7.READING_FAMILY_PREFIX.removesuffix("-")
 """Family-name prefix of the reading variant [K7, D A19]."""
 
-UI_FAMILY_PREFIX = "AccessSansUI"
+UI_FAMILY_PREFIX = k7.UI_FAMILY_PREFIX.removesuffix("-")
 """Family-name prefix of the UI variant [K7, D A19]."""
 
 FAMILY_PATTERN = re.compile(
@@ -185,7 +187,7 @@ two as one decision and bump `GENERATOR_VERSION` at the same time.
 def canonical(field: str, value: float) -> str:
     """The fixed-decimal spelling of one configuration value, for hashing.
 
-    The decimal count comes from ``RANGES[field].step`` via `Range.decimals`, so the
+    The decimal count comes from ``RANGES[field].step`` via `decimals_of`, so the
     canonical text can never drift out of sync with the grid the value was rounded onto
     (``letter_em`` 0.02 -> 2 places, ``reading_line`` 0.1 -> 1 place).
 
@@ -202,7 +204,7 @@ def canonical(field: str, value: float) -> str:
     ('1.5', '1.50')
     """
     bounds = RANGES[field]
-    return f"{float(value) + 0.0:.{bounds.decimals}f}"
+    return f"{float(value) + 0.0:.{decimals_of(bounds)}f}"
 
 
 # --------------------------------------------------------------------------- #
@@ -423,3 +425,17 @@ def variant_filename(family: str, style: str, suffix: str = ".ttf") -> str:
     if suffix not in (".ttf", ".otf"):
         raise ValueError(f"unsupported font suffix: {suffix!r}")
     return f"{family}-{style}{suffix}"
+
+
+def fc_pattern(family: str) -> str:
+    """``family`` escaped for use as an ``fc-match`` pattern.
+
+    In fontconfig's pattern syntax ``-`` separates the family from a size, so a bare
+    ``AccessSansUI-3f9a1c2b7d10`` is parsed as family ``AccessSansUI`` at size ``3`` and
+    fontconfig quietly substitutes another font. Every generated family has a ``-``, so
+    every ``fc-match`` of one goes through here (``\\``, ``-``, ``:`` and ``,`` escaped).
+
+    >>> fc_pattern("AccessSansUI-3f9a1c2b7d10")
+    'AccessSansUI\\\\-3f9a1c2b7d10'
+    """
+    return re.sub(r"([\\\-:,])", r"\\\1", family)
