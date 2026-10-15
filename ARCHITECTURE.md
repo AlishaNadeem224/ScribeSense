@@ -1540,6 +1540,12 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > harness-only, A14). Checked read-only against the dev machine's real settings. Integration test (real
 > `gsettings` with `GSETTINGS_BACKEND=keyfile`) needs O3's bubblewrap runner.
 
+> **Fix 2026-10-15 (O3 CI finding):** a long-running process read STALE values right after `gsettings set`
+> (keyfile backend). Every read now runs in a **fresh process** (`adapters/gsettings_probe.py`, Gio only, JSON
+> out) — not by draining the GLib main loop, which could fire unrelated GTK callbacks inside the running app.
+> Writes unchanged (`gsettings set/reset`). Verified: the real-gsettings integration test passes in O3's
+> bubblewrap runner.
+
 #### M4.4 Flatpak adapter
 | Field | Spec |
 |---|---|
@@ -1730,6 +1736,13 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Acceptance tests | Lock; illegal transitions refused; kill mid-apply → `unfinished()` returns the tx |
 | Done when | Tests pass · reviewed by O3 |
 
+> **K9 journal decisions accepted by O4 (2026-10-15, O3's `docs/K9_draft.md`):** D1 store the planned-write
+> payload (text for keys, blob for files) · D2 Target as three columns, `running=False` on read · D4 retention:
+> delete a finished tx only if old AND outside the newest N AND unreferenced; always keep the newest COMPLETED
+> apply · **D5 the SQL for the journal tables lives in `store/journal_tables.py`, written by O3 to K4's spec;
+> M4.10 (`safety/journal.py`) calls it** (import rule R3 unchanged) · D7 only ScribeSense-managed locations
+> are stored (pattern test must accept K3 rule 10b `<Preferences path>#<key>` locations).
+
 #### M4.11 Revert
 | Field | Spec |
 |---|---|
@@ -1804,6 +1817,13 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > - Checked read-only on the dev machine: the real probe reports `Noto Sans` for `sans-serif`, matching fc-match.
 >   The integration tests (before/after/revert with generated fonts) still need O3's bubblewrap runner.
 
+> **Fix 2026-10-15 (O3 CI finding):** `run.item.analysis.font` segfaulted inside PyGObject on Ubuntu 24.04 /
+> Pango 1.52. The probe now asks Pango's **fontset** (`load_fontset` → `get_font(char)`) which font draws each
+> character of the fixed sample — the same choice Pango makes when itemizing, with plain method calls only.
+> Same results on Fedora; full integration suite passes in O3's runner (18 passed). Ubuntu confirmation: CI.
+> **Harness exception approved by O4 (2026-10-15):** `harness/` (test code, M3.4) may launch live browsers
+> directly (Marionette / DevTools) **only inside bubblewrap**, with timeouts and process-group kill; production
+> code under `src/` stays `run_cmd`-only.
 
 #### M4.14 Keybind writer
 | Field | Spec |
