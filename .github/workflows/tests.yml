@@ -66,7 +66,7 @@ jobs:
       - name: Install dependencies (fails if uv.lock is out of date)
         run: uv sync --locked --python /usr/bin/python3
 
-      - name: Diagnose the Pango probe (prints the stderr that run_cmd hides)
+      - name: Diagnose the Pango probe (a crash, exit 139, prints no error by itself)
         continue-on-error: true
         run: |
           uv run --python /usr/bin/python3 python - <<'PY'
@@ -74,24 +74,43 @@ jobs:
           from pathlib import Path
           from harness import run_integration as ri, sandbox
           inner = r"""
-          import os, subprocess, sys, traceback
+          import faulthandler, os, sys
+          faulthandler.enable()
           from pathlib import Path
+          def say(*a): print(*a, flush=True)
           Path(os.environ["FONTCONFIG_FILE"]).write_text('<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd"><fontconfig><include>/etc/fonts/fonts.conf</include></fontconfig>')
-          print("python", sys.version.split()[0], "FONTCONFIG_FILE", os.environ["FONTCONFIG_FILE"])
-          sample = "The quick brown fox jumps over the lazy dog 0123456789"
-          r = subprocess.run(["/usr/bin/python3", "-P", "-m", "scribesense.adapters.pango_probe", "sans-serif", sample], capture_output=True, text=True)
-          print("probe exit code:", r.returncode, "(2 bad args, 3 no Pango, 4 layout failed)", r.stdout, r.stderr)
-          try:
-              from scribesense.adapters.pango_probe import drawn_families
-              print("drawn_families ->", drawn_families("sans-serif", sample))
-          except Exception:
-              traceback.print_exc()
-          print(subprocess.run(["fc-match", "-s", "sans-serif"], capture_output=True, text=True).stdout[:300])
+          say("1 python", sys.version.split()[0])
+          import gi
+          gi.require_version("Pango", "1.0"); gi.require_version("PangoCairo", "1.0")
+          from gi.repository import Pango, PangoCairo
+          say("2 imported; Pango", Pango.version_string())
+          fm = PangoCairo.FontMap.get_default()
+          say("3 font map", type(fm).__name__)
+          ctx = fm.create_context()
+          say("4 context")
+          layout = Pango.Layout.new(ctx)
+          desc = Pango.FontDescription(); desc.set_family("sans-serif"); desc.set_size(12 * Pango.SCALE)
+          layout.set_font_description(desc)
+          say("5 description set")
+          layout.set_text("The quick brown fox 0123456789", -1)
+          say("6 text set")
+          it = layout.get_iter()
+          say("7 iter")
+          run = it.get_run()
+          say("8 run", run is not None)
+          say("9 family", run.item.analysis.font.describe().get_family())
           """
-          cmd = ["/usr/bin/python3", "-c", inner]
+          cmd = ["/usr/bin/python3", "-u", "-X", "faulthandler", "-c", inner]
           r = subprocess.run(sandbox.build_argv(cmd, repo=Path('.').resolve(), site_packages=ri.site_packages()), capture_output=True, text=True)
-          print(r.returncode, r.stdout, r.stderr)
+          print("exit code", r.returncode, "(139 = segfault)")
+          print(r.stdout)
+          print(r.stderr[-3000:])
           PY
+          echo "--- fonts the runner has"
+          fc-list | wc -l
+          fc-match sans-serif
+          echo "--- same stages OUTSIDE the sandbox"
+          /usr/bin/python3 -u -X faulthandler -c 'import gi;gi.require_version("Pango","1.0");gi.require_version("PangoCairo","1.0");from gi.repository import Pango,PangoCairo;l=Pango.Layout.new(PangoCairo.FontMap.get_default().create_context());d=Pango.FontDescription();d.set_family("sans-serif");l.set_font_description(d);l.set_text("hello",-1);print("outside:",l.get_iter().get_run().item.analysis.font.describe().get_family())'
 
       - name: Run integration tests in the sandbox
         run: uv run --python /usr/bin/python3 python -m harness.run_integration
