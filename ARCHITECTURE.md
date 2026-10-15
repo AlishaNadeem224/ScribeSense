@@ -662,9 +662,28 @@ owner + one other; existing codes are never renamed or reused. K1 validation cod
 | Reader / capture (O2) | `NOTHING_SELECTED` · `CLIPBOARD_EMPTY` · `SELECTION_UNAVAILABLE` · `TOO_LARGE` |
 | Extension / IPC (O4 + O2) | `APP_NOT_RUNNING` · `HOST_MISSING` · `BAD_MESSAGE` |
 
-### K9 — Store repositories (owner O3) — DRAFT 2026-10-09, **O3 sign-off required**
+### K9 — Store repositories (owner O3) — DRAFT 2026-10-09 · **PARTIALLY SIGNED OFF by O3 2026-10-15** (journal tables pending O4)
 
 Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9). Nothing else.
+
+> **Sign-off record (2026-10-15, O3) — partial.** Working draft and reasoning: `docs/K9_draft.md` (D1–D9, schema, tests).
+> **Signed off — M3.1 may build these:** the store core (`Store`, pragmas, migration runner, recovery mode), `presets`, `settings`,
+> `recommendation_samples`, `font_registry`, and the DB-wide rules below. Decisions taken (the draft's recommendations):
+> - **D3** built-ins are not stored (they come from `config.BUILTINS`); `custom` is one persisted row with the reserved id `custom`,
+>   written only when the user has values, never seeded with defaults; `original` is never stored; user ids are `uuid4`.
+>   Reserved ids: `default`, `reading`, `high-separation`, `custom`, `original`. *(Taken from O1's handoff — O1 to confirm.)*
+> - **D6** the database file is `data_dir()/scribesense.db` (`store.default_path()`); no K8 change.
+> - **D8** `FontRegistryRepo.create()` raises `FONT_IDENTITY_CONFLICT` only when the **font-building** fields differ
+>   (`base_family`, `letter_em`, `word_scale`, `reading_line`, `ui_line`) or the files/hashes differ — **never because of `text_scale`**
+>   (M1.5: `text_scale` is not part of the key).
+> - **D9** presets and configurations are stored as versioned JSON `{"v":1,…}` with fixed-decimal strings, validated by `validate()`;
+>   only cheap CHECKs in SQL (`kind`, word mode). No decimal columns (SQLite has none). Resolved configs are not persisted next to presets.
+> - **D4** retention rule (applies when M3.2 is built): delete a terminal tx only if older than the cutoff **and** outside the newest
+>   `keep_last` terminal txs **and** unreferenced; **always keep the newest `COMPLETED` apply**.
+> - **D7** stored `location` / `target_id` values are tool-config locations ScribeSense itself manages — never user documents; a test checks this.
+> **Still pending (not signed off):** the journal tables (`transactions`, `journal_items`, `backups`, `location_records`, `active_config`, `coverage`)
+> and `store/journal_tables.py` — waiting for **O4** on D1 (store the intent payload), D2 (do not store `Target.running`), D5 (the SQL layer
+> lives in `store/`, because only `store/` may import `sqlite3`). The `Store.transaction()` requirement for an atomic `keep()` (draft F4) applies there.
 
 ```python
 # ---- Records ----
@@ -726,7 +745,7 @@ class FontRegistryRepo:
 class CoverageRepo:
     def last_completed_apply(self) -> list[CoverageEntry]
         # historical: the latest completed apply — not proof of what is active now
-
+oo
 class SettingsRepo:
     def get(self, name: str) -> object              # unknown → KeyError; default if never set
     def set(self, name: str, value: object) -> None
@@ -1340,7 +1359,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Run every isolated test without touching the real desktop. [D F9] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | K8 |
 | Used by | all tests; **precondition for helper work** [D] |
 | Provides | (1) unit fixture: fake adapters, `subprocess`/`run_cmd` blocked · (2) integration runner: **bubblewrap** sandbox — private `/tmp`, temp `HOME`, private `XDG_RUNTIME_DIR`, **no host D-Bus / Wayland / X11 / Hyprland / service sockets**, `--unshare-net`, no inherited descriptors, only minimal system paths mounted read-only (not the real home), `GSETTINGS_BACKEND=keyfile`, private fontconfig [D R2] |
@@ -1367,12 +1386,19 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > limit; and `test_sandbox_guard.py` checks the length of `data_dir/service.sock`, which is now only the
 > fallback location. Both are O3's files — not changed by O4.
 
+> **Note (2026-10-15, O3):** M3.3 runner (`harness/`): runs every test marked `integration` anywhere under `tests/`
+> (not only `tests/integration/`), remounts the sandbox root read-only, sets a private `FONTCONFIG_FILE` under the
+> sandbox HOME, and `tests/conftest.py` empties HOME and the runtime dir around each integration test (the
+> "temp dirs removed after each test" postcondition). Known open item: `test_real_gsettings_apply_and_revert_in_the_sandbox`
+> fails because `adapters/gtk.py` (O4) reads back through a Gio cache that is stale under the keyfile backend until
+> the GLib main context is iterated — O4 to fix. `doctor` (M3.7) also checks fontconfig and PangoCairo now.
+
 #### M3.4 Render checks
 | Field | Spec |
 |---|---|
 | Purpose | "Drawn font" checks per engine for tests. [D F9; D A14] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | M3.3; pango-view, Qt offscreen, headless Brave/Firefox with temp profiles |
 | Used by | tests of M1.6, M4.x |
 | Provides | `drawn_family(engine, sample) -> str` [P] |
@@ -1392,7 +1418,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | End-to-end tests: Flatpak overrides, keybinds, relaunch + confirm, login auto-revert. [D F9] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | VM image with Hyprland [V GPU in VM] |
 | Used by | release testing |
 | Provides | VM image + snapshot reset scripts + test scenarios |
@@ -1412,7 +1438,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Checks done by hand: keybinds, confirm dialog, screen-reader use (+ keyboard-only, large text). [D F9, F6] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O2 |
+| Built by / reviewed by | O3 / O2 (review pending) |
 | Depends on | — |
 | Used by | release testing |
 | Provides | checklist document with pass/fail per item |
@@ -1432,7 +1458,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Name every missing dependency with the command to install it. [D F10] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | — |
 | Used by | M3.8, user |
 | Provides | `scribesense doctor` |
@@ -1472,7 +1498,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Run tests on every change; enforce which packages may import which. [DR] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | all |
 | Used by | everyone |
 | Provides | CI pipeline; import test |
