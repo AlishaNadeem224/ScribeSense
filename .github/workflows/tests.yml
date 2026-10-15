@@ -69,14 +69,26 @@ jobs:
       - name: Diagnose the Pango probe (prints the stderr that run_cmd hides)
         continue-on-error: true
         run: |
-          echo "--- outside the sandbox"
-          /usr/bin/python3 -c "import gi; gi.require_version('Pango','1.0'); gi.require_version('PangoCairo','1.0'); from gi.repository import PangoCairo; print('PangoCairo ok')"
-          echo "--- inside the sandbox"
           uv run --python /usr/bin/python3 python - <<'PY'
           import subprocess
           from pathlib import Path
           from harness import run_integration as ri, sandbox
-          cmd = ["/usr/bin/python3", "-c", "import gi; gi.require_version('Pango','1.0'); gi.require_version('PangoCairo','1.0'); from gi.repository import PangoCairo; print('PangoCairo ok')"]
+          inner = r"""
+          import os, subprocess, sys, traceback
+          from pathlib import Path
+          Path(os.environ["FONTCONFIG_FILE"]).write_text('<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd"><fontconfig><include>/etc/fonts/fonts.conf</include></fontconfig>')
+          print("python", sys.version.split()[0], "FONTCONFIG_FILE", os.environ["FONTCONFIG_FILE"])
+          sample = "The quick brown fox jumps over the lazy dog 0123456789"
+          r = subprocess.run(["/usr/bin/python3", "-P", "-m", "scribesense.adapters.pango_probe", "sans-serif", sample], capture_output=True, text=True)
+          print("probe exit code:", r.returncode, "(2 bad args, 3 no Pango, 4 layout failed)", r.stdout, r.stderr)
+          try:
+              from scribesense.adapters.pango_probe import drawn_families
+              print("drawn_families ->", drawn_families("sans-serif", sample))
+          except Exception:
+              traceback.print_exc()
+          print(subprocess.run(["fc-match", "-s", "sans-serif"], capture_output=True, text=True).stdout[:300])
+          """
+          cmd = ["/usr/bin/python3", "-c", inner]
           r = subprocess.run(sandbox.build_argv(cmd, repo=Path('.').resolve(), site_packages=ri.site_packages()), capture_output=True, text=True)
           print(r.returncode, r.stdout, r.stderr)
           PY
