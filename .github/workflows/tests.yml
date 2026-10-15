@@ -41,3 +41,30 @@ jobs:
 
       - name: Run tests
         run: uv run --python "$(which python)" pytest -ra
+
+  # M3.3: integration tests run ONLY inside bubblewrap. If the sandbox cannot start, this job FAILS
+  # (harness exits 3) — it never falls back to running unsandboxed and never passes by skipping.
+  integration:
+    name: integration (bubblewrap sandbox)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: System packages (bubblewrap + the tools the integration tests drive)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap fontconfig pango1.0-tools gsettings-desktop-schemas \
+            libglib2.0-bin python3-gi python3-pytest lua5.4
+
+      - name: Allow unprivileged user namespaces (Ubuntu 24.04 restricts them via AppArmor)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Install dependencies (fails if uv.lock is out of date)
+        run: uv sync --locked --python /usr/bin/python3
+
+      - name: Run integration tests in the sandbox
+        run: uv run --python /usr/bin/python3 python -m harness.run_integration

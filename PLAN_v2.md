@@ -775,9 +775,9 @@ Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 
 - ⬜ M2.9 Reader · ⬜ M2.10 Capture · ⬜ M2.11 CLI
 
 **O3 — Data & Platform**
-- ⏳ K9 sign-off · ⏳ M3.1 Store · ⬜ M3.2 Retention · 🟡 M3.3 Sandbox (unit level ✅, bubblewrap runner ⬜)
-- ⬜ M3.4 Render checks · ⬜ M3.5 VM tests · ⬜ M3.6 Manual checklist · ⬜ M3.7 Doctor · ⬜ M3.8 Install/uninstall
-- 🟡 M3.9 CI + import rules (both ✅; CI branch protection optional)
+- ⏳ K9 sign-off (working draft with decisions D1–D7 + schema in `docs/K9_draft.md`, 2026-10-14; D1/D2/D5 need O4, D3 needs O1) · ⏳ M3.1 Store · ⬜ M3.2 Retention · ✅ M3.3 Sandbox (unit fixture + bubblewrap runner; 10/10 escape tests pass, 2026-10-14; full runner: 14 pass, 1 fail = O4 GTK read-back bug, review by O4 pending)
+- 🟡 M3.4 Render checks (`harness/render.py`: pango engine + unit tests ✅; pango ✅ and qt ✅ verified in the bubblewrap runner (3 passed, 2026-10-15); firefox/chromium engines NOT implemented — they report "not implemented" and skip; 2026-10-14) · 🟡 M3.5 VM tests (guard + Hyprland feasibility check + runbook in `vm/`, tested without a VM, 2026-10-14; hypervisor/snapshot decision open; scenarios wait for CLI wiring + M3.8) · 🟡 M3.6 Manual checklist (written `docs/manual-checklist.md`, 2026-10-14; O2 review pending, not yet run) · ✅ M3.7 Doctor (acceptance tests pass, real-host run checked, 2026-10-14; `cli.py` wiring is O2, review by O4 pending) · ⬜ M3.8 Install/uninstall
+- 🟡 M3.9 CI + import rules (import rules ✅ incl. deliberate-violation self-test; CI now has a bubblewrap `integration` job, 2026-10-14 — NOT yet run on GitHub; branch protection optional)
 
 **O4 — System Integration & Safety**
 - ✅ M4.1 Adapter interface — contract K3, **fake adapter** (`adapters/fake.py`) and **conformance suite**
@@ -815,3 +815,19 @@ Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 
 - ✅ S4 prune keeps baselines · ⏳ S5, S6 need the extension · ✅ S7 user edit skipped and reported
 
 **Open decisions:** K9 sign-off · K8 socket amendment (O3 to confirm) · PBL date.
+
+## Note (2026-10-14, O3) — limits of the CLI-only Fedora server
+
+The O3 dev machine is a **CLI-only Fedora aarch64 server and itself a QEMU guest**: no display, no browser, no `gh`, no
+`virsh`/`qemu-img`, `/dev/dri` present. Consequences:
+
+- **Cannot be done from this machine (needs a website or a graphical session):**
+  - Viewing the GitHub Actions run of the new `integration` job, and marking it a *required check* (branch protection)
+    — GitHub web settings, and the repo is owned by another account (admin rights needed). M3.9.
+  - The GUI/desktop items of the manual checklist (sections A–E of `docs/manual-checklist.md`: screen reader, large text,
+    confirm window, keybinds on a live desktop). M3.6.
+  - Firefox / Brave drawn-font engines for M3.4 and every M3.5 desktop scenario: need a real browser / a Hyprland session.
+- **Can be done from the CLI:** everything else — unit tests, the bubblewrap runner, `doctor`, the Pango engine of M3.4
+  (after `dnf install gobject-introspection`), `vm.check_hyprland` (prints a report only), checklist sections F–G that are
+  shell-only (doctor, install/uninstall, privacy greps).
+- The GUI/browser items stay ⬜ until a machine with a graphical session (the test VM, M3.5) exists. They are **not** counted as passed.

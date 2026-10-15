@@ -1300,7 +1300,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Run every isolated test without touching the real desktop. [D F9] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | K8 |
 | Used by | all tests; **precondition for helper work** [D] |
 | Provides | (1) unit fixture: fake adapters, `subprocess`/`run_cmd` blocked · (2) integration runner: **bubblewrap** sandbox — private `/tmp`, temp `HOME`, private `XDG_RUNTIME_DIR`, **no host D-Bus / Wayland / X11 / Hyprland / service sockets**, `--unshare-net`, no inherited descriptors, only minimal system paths mounted read-only (not the real home), `GSETTINGS_BACKEND=keyfile`, private fontconfig [D R2] |
@@ -1327,12 +1327,19 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > limit; and `test_sandbox_guard.py` checks the length of `data_dir/service.sock`, which is now only the
 > fallback location. Both are O3's files — not changed by O4.
 
+> **Note (2026-10-15, O3):** M3.3 runner (`harness/`): runs every test marked `integration` anywhere under `tests/`
+> (not only `tests/integration/`), remounts the sandbox root read-only, sets a private `FONTCONFIG_FILE` under the
+> sandbox HOME, and `tests/conftest.py` empties HOME and the runtime dir around each integration test (the
+> "temp dirs removed after each test" postcondition). Known open item: `test_real_gsettings_apply_and_revert_in_the_sandbox`
+> fails because `adapters/gtk.py` (O4) reads back through a Gio cache that is stale under the keyfile backend until
+> the GLib main context is iterated — O4 to fix. `doctor` (M3.7) also checks fontconfig and PangoCairo now.
+
 #### M3.4 Render checks
 | Field | Spec |
 |---|---|
 | Purpose | "Drawn font" checks per engine for tests. [D F9; D A14] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | M3.3; pango-view, Qt offscreen, headless Brave/Firefox with temp profiles |
 | Used by | tests of M1.6, M4.x |
 | Provides | `drawn_family(engine, sample) -> str` [P] |
@@ -1352,7 +1359,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | End-to-end tests: Flatpak overrides, keybinds, relaunch + confirm, login auto-revert. [D F9] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | VM image with Hyprland [V GPU in VM] |
 | Used by | release testing |
 | Provides | VM image + snapshot reset scripts + test scenarios |
@@ -1372,7 +1379,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Checks done by hand: keybinds, confirm dialog, screen-reader use (+ keyboard-only, large text). [D F9, F6] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O2 |
+| Built by / reviewed by | O3 / O2 (review pending) |
 | Depends on | — |
 | Used by | release testing |
 | Provides | checklist document with pass/fail per item |
@@ -1392,7 +1399,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Name every missing dependency with the command to install it. [D F10] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | — |
 | Used by | M3.8, user |
 | Provides | `scribesense doctor` |
@@ -1432,7 +1439,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Run tests on every change; enforce which packages may import which. [DR] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | all |
 | Used by | everyone |
 | Provides | CI pipeline; import test |
