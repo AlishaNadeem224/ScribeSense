@@ -10,6 +10,8 @@ Rules:
 2. Call order is always round_to_steps() -> validate().
 3. No exact float equality: on-step checks use STEP_TOLERANCE.
 4. Issue codes: see IssueCode. NOT_ON_STEP is a guard that never fires in the normal flow.
+   NOT_A_NUMBER (amendment 2026-10-14, O1; sign-off pending) — a stored value of the wrong type
+   (None, str, bool) is reported, never coerced; round_to_steps() passes it through unchanged.
 5. Telling the user a value was rounded is UI feedback, not an Issue.
 """
 
@@ -61,6 +63,7 @@ class IssueCode(StrEnum):
     OUT_OF_RANGE = "OUT_OF_RANGE"  # error: outside RANGES[field]
     UNKNOWN_FONT = "UNKNOWN_FONT"  # error: base_family not in SHORTLIST
     NOT_ON_STEP = "NOT_ON_STEP"  # error: guard only — value was not rounded first
+    NOT_A_NUMBER = "NOT_A_NUMBER"  # error: not a real number (None, str, bool) — K1 amendment 2026-10-14
     UI_LINE_ABOVE_RECOMMENDED = "UI_LINE_ABOVE_RECOMMENDED"  # warning: ui_line > 1.3
 
 

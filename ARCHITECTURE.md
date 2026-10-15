@@ -210,6 +210,7 @@ def validate(c: Configuration) -> list[Issue]
 | `OUT_OF_RANGE` | error | outside `RANGES[field]` |
 | `UNKNOWN_FONT` | error | `base_family` not in `SHORTLIST` |
 | `NOT_ON_STEP` | error | **guard only** — value was not rounded first; never occurs in the normal flow |
+| `NOT_A_NUMBER` | error | value is not a real number (`None`, `str`, `bool`), e.g. from a corrupt store row — **amendment 2026-10-14 (O1), sign-off by one other owner pending**; `round_to_steps()` passes it through unchanged |
 | `UI_LINE_ABOVE_RECOMMENDED` | warning | `ui_line` > 1.3 |
 
 5. The UI may tell the user a value was rounded; that is UI feedback, not an `Issue`.
@@ -601,6 +602,18 @@ def remove_unused() -> list[str]                                 # keys removed
 4. **Partial styles [D R2]:** a base font may lack styles (e.g. no italic). Only available styles are
    built and reported in `FontSet.styles`; ScribeSense **does not promise** how other apps synthesize
    a missing style. [V] check each bundled family's actual files.
+
+> **Implementation notes (M1.8, integrated 2026-10-15 — see the note after M1.8; sign-off pending):**
+> `FontSet`, `FontBuildResult` and `PreviewFonts` are this contract's classes. `build()` returns a
+> subclass of `FontBuildResult` with two defaulted extras — `warnings` (advisory codes) and `detail` (the
+> pipeline's fine-grained code, e.g. `VALIDATION_ADVANCE_MISMATCH`); `reason_code` is always an `ErrorCode`
+> value, or a K1 `IssueCode` when an invalid configuration was refused. `GENERATOR_ERROR` (an unexpected
+> exception inside the pipeline → `failed`) is **proposed for the ErrorCode list** (Fonts row; owner O1 +
+> one other). `build_preview()` keeps the provisional `PreviewFonts` shape exactly (O1 confirms it); the
+> returned object adds `close()` and `with … as p:` to delete `temp_dir`, and has no `__del__`, so loaded
+> preview files are never deleted behind the caller's back. A refused preview raises `PreviewUnavailable`
+> (`ScribeSenseError(PREVIEW_UNAVAILABLE)`, with `.reason_code`). `build()` and `build_preview()` take
+> keyword-only test seams (`files=`, `renderer=`, `tools=`, `registry=`); callers pass only `config`.
 
 ### K8 — Paths and error codes (shared, defined by O3) — FROZEN 2026-10-09 (code list v1) · amended R2 2026-10-09
 
@@ -1017,6 +1030,33 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Return `built` for an unvalidated font |
 | Acceptance tests | Cache hit returns without rebuilding; refusal paths return codes |
 | Done when | Tests pass · frozen in contract session · reviewed |
+
+> **O1 integration, 2026-10-15 (done by O4 during review of `team/O1` d9fd739, at O4's request — O1 to
+> review).** M1.1–M1.8 were written as top-level `config/` and `fontgen/` packages that nothing could
+> import; they now live in `src/scribesense/config` and `src/scribesense/fontgen`. Changes beyond the move:
+> - **Bug fixed — every Linux build failed.** `fc-match` reads `-` as fontconfig pattern syntax (family-size),
+>   so `AccessSansUI-<key>` resolved to another font and M1.6 refused every set (`VALIDATION_RESOLUTION_MISMATCH`);
+>   M1.7's install check had the same bug. Patterns now go through `naming.fc_pattern()` (as M4.13 does).
+> - **Contracts used, not copied:** K1 `Configuration`/`Issue`/`Range`/`RANGES`/`SHORTLIST`, K2
+>   `WordSpacing`/`PresetValues`/`Preset`/`BUILTIN_IDS`/`ORIGINAL`, K7 `FontSet`/`FontBuildResult`/`PreviewFonts`
+>   (re-exported; `Range` helpers became `settings.snap()/positions()/contains()/is_on_step()/decimals_of()`).
+> - **K1 rule 1 restored:** rounding uses Python's `round()` as written (ties to even); O1 had switched to
+>   half-away-from-zero, which would be a K1 amendment. `NOT_A_NUMBER` added to `IssueCode` (see K1).
+> - **K3 rule 9 / import rule R2:** `fontgen/validate.py` and `fontgen/cache.py` use `run_cmd` (environment
+>   passed as `env NAME=value …`), not `subprocess`.
+> - **K8:** `cache.fonts_dir()` delegates to `contracts.paths.fonts_dir()` (it ignored `SCRIBESENSE_FONTS_DIR`).
+> - **Errors:** O1's exceptions are `ScribeSenseError` subclasses carrying an `ErrorCode` (message = bare code,
+>   no paths), with the detail kept on attributes; `variants.error_code_for()` folds the fine-grained codes.
+> - **K2 `base_font_files()`** moved to `scribesense.config.bundled` (re-exported by `config.presets` and
+>   `fontgen.variants`); `resolve()` now measures the bundled Regular face's space width (K2), falling back
+>   to 0.25 em while `fonts/` is empty. **Open (O1):** no base fonts are bundled yet and `manifest.toml` is
+>   not read — until then `build(config)` returns `refused / BUNDLED_FONT_MISSING`, and Default resolves to
+>   word_scale 1.75 (fallback) instead of 1.5 (real Noto Sans space = 0.26 em).
+> - **Tests added** (`tests/unit/fontgen/`): card acceptance tests for M1.1–M1.8 with synthetic fonts and fake
+>   pango/fontconfig, plus 2 integration tests (real pango-view/fc-cache/fc-match, bubblewrap runner only).
+> - Behaviour to know: tracking applies to Latin letters only (digits/punctuation are script Common and are
+>   left alone); line height below a font's natural height cannot be reduced (Noto Sans ≈ 1.36, so `ui_line`
+>   1.0–1.3 changes nothing for it).
 
 ### O2 — User Experience
 
