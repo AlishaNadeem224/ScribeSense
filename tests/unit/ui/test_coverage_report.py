@@ -11,7 +11,12 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("gi")
+gi = pytest.importorskip("gi")
+try:  # PyGObject alone is not enough: the module needs the GTK 4 + libadwaita typelibs
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Adw", "1")
+except ValueError:
+    pytest.skip("GTK 4 / libadwaita typelibs not installed", allow_module_level=True)
 
 from scribesense.contracts.adapter import Target  # noqa: E402
 from scribesense.contracts.coverage import CoverageEntry, CoverageStatus  # noqa: E402

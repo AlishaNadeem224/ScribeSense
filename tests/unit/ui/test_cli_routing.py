@@ -17,6 +17,16 @@ from scribesense import cli
 from scribesense.contracts.cli import ExitCode
 
 
+def _require_gtk() -> None:
+    """Skip unless the GTK app can load: PyGObject plus the GTK 4 + libadwaita typelibs."""
+    gi = pytest.importorskip("gi")
+    try:
+        gi.require_version("Gtk", "4.0")
+        gi.require_version("Adw", "1")
+    except ValueError:
+        pytest.skip("GTK 4 / libadwaita typelibs not installed")
+
+
 def test_confirm_is_fresh_process_and_not_forwarded(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -73,7 +83,7 @@ class _CommandLine:
 
 def test_the_service_runs_commands_itself_and_quit_quits() -> None:
     # A1: this instance IS the service; later launches arrive in do_command_line.
-    pytest.importorskip("gi")
+    _require_gtk()
     from scribesense.ui import app as ui_app  # type: ignore[import-not-found]
 
     app = ui_app.ScribeSenseApp()
@@ -87,7 +97,7 @@ def test_the_service_runs_commands_itself_and_quit_quits() -> None:
 
 
 def test_no_arguments_falls_through_to_app(monkeypatch: pytest.MonkeyPatch) -> None:
-    pytest.importorskip("gi")
+    _require_gtk()
 
     called: dict[str, list[str]] = {}
 
