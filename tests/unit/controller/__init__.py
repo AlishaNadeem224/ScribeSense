@@ -1,0 +1,1 @@
+"""M2.1 tests. Run against InMemoryJournal and FakeAdapter — no real I/O."""
