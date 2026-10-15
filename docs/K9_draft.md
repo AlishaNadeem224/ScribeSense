@@ -9,7 +9,7 @@ Date: 2026-10-14 · Sources: ARCHITECTURE.md K4, K9, M3.1, M3.2, R2-1…R2-6; co
 
 ---
 
-## 1. Decisions to make (recommendation first)
+## 1. Decisions to make (recommendation first) — D1–D7 from the first draft, D8–D9 added 2026-10-15
 
 | # | Question | Recommendation | Who must agree |
 |---|---|---|---|
@@ -20,6 +20,8 @@ Date: 2026-10-14 · Sources: ARCHITECTURE.md K4, K9, M3.1, M3.2, R2-1…R2-6; co
 | D5 | Who writes SQL for the journal tables? Import rule R3: **only `store/` imports `sqlite3`**, so `safety/` (O4's M4.10 journal) cannot. | `store/` provides the SQL layer for the journal tables (a private `store/journal_tables.py`, written by O3 to O4's K4 spec). O4's `safety/journal.py` calls it. Alternative: relax R3 for one file — rejected, it weakens the one rule that keeps SQLite in one place. | **O4** (this changes who writes what in M4.10) |
 | D6 | The DB file name is not defined (K8 has `data_dir()` but no DB path). | `store.default_path() = data_dir() / "scribesense.db"`; `Store(path)` stays as in K9. No K8 change. | O3 only |
 | D7 | `location` / `target_id` strings go into the store. AGENTS.md §6 forbids user file paths. | Policy: only **tool-config locations ScribeSense itself manages** (fontconfig rule file, gsettings `schema key`, browser pref file) — never user documents. Add a test that every stored `location` matches an adapter-declared location pattern. | O4 + team |
+| D8 | **(new, from O1's handoff — §8)** The K9 rule "same key, different config → `FONT_IDENTITY_CONFLICT`" would raise a false conflict, because the font key deliberately ignores `text_scale`. | Compare only the font-building fields (`base_family`, `letter_em`, `word_scale`, `reading_line`, `ui_line`) plus files and hashes. | O3 only (confirm with O1 that these are the key's inputs) |
+| D9 | **(new, from O1's handoff — §8)** O1 proposes typed decimal columns; K9 says versioned JSON; SQLite has no decimal type. | Keep K9's JSON `{"v":1,…}` with fixed-decimal strings; validate with `validate()`; add only cheap CHECKs (`kind`, `word_mode`). Alternative: integers in hundredths. | O3 + O1 |
 
 ---
 
