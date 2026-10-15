@@ -1353,7 +1353,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Local persistence for one user. [D F8] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | K1–K8, sqlite3 [D A4] |
 | Used by | M1.8, M2.5–M2.7, M3.2, M4.10 |
 | Provides | K9 repositories, schema, migrations |
@@ -1367,6 +1367,30 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Store reader/document text, window titles, user document paths, screen contents [D] |
 | Acceptance tests | Round-trip per repository; migration from empty; SELECT sweep finds no canary text |
 | Done when | Tests pass · reviewed by O4 |
+
+> **Implemented 2026-10-15 (O3, M3.1) — review by O4 pending.** `src/scribesense/store/`: `core.py` (`Store`, migrations,
+> per-thread connections, transactions, error mapping), `repos.py` (the five K9 repos), `journal_tables.py` (D5), `serialize.py`
+> (JSON v1), `migrations/001_initial.sql`. 126 unit tests + a 3-process concurrency test in the bubblewrap runner.
+> - **For O4 (M4.10): `JournalTables(store)`** is the SQL layer your `safety/journal.py` calls — it keeps the lock, K5 rules and IPC.
+>   Names: `create_tx` · `tx_state` · `tx_kind` · `tx_info` · `set_tx_state` (K5 enforced; COMPLETED only via `keep`) · `add_item`
+>   (backup + item + first-time baseline in one transaction) · `set_intent` · `set_applied` · `set_revert_outcome` · `mark_retained` ·
+>   `items` · `item_backup` · `add_coverage` · `coverage` · `location` · `locations` · `baseline` · `baseline_backup` · `clear_managed` ·
+>   `set_unresolved` · `keep` (one transaction) · `style_revision` · `active` · `set_original` · `prune_history` · `has_obligations`.
+>   `tests/unit/test_store_journal_tables.py` runs the same scenarios on your `InMemoryJournal` and on this layer; a `TableJournal`
+>   test class there shows the K4-name mapping.
+> - **Store at start-up:** `Store(default_path())` creates `data_dir()/scribesense.db` (0600, dir 0700) and migrates. `mode="recovery"` never
+>   creates and never migrates; a missing file → `STORE_IO_ERROR` (check `default_path().exists()` first); a schema that is not the one
+>   this code knows → `SCHEMA_UNSUPPORTED`. Opening a WAL store that is read-only succeeds; the first write raises `STORE_READ_ONLY`.
+> - **`store.recover_interrupted_builds()` is for the service to call ONCE at start-up**, not on every open: a short-lived CLI process
+>   must not fail a build the service is running (decision on the K9 "at startup" rule).
+> - Behaviours chosen where K9 was silent: `PresetRepo.list()` = built-ins, then the `custom` row, then user presets by name;
+>   `delete("original")` → `False`; saving `original` or a user preset with a reserved id → `ValueError`; `coverage` keeps the latest entry
+>   per target of a transaction; retention compares `created_at` (as the in-memory double does) and also keeps transactions that
+>   touched an unresolved location; `FontRegistryRepo.mark_removed()` refuses (`FONT_IN_USE`) for the active config, a managed location,
+>   an unfinished tx whose planned write names the font's families, or any built-in/saved preset that resolves to it.
+> - D7: `journal_tables.is_managed_location_shape()` (key, `<abs path>#<key>`, absolute file) is tested against O4's conformance patterns;
+>   it is **not** enforced inside `add_item` because the fake adapter uses free names.
+> - Not done here (M3.2): the retention *policy* (30 days / last 10 / when it runs at start-up).
 
 #### M3.2 Retention
 | Field | Spec |
