@@ -662,7 +662,7 @@ owner + one other; existing codes are never renamed or reused. K1 validation cod
 | Reader / capture (O2) | `NOTHING_SELECTED` · `CLIPBOARD_EMPTY` · `SELECTION_UNAVAILABLE` · `TOO_LARGE` |
 | Extension / IPC (O4 + O2) | `APP_NOT_RUNNING` · `HOST_MISSING` · `BAD_MESSAGE` |
 
-### K9 — Store repositories (owner O3) — DRAFT 2026-10-09 · **PARTIALLY SIGNED OFF by O3 2026-10-15** (journal tables pending O4)
+### K9 — Store repositories (owner O3) — DRAFT 2026-10-09 · **SIGNED OFF by O3 2026-10-15** (journal part accepted by O4 the same day; D3 for O1 to confirm)
 
 Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9). Nothing else.
 
@@ -681,9 +681,14 @@ Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9).
 > - **D4** retention rule (applies when M3.2 is built): delete a terminal tx only if older than the cutoff **and** outside the newest
 >   `keep_last` terminal txs **and** unreferenced; **always keep the newest `COMPLETED` apply**.
 > - **D7** stored `location` / `target_id` values are tool-config locations ScribeSense itself manages — never user documents; a test checks this.
-> **Still pending (not signed off):** the journal tables (`transactions`, `journal_items`, `backups`, `location_records`, `active_config`, `coverage`)
-> and `store/journal_tables.py` — waiting for **O4** on D1 (store the intent payload), D2 (do not store `Target.running`), D5 (the SQL layer
-> lives in `store/`, because only `store/` may import `sqlite3`). The `Store.transaction()` requirement for an atomic `keep()` (draft F4) applies there.
+> **Journal tables — signed off 2026-10-15.** O4 accepted D1 (store the planned-write payload: text for keys, blob for files),
+> D2 (`Target` as three columns, `running=False` on read), D4 and D7 (see the note "K9 journal decisions accepted by O4"), and
+> **D5: the SQL for the journal tables lives in `store/journal_tables.py`, written by O3 to K4's spec; M4.10 (`safety/journal.py`) calls it.**
+> Requirements carried into M3.1: `Store.transaction()` must let several journal writes share one transaction so `keep()` is atomic (draft F4);
+> `active_config` is one permanent row whose `style_revision` survives "Original" (F3); retention never deletes the newest `COMPLETED` apply (F2);
+> the D7 pattern test must accept K3 rule 10b locations (`<Preferences path>#<key>`).
+> **Open:** O1 has not confirmed D3 (`custom` as one stored row). The K1 amendment `NOT_A_NUMBER` (added by O4, "sign-off by one other owner
+> pending") is a contract change that O3 may sign as that other owner — O3's decision, not part of K9.
 
 ```python
 # ---- Records ----
@@ -1348,7 +1353,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Local persistence for one user. [D F8] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | K1–K8, sqlite3 [D A4] |
 | Used by | M1.8, M2.5–M2.7, M3.2, M4.10 |
 | Provides | K9 repositories, schema, migrations |
@@ -1363,12 +1368,36 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Acceptance tests | Round-trip per repository; migration from empty; SELECT sweep finds no canary text |
 | Done when | Tests pass · reviewed by O4 |
 
+> **Implemented 2026-10-15 (O3, M3.1) — review by O4 pending.** `src/scribesense/store/`: `core.py` (`Store`, migrations,
+> per-thread connections, transactions, error mapping), `repos.py` (the five K9 repos), `journal_tables.py` (D5), `serialize.py`
+> (JSON v1), `migrations/001_initial.sql`. 126 unit tests + a 3-process concurrency test in the bubblewrap runner.
+> - **For O4 (M4.10): `JournalTables(store)`** is the SQL layer your `safety/journal.py` calls — it keeps the lock, K5 rules and IPC.
+>   Names: `create_tx` · `tx_state` · `tx_kind` · `tx_info` · `set_tx_state` (K5 enforced; COMPLETED only via `keep`) · `add_item`
+>   (backup + item + first-time baseline in one transaction) · `set_intent` · `set_applied` · `set_revert_outcome` · `mark_retained` ·
+>   `items` · `item_backup` · `add_coverage` · `coverage` · `location` · `locations` · `baseline` · `baseline_backup` · `clear_managed` ·
+>   `set_unresolved` · `keep` (one transaction) · `style_revision` · `active` · `set_original` · `prune_history` · `has_obligations`.
+>   `tests/unit/test_store_journal_tables.py` runs the same scenarios on your `InMemoryJournal` and on this layer; a `TableJournal`
+>   test class there shows the K4-name mapping.
+> - **Store at start-up:** `Store(default_path())` creates `data_dir()/scribesense.db` (0600, dir 0700) and migrates. `mode="recovery"` never
+>   creates and never migrates; a missing file → `STORE_IO_ERROR` (check `default_path().exists()` first); a schema that is not the one
+>   this code knows → `SCHEMA_UNSUPPORTED`. Opening a WAL store that is read-only succeeds; the first write raises `STORE_READ_ONLY`.
+> - **`store.recover_interrupted_builds()` is for the service to call ONCE at start-up**, not on every open: a short-lived CLI process
+>   must not fail a build the service is running (decision on the K9 "at startup" rule).
+> - Behaviours chosen where K9 was silent: `PresetRepo.list()` = built-ins, then the `custom` row, then user presets by name;
+>   `delete("original")` → `False`; saving `original` or a user preset with a reserved id → `ValueError`; `coverage` keeps the latest entry
+>   per target of a transaction; retention compares `created_at` (as the in-memory double does) and also keeps transactions that
+>   touched an unresolved location; `FontRegistryRepo.mark_removed()` refuses (`FONT_IN_USE`) for the active config, a managed location,
+>   an unfinished tx whose planned write names the font's families, or any built-in/saved preset that resolves to it.
+> - D7: `journal_tables.is_managed_location_shape()` (key, `<abs path>#<key>`, absolute file) is tested against O4's conformance patterns;
+>   it is **not** enforced inside `add_item` because the fake adapter uses free names.
+> - Not done here (M3.2): the retention *policy* (30 days / last 10 / when it runs at start-up).
+
 #### M3.2 Retention
 | Field | Spec |
 |---|---|
 | Purpose | Prune old **transaction history** (and its per-tx backups). Never `LocationRecord`s or baseline backups. [D F8, R2] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | M3.1 |
 | Used by | app startup [P] |
 | Provides | `prune(now)` |
@@ -1382,6 +1411,18 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Delete baselines or unfinished transactions |
 | Acceptance tests | 30-day/last-10 rule; baselines survive |
 | Done when | Tests pass · reviewed |
+
+> **Implemented 2026-10-15 (O3, M3.2) — review by O4 pending.** `src/scribesense/store/retention.py`: `prune(journal, now) -> int`,
+> `RETENTION_DAYS = 30`, `KEEP_LAST = 10`. It takes any K4 journal (O4's SQLite journal, which holds the apply lock, or the in-memory
+> double) and calls `journal.prune_history(now - 30 days, 10)`; the SQL rules (D4) are in `JournalTables.prune_history` (M3.1).
+> - **For the service start-up (O2/O4):** call `prune(journal, datetime.now(timezone.utc))` once, after the store is open and no apply is running.
+>   If any tx is unfinished (or the journal reports the lock is held) it prunes nothing and returns 0 — the card's precondition.
+> - **Failure rule:** any storage error (`ScribeSenseError` or `sqlite3.Error`) → nothing is deleted (the delete is one transaction), the error
+>   *code* is logged (category `retention`) and `0` is returned; start-up never fails because of housekeeping. Logged on success: code `OK` and the count.
+> - 28 tests, each policy test on both journals: the 40-day example, the strict "older than 30 days" boundary, last-10, baselines and managed
+>   records survive, backups removed only when unreferenced, no pruning while a tx is active, rollback on a mid-prune failure, log privacy.
+> - **Finding for O4:** `safety/memory_journal.py` `prune_history` does not yet keep the newest COMPLETED apply (D4 / draft F2, accepted
+>   by O4); the SQL layer does. Until it does, the in-memory double and the SQL journal differ there (only the SQL test covers it).
 
 #### M3.3 Test sandbox
 | Field | Spec |
@@ -1507,7 +1548,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Install from repo with `uv`/pip; uninstall with full revert. [D F10] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | TBD / O4 |
+| Built by / reviewed by | O3 / O4 (review pending) |
 | Depends on | M3.7, M4.11, M4.14, M1.7 |
 | Used by | user |
 | Provides | install steps, `scribesense uninstall [--delete-data]` |
@@ -1521,6 +1562,28 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Delete user data without explicit confirmation; overwrite a user's later change [D] |
 | Acceptance tests | VM: install → apply → uninstall → every touched file byte-identical to baseline (except skipped ones) |
 | Done when | VM test passes · reviewed by O4 |
+
+> **Implemented 2026-10-15 (O3, M3.8) — review by O4 pending; VM acceptance test not run.** `src/scribesense/uninstall.py` (a top-level
+> recovery module like `doctor.py`: no Gtk/Adw, added to the A2 `RECOVERY_ROOTS` in `tests/unit/test_import_rules.py`) and
+> `docs/INSTALL.md` (install steps + uninstall + what is not wired). `uninstall(journal, adapters, *, store, policy, delete_data,
+> remove_fonts_anyway, confirm, fonts, keybind_remover) -> UninstallReport`; `run_uninstall(...)` prints the report and returns the K10
+> exit code (0 / 1 / 3, never 4).
+> - **Flow (card order):** `safety.recovery.reset` (K4 rule 4 steps 1+2; drift is skipped, never overwritten) → remove generated fonts via
+>   `fontgen.cache` except those a skipped/unresolved location still names (`managed_font_key`) or whose use cannot be determined
+>   (R2-9; `--remove-fonts-anyway` overrides) → `safety.keybinds.remove_keybinds` (this also removes the login check: `recover --login`
+>   lives in our keybind file; a hand-edited block is left and reported) → data kept unless `--delete-data` AND confirmed.
+> - **Failure rules:** one failing item/font/keybind step is reported and the rest continue ("offer `reset`"). If the reset itself cannot
+>   run (`LOCK_TIMEOUT`/`APPLY_IN_PROGRESS` → exit 3; any other journal error → exit 1), nothing else is touched: the recovery hooks stay
+>   until the originals are back.
+> - **Data:** `--delete-data` asks (type `delete`; without a terminal the answer is no). With obligations left (unresolved/managed) only
+>   preferences go (`RECOVERY_OBLIGATIONS_REMAIN` logged); otherwise `delete_recovery_data` + `delete_preferences`, then the db files and the
+>   log are removed; the stable lock file is never removed (K4 rule 1).
+> - **For O2 (`cli.py`):** call `uninstall.run_uninstall(journal, adapters, store=Store(default_path()), policy=LockPolicy(lock, "uninstall"),
+>   delete_data=…, remove_fonts_anyway=…)` for `scribesense uninstall`. Needs O4's SQLite journal (M4.10) on `store.JournalTables` — not built yet,
+>   which is why the command line still says "not wired".
+> - **Ownership note:** the new top-level module is O3's by analogy with `doctor.py`; the ownership table in AGENTS.md does not list it. O2/O4 to
+>   confirm.
+> - 21 unit tests (fake desktop, fonts, keybinds; both outcomes of every failure rule) + 2 sandbox tests with the real font cache.
 
 #### M3.9 CI and import rules
 | Field | Spec |
