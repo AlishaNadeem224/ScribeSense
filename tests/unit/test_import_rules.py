@@ -21,7 +21,7 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[2] / "src"
 STDLIB = set(sys.stdlib_module_names) | {"__future__"}
 GUI_TARGETS = ("gi.repository.Gtk", "gi.repository.Adw", "scribesense.ui", "scribesense.reader")
-RECOVERY_ROOTS = ("scribesense.safety.recovery", "scribesense.doctor")
+RECOVERY_ROOTS = ("scribesense.safety.recovery", "scribesense.doctor", "scribesense.uninstall")
 LAZY_ROOTS = ("scribesense.cli",)  # only module-level imports count (UI may be imported lazily)
 
 
