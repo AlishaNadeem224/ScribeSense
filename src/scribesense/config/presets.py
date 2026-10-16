@@ -8,7 +8,11 @@ This module owns the built-in values and the resolution rules. It does **not** o
 configuration vocabulary: every range, step, tolerance and validation rule is imported
 from `scribesense.config.settings` (M1.1). No bound and no validation logic is restated here.
 
-Persistence is M3.1's job -- nothing in this module reads or writes storage. It is
+Persistence is M3.1's job -- nothing in this module reads or writes storage. What this
+module owns is the *record*: `to_record` and `from_record` convert a saved preset (user
+or custom) to and from the versioned JSON shape K9 D9 fixes, so the store writes bytes
+and this module remains the single authority on what a preset legally contains. A
+built-in never becomes a record -- built-ins are code. It is
 platform-independent: no display-server logic. The only file it reads is the bundled
 Regular face, to measure its space width for ``target_em`` (K2 ``resolve``). The
 `ui_line` and `text_scale` fields it carries are applied by the application's
@@ -22,10 +26,18 @@ The three preset kinds
 ``user``
     A saved, named preset owned by the user and stored by M3.1. Gets a ``uuid4`` ID.
 ``custom``
-    The transient working configuration the user is currently editing -- the "Custom"
-    entry in a preset list. Per Research2 C.4, Custom "is not a fixed configuration
-    and must not be given default values", so `custom_preset` requires explicit
-    values and this module defines no Custom constant.
+    The working configuration the user is currently editing -- the "Custom" entry in a
+    preset list. Per Research2 C.4, Custom "is not a fixed configuration and must not be
+    given default values", so `custom_preset` requires explicit values and this module
+    defines no Custom constant.
+
+    Custom is **saved, not transient** (K9 D3, confirmed 2026-10-16). It is one row
+    under the reserved id `CUSTOM_ID`, upserted whenever the user edits it and deleted
+    when they clear it. Treating it as throwaway state was the earlier reading, and it
+    loses the user's work on every restart -- which is the one thing the personalisation
+    evidence behind offering Custom at all says must not happen (see `custom_preset`).
+    What stays true is that Custom is *editing state*, not a catalogue entry: the store
+    does not return it from ``PresetRepo.list()``, and `catalogue` appends it separately.
 
 `ORIGINAL` is **not** a preset at all. See the note on it below.
 
@@ -49,8 +61,9 @@ from __future__ import annotations
 
 import math
 import uuid
+from collections.abc import Mapping
 from dataclasses import replace
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 
 from scribesense.config import bundled
 from scribesense.config.bundled import base_font_files
@@ -60,6 +73,7 @@ from scribesense.config.settings import (
     RANGES,
     Configuration,
     Issue,
+    decimals_of,
     round_to_steps,
     validate,
 )
@@ -80,10 +94,13 @@ __all__ = [
     "MEASURED_SPACE_WIDTH_EM",
     "ORIGINAL",
     "READING_ID",
+    "RECORD_VERSION",
     "REFERENCE_SPACE_WIDTH_EM",
     "RESERVED_IDS",
+    "STORABLE_KINDS",
     "BuiltinOverwriteError",
     "Preset",
+    "PresetRecordError",
     "PresetResolutionError",
     "PresetValues",
     "SpaceWidthUnavailable",
@@ -93,9 +110,12 @@ __all__ = [
     "catalogue",
     "custom_preset",
     "default_space_width_em",
+    "from_record",
     "is_original",
+    "is_storable",
     "new_user_preset",
     "resolve",
+    "to_record",
     "space_width_source",
     "with_base_family",
     "with_word_multiplier",
@@ -136,11 +156,27 @@ CUSTOM_ID = "custom"
 """ID of the transient Custom entry. Reserved so a saved preset cannot take it."""
 
 RESERVED_IDS: frozenset[str] = frozenset(BUILTIN_IDS) | {CUSTOM_ID, ORIGINAL}
-"""IDs a user preset may never claim.
+"""IDs a **user** preset may never claim.
 
 Enforces the card's "must never: let a user preset overwrite a built-in", and extends
 the same protection to the Custom slot and the Original sentinel, which would be just
 as broken to shadow.
+
+Reserved is about *who may claim an id*, not about *what may be stored*. `CUSTOM_ID` is
+reserved precisely so that the one preset entitled to it -- the `custom`-kind working
+set -- is the only thing that can ever occupy that row; see `STORABLE_KINDS`.
+"""
+
+STORABLE_KINDS: frozenset[str] = frozenset({"user", "custom"})
+"""The preset kinds that are persisted (K9 D3).
+
+``builtin`` is excluded because the three built-ins are *code* (`BUILTINS`): storing a
+copy would create a second authoritative value, and a stale row could then shadow a
+corrected built-in after an upgrade. `ORIGINAL` is excluded because it is not a preset.
+
+Everything else is saved, ``custom`` included. The custom row is a single upsert on
+`CUSTOM_ID`: there is exactly one working set, so saving it twice replaces it rather
+than accumulating rows, and deleting it is how the user clears their edits.
 """
 
 
@@ -175,6 +211,22 @@ class SpaceWidthUnavailable(LookupError):
 
 class BuiltinOverwriteError(ValueError):
     """A user preset tried to claim a reserved ID. See `RESERVED_IDS`."""
+
+
+class PresetRecordError(ValueError):
+    """A stored preset record is malformed, or a preset cannot legally be stored.
+
+    Raised by `to_record` for something that must never reach storage (a built-in, a
+    user preset on a reserved id, a custom preset not on `CUSTOM_ID`), and by
+    `from_record` for a record this code cannot read (wrong ``v``, missing field,
+    non-numeric value, unknown word mode).
+
+    It is deliberately *not* a `PresetResolutionError`: a record that parses but whose
+    values no longer resolve -- a family dropped from ``SHORTLIST``, say -- is a
+    different failure, and conflating them would make an unreadable file and an
+    outdated-but-intact one look the same to the store. `from_record` therefore does
+    structural validation only; the caller resolves.
+    """
 
 
 # --------------------------------------------------------------------------- #
@@ -550,7 +602,12 @@ def new_user_preset(name: str, values: PresetValues) -> Preset:
 
 
 def custom_preset(values: PresetValues, name: str = "Custom") -> Preset:
-    """Wrap the user's current working values as the transient Custom entry.
+    """Wrap the user's current working values as the saved Custom entry.
+
+    Always carries `CUSTOM_ID`, which is what makes it a single upserted row rather than
+    an accumulating pile: there is one working set, and saving it again replaces it.
+    Pass it to `to_record` to hand it to the store, and feed the result of `from_record`
+    back to `catalogue` on the next launch.
 
     Takes explicit values and has no default set: per Research2 C.4, "Custom is not a
     fixed configuration and must not be given default values". Offering it at all is
@@ -560,19 +617,31 @@ def custom_preset(values: PresetValues, name: str = "Custom") -> Preset:
     personal-best variation yielding higher comprehension accuracy (Sheppard et al.
     2023); a personalised ranking model raised predicted reading speed by 14-25 WPM
     (Cai et al. 2022). That evidence is about *personalisation working*, not about any
-    particular value.
+    particular value -- and it is also why the entry is persisted rather than dropped on
+    exit: a personal best that has to be rediscovered at every launch is not one.
     """
     return Preset(id=CUSTOM_ID, name=name, values=values, kind="custom")
 
 
-def catalogue(user_presets: tuple[Preset, ...] = ()) -> tuple[Preset, ...]:
-    """Built-ins followed by the user's saved presets.
+def catalogue(
+    user_presets: tuple[Preset, ...] = (),
+    custom: Preset | None = None,
+) -> tuple[Preset, ...]:
+    """Built-ins, then the user's saved presets, then their saved Custom entry.
 
     Enforces the card's "must never: let a user preset overwrite a built-in". A user
     preset that claims a reserved ID, or that declares ``kind="builtin"``, raises
     `BuiltinOverwriteError` instead of shadowing or replacing the real one. Shadowing
     would be the worse failure of the two, because the built-in would still appear in
     the list while resolving to someone else's values.
+
+    ``custom`` is the restored working set -- typically ``from_record(stored_row)`` --
+    and is passed separately rather than inside ``user_presets`` for two reasons: it
+    holds a reserved id that no user preset may claim, and the store does not return it
+    from ``PresetRepo.list()`` (K9 D3), because it is editing state rather than a
+    catalogue entry. It is appended last so the list reads built-in → saved → "where I
+    left off", and omitting it (``None``) means the user has no saved edits, not that
+    they are being discarded.
 
     `ORIGINAL` is not included: it is a sentinel, not a preset, and is excluded from
     enumeration by contract.
@@ -591,7 +660,272 @@ def catalogue(user_presets: tuple[Preset, ...] = ()) -> tuple[Preset, ...]:
         if preset.id in seen:
             raise BuiltinOverwriteError(f"duplicate user preset id {preset.id!r}")
         seen.add(preset.id)
-    return BUILTINS + tuple(user_presets)
+    if custom is None:
+        return BUILTINS + tuple(user_presets)
+    _check_custom(custom)
+    return BUILTINS + tuple(user_presets) + (custom,)
+
+
+def _check_custom(preset: Preset) -> None:
+    """The two things that make a preset the Custom row rather than something else.
+
+    Both are checked rather than coerced. Silently relabelling a user preset as the
+    working set, or a working set as a user preset, would lose one of them on the next
+    save -- and the save is an upsert, so the loss would be immediate and total.
+    """
+    if preset.kind != "custom":
+        raise BuiltinOverwriteError(
+            f"the custom entry must declare kind='custom', got {preset.kind!r}"
+        )
+    if preset.id != CUSTOM_ID:
+        raise BuiltinOverwriteError(
+            f"the custom entry must carry id {CUSTOM_ID!r}, got {preset.id!r}"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Storage records -- what a saved preset looks like on its way to M3.1
+# --------------------------------------------------------------------------- #
+
+RECORD_VERSION = 1
+"""``v`` in every record this module writes (K9 D9).
+
+Versioned from the first row so that a later field addition is a migration rather than
+a guess about what an unlabelled row meant. `from_record` refuses any other version
+outright instead of reading what it recognises: a partially understood preset would
+resolve to a configuration the user never chose.
+"""
+
+_FIELD_DECIMALS: dict[str, int] = {
+    "letter_em": decimals_of(RANGES["letter_em"]),
+    "reading_line": decimals_of(RANGES["reading_line"]),
+    "ui_line": decimals_of(RANGES["ui_line"]),
+    "text_scale": decimals_of(RANGES["text_scale"]),
+}
+"""Decimal places each stored field is written with -- derived from its K1 step.
+
+Fixed-decimal text, not floats, is what K9 D9 asks for and what K7 E2 already does for
+the content key. Two reasons, and the second is the one that bites: ``1.5`` and ``1.50``
+must be one value, and a float round-tripped through JSON can come back as
+``0.12000000000000001``, which is off the 0.02 lattice and would make a restored preset
+build a *different font* from the one the user was looking at when they saved it.
+
+Deriving the precision from `decimals_of` rather than writing ``2`` here means a K1 step
+change carries into storage automatically instead of silently truncating.
+"""
+
+_WORD_DECIMALS: dict[str, int] = {
+    "target_em": decimals_of(RANGES["letter_em"]),
+    "multiplier": decimals_of(RANGES["word_scale"]),
+}
+"""Precision for `WordSpacing.value`, which has no range of its own.
+
+A ``multiplier`` lands on ``word_scale``'s own lattice, so it borrows that step. A
+``target_em`` is an em offset like ``letter_em`` and borrows that one -- K1 gives the
+em target no range of its own, because it is intent that `resolve` converts, not a
+configuration field. Both of the figures that actually appear (WCAG's 0.12 and 0.16 em)
+are exact at this precision.
+"""
+
+
+def is_storable(preset: Preset) -> bool:
+    """Whether ``preset`` is one M3.1 persists -- ``user`` or ``custom``, not a built-in.
+
+    A predicate rather than a comment, so the store asks this module instead of
+    re-deciding the policy next to its SQL.
+    """
+    return preset.kind in STORABLE_KINDS
+
+
+def to_record(preset: Preset) -> dict[str, Any]:
+    """A saved preset as the JSON-serialisable record M3.1 writes (K9 D9).
+
+    Accepts ``user`` and ``custom`` alike -- that is the whole point: the Custom entry
+    goes to storage by the same path as a named preset, so there is no second, weaker
+    code path on which the user's working set can be forgotten.
+
+    Refuses, loudly:
+
+    * a **built-in** -- `BUILTINS` is code. A stored copy would be a second
+      authoritative value, and after an upgrade the stale row would shadow the corrected
+      built-in while still displaying its name;
+    * a **user preset on a reserved id** -- `RESERVED_IDS`, the same rule `catalogue`
+      enforces, applied one layer earlier so a bad row never reaches disk;
+    * a **custom preset not on `CUSTOM_ID`** -- it would stop being the single upserted
+      working row and start accumulating.
+
+    Numbers become fixed-decimal strings; see `_FIELD_DECIMALS` for why that is not
+    cosmetic. The resolved `Configuration` is deliberately **not** stored alongside:
+    K2's whole model is that a preset holds intent and `resolve` is the only producer of
+    a configuration. Persisting both would let them drift, and the one that drifts is
+    the one the font was built from.
+
+    >>> record = to_record(custom_preset(BUILTINS[0].values))
+    >>> record["id"], record["kind"], record["values"]["letter_em"]
+    ('custom', 'custom', '0.12')
+    """
+    if not is_storable(preset):
+        raise PresetRecordError(
+            f"preset kind {preset.kind!r} is not stored"
+            f" (storable: {sorted(STORABLE_KINDS)});"
+            " built-ins live in BUILTINS and ORIGINAL is not a preset"
+        )
+    if preset.kind == "custom":
+        _check_custom(preset)
+    elif preset.id in RESERVED_IDS:
+        raise PresetRecordError(
+            f"preset id {preset.id!r} is reserved and cannot be used by a"
+            f" user preset (reserved: {sorted(RESERVED_IDS)})"
+        )
+    if not isinstance(preset.name, str) or not preset.name.strip():
+        raise PresetRecordError(f"preset name must be a non-empty string, got {preset.name!r}")
+
+    values = preset.values
+    word = values.word
+    if word.mode not in _WORD_DECIMALS:
+        raise PresetRecordError(
+            f"WordSpacing.mode must be 'target_em' or 'multiplier', got {word.mode!r}"
+        )
+    if not isinstance(values.base_family, str) or not values.base_family:
+        raise PresetRecordError(f"base_family must be a non-empty string, got {values.base_family!r}")
+
+    return {
+        "v": RECORD_VERSION,
+        "id": preset.id,
+        "name": preset.name,
+        "kind": preset.kind,
+        "values": {
+            "base_family": values.base_family,
+            "letter_em": _text("letter_em", values.letter_em, _FIELD_DECIMALS["letter_em"]),
+            "word": {
+                "mode": word.mode,
+                "value": _text("word.value", word.value, _WORD_DECIMALS[word.mode]),
+            },
+            "reading_line": _text(
+                "reading_line", values.reading_line, _FIELD_DECIMALS["reading_line"]
+            ),
+            "ui_line": _text("ui_line", values.ui_line, _FIELD_DECIMALS["ui_line"]),
+            "text_scale": _text(
+                "text_scale", values.text_scale, _FIELD_DECIMALS["text_scale"]
+            ),
+        },
+    }
+
+
+def from_record(record: Mapping[str, Any]) -> Preset:
+    """Rebuild a saved preset from a stored record. The inverse of `to_record`.
+
+    Structural validation only -- version, kind, id, word mode, and that every numeric
+    field is a real finite number. It deliberately does **not** call `resolve`: a record
+    that parses but whose ``base_family`` has since left ``SHORTLIST`` is intact and
+    outdated, not corrupt, and the store must be able to hand it back so the user can
+    see and repair it. Resolving is the caller's next step, and `PresetResolutionError`
+    is what it raises.
+
+    ``base_family`` is likewise not checked against ``SHORTLIST`` here, for the same
+    reason: `validate` owns that judgement (``UNKNOWN_FONT``) and owning it twice means
+    two answers.
+
+    >>> restored = from_record(to_record(custom_preset(BUILTINS[1].values)))
+    >>> restored == custom_preset(BUILTINS[1].values)
+    True
+    """
+    if not isinstance(record, Mapping):
+        raise PresetRecordError(f"preset record must be a mapping, got {type(record).__name__}")
+    version = record.get("v")
+    if version != RECORD_VERSION:
+        raise PresetRecordError(
+            f"preset record declares v={version!r}, this code reads v={RECORD_VERSION}"
+        )
+
+    kind = record.get("kind")
+    if kind not in STORABLE_KINDS:
+        raise PresetRecordError(
+            f"stored preset kind must be one of {sorted(STORABLE_KINDS)}, got {kind!r}"
+        )
+    preset_id = record.get("id")
+    if not isinstance(preset_id, str) or not preset_id:
+        raise PresetRecordError(f"preset record has no usable id: {preset_id!r}")
+    if kind == "custom" and preset_id != CUSTOM_ID:
+        raise PresetRecordError(f"a custom record must carry id {CUSTOM_ID!r}, got {preset_id!r}")
+    if kind == "user" and preset_id in RESERVED_IDS:
+        raise PresetRecordError(f"stored user preset holds the reserved id {preset_id!r}")
+    name = record.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise PresetRecordError(f"preset record has no usable name: {name!r}")
+
+    raw_values = record.get("values")
+    if not isinstance(raw_values, Mapping):
+        raise PresetRecordError("preset record has no 'values' mapping")
+    family = raw_values.get("base_family")
+    if not isinstance(family, str) or not family:
+        raise PresetRecordError(f"base_family must be a non-empty string, got {family!r}")
+
+    raw_word = raw_values.get("word")
+    if not isinstance(raw_word, Mapping):
+        raise PresetRecordError("preset record has no 'word' mapping")
+    mode = raw_word.get("mode")
+    if mode not in _WORD_DECIMALS:
+        raise PresetRecordError(
+            f"WordSpacing.mode must be 'target_em' or 'multiplier', got {mode!r}"
+        )
+    # Narrow to the Literal K2 declares, rather than passing the record's object
+    # through: the check above is the only place the two spellings are enumerated.
+    word_mode: Literal["target_em", "multiplier"] = (
+        "target_em" if mode == "target_em" else "multiplier"
+    )
+
+    values = PresetValues(
+        base_family=family,
+        letter_em=_number("letter_em", raw_values.get("letter_em")),
+        word=WordSpacing(word_mode, _number("word.value", raw_word.get("value"))),
+        reading_line=_number("reading_line", raw_values.get("reading_line")),
+        ui_line=_number("ui_line", raw_values.get("ui_line")),
+        text_scale=_number("text_scale", raw_values.get("text_scale")),
+    )
+    preset_kind: Literal["user", "custom"] = "custom" if kind == "custom" else "user"
+    return Preset(id=preset_id, name=name, values=values, kind=preset_kind)
+
+
+def _text(field: str, value: object, decimals: int) -> str:
+    """One number as canonical fixed-decimal text, or `PresetRecordError`.
+
+    Mirrors K1's own refusals rather than inventing new ones: ``bool`` is rejected even
+    though it is numerically coercible, for the reason `NOT_A_NUMBER` exists -- ``True``
+    would otherwise store as ``1.00``, a perfectly valid ``text_scale`` the user never
+    chose.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise PresetRecordError(f"{field} is not a real number: {value!r}")
+    number = float(value) + 0.0  # K1 A3: -0.0 and 0.0 must not produce different text.
+    if not math.isfinite(number):
+        raise PresetRecordError(f"{field} is not finite: {value!r}")
+    text = f"{number:.{decimals}f}"
+    # A small negative (-0.004) still formats with a sign at two decimals. Same repr
+    # problem, one rounding step later, so it is normalised here rather than left to
+    # surprise M1.5's content key.
+    return f"{0.0:.{decimals}f}" if float(text) == 0.0 else text
+
+
+def _number(field: str, raw: object) -> float:
+    """Read one stored number back. Accepts the canonical text and a bare JSON number.
+
+    Both, because a record may have been written by hand or by an older writer, and a
+    preset that refuses to load is worse than one that loads a float: `validate` still
+    has the last word on the value either way.
+    """
+    if isinstance(raw, str):
+        try:
+            number = float(raw)
+        except ValueError:
+            raise PresetRecordError(f"{field} is not a number: {raw!r}") from None
+    elif isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        number = float(raw)
+    else:
+        raise PresetRecordError(f"{field} is not a number: {raw!r}")
+    if not math.isfinite(number):
+        raise PresetRecordError(f"{field} is not finite: {raw!r}")
+    return number + 0.0
 
 
 def is_original(value: object) -> bool:
