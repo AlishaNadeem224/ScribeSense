@@ -227,6 +227,25 @@ def test_prune_keeps_baselines_unfinished_and_newest() -> None:
     assert j.baseline_backup(FILE) == b"orig"  # baseline survives pruning
 
 
+def test_prune_keeps_the_newest_completed_apply_and_unresolved_locations() -> None:
+    clock = Clock()
+    j = InMemoryJournal(clock)
+    kept, _ = apply_to_awaiting(j)
+    j.keep(kept, active())  # the newest COMPLETED apply
+    for _ in range(2):  # newer txs that end REVERTED
+        tx, _ = apply_to_awaiting(j)
+        j.set_state(tx, TxState.REVERTING)
+        j.set_state(tx, TxState.REVERTED)
+    assert j.prune_history(clock.now + timedelta(days=1), keep_last=0) == 2
+    assert j.state(kept) is TxState.COMPLETED  # K9 D4 / F2: the confirmed apply survives keep_last=0
+
+    j.set_unresolved(FILE, ErrorCode.DRIFT_SKIPPED)
+    newer, _ = apply_to_awaiting(j)
+    j.keep(newer, active())  # now `kept` is no longer the newest COMPLETED apply ...
+    assert j.prune_history(clock.now + timedelta(days=1), keep_last=0) == 0
+    assert j.state(kept) is TxState.COMPLETED  # ... but it touched an unresolved location, so it stays
+
+
 def test_prune_validates_and_respects_the_lock() -> None:
     j = InMemoryJournal()
     with pytest.raises(ValueError):

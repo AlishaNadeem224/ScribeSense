@@ -95,5 +95,5 @@ class Reverter:
             adapter.revert(item.snapshot, self.journal.backup(tx, item.item_id))
             after = adapter.read_state(item.snapshot.location).sha256
             return "reverted" if after == item.snapshot.old_sha256 else "failed"
-        except ScribeSenseError:
+        except Exception:  # noqa: BLE001 — any adapter failure is "failed": the item keeps its recovery data
             return "failed"

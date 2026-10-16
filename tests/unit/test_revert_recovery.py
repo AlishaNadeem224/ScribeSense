@@ -82,6 +82,25 @@ def test_failed_revert_is_unfinished_and_retried_successfully(world: FakeWorld) 
     assert world.snapshot_all() == original
 
 
+def test_unexpected_adapter_exception_during_revert_is_failed_not_a_crash(world: FakeWorld) -> None:
+    original = world.snapshot_all()
+    adapter = FakeAdapter(world, {"t": [FILE, KEY]})
+    system = make_recovery_system(world, [adapter])
+    tx = system.apply(A, keep=False)
+    real_revert = adapter.revert
+
+    def broken(item, backup):  # type: ignore[no-untyped-def]
+        raise OSError("disk went away")  # not a ScribeSenseError
+
+    adapter.revert = broken  # type: ignore[method-assign]
+    report = system.revert(tx)
+    assert set(report.failed) == {FILE, KEY}
+    assert system.journal.state(tx) is TxState.REVERT_FAILED  # recovery info kept, retried later
+    adapter.revert = real_revert  # type: ignore[method-assign]
+    assert system.reset().failed == []
+    assert world.snapshot_all() == original
+
+
 def test_login_recovery_never_touches_a_confirmed_configuration(world: FakeWorld) -> None:
     system = make_recovery_system(world, [FakeAdapter(world, {"t": [FILE, KEY]})])
     system.apply(A, keep=True)
