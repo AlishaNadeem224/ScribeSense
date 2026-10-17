@@ -199,7 +199,7 @@ class ApplyController:
                     continue
                 items = adapter.snapshot(target)
                 item_ids = [
-                    self._journal.record_snapshot(tx, item, backup=None)
+                    self._journal.record_snapshot(tx, item, file_backup=None)
                     for item in items
                 ]
                 planned = adapter.plan(target, fonts, config)
