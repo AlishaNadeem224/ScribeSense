@@ -1082,6 +1082,17 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 >   left alone); line height below a font's natural height cannot be reduced (Noto Sans ≈ 1.36, so `ui_line`
 >   1.0–1.3 changes nothing for it).
 
+> **`ReferenceSource` for `remove_unused()` — implemented 2026-10-17 by O4 (closes the "gap, not yet owned").**
+> `safety/font_references.py` `FontReferenceSource(journal, adapters, presets=store.presets.list, lock=<the process's
+> ApplyLock>)` reads all five K7 rule 3 sources: `journal.active().font_key` · `managed_font_key` of managed/unresolved
+> location records · generated family names in unfinished txs' planned writes · every preset (built-in, custom, user)
+> resolved → `bundled_font_key()` (`variants.plan(config).key`; `None` while the base fonts are not bundled, because
+> `build()` would refuse) · **live settings**: each adapter's targets, read now (`detect` → `snapshot` → `read_state`),
+> scanned for `AccessSans[UI]-<key>`. Any source it cannot read → `complete=False` → `remove_unused()` removes nothing;
+> an unfinished tx or a lock held by anyone → `transaction_active()` → the sweep waits. Tests: `tests/unit/test_font_references.py`
+> (both journals). Wiring (O2, service): `generator.remove_unused(references=FontReferenceSource(...))` at start-up after
+> `recover_interrupted_builds()`/`prune()`, or after a Keep — never during a tx.
+
 ### O2 — User Experience
 
 #### M2.1 Apply controller
