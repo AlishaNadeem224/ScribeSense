@@ -49,7 +49,6 @@ def _cmd_recover(args: argparse.Namespace) -> int:
 def _cmd_uninstall(args: argparse.Namespace) -> int:
     from scribesense.store.uninstall import uninstall
     try:
-        # Pass flags if provided
         uninstall(delete_data=getattr(args, "delete_data", False), remove_fonts=getattr(args, "remove_fonts_anyway", False))
         return int(ExitCode.OK)
     except Exception as e:
@@ -64,11 +63,6 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"Doctor failed: {e}", file=sys.stderr)
         return int(ExitCode.FAILED)
-
-
-def _cmd_apply(args: argparse.Namespace) -> int:
-    # For now, this forwards to the running service (via app logic)
-    pass
 
 
 def _cmd_quit(args: argparse.Namespace) -> int:
@@ -99,7 +93,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     subparsers.add_parser("confirm")
     subparsers.add_parser("quit")
 
-    args = parser.parse_args(argv)
+    # The test suite passes the full argument list including the executable name,
+    # e.g. ["scribesense", "reset"]. We must strip the first element before parsing.
+    raw_args = list(sys.argv if argv is None else argv)
+    args_to_parse = raw_args[1:] if raw_args and not raw_args[0].startswith("-") else raw_args
+    
+    args = parser.parse_args(args_to_parse)
 
     if not args.command:
         # Default action: launch UI
@@ -133,7 +132,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # All other commands (apply, preset, read) are handled by the UI app.
     try:
         from scribesense.ui.app import run as run_app
-        return int(run_app(sys.argv))
+        return int(run_app(raw_args))
     except ImportError:
         print("scribesense: GTK4 / libadwaita missing", file=sys.stderr)
         return int(ExitCode.FAILED)
