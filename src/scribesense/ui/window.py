@@ -1,6 +1,6 @@
 """M2.4 — the application window.
 
-Now hosts the PresetEditorPage (M2.5) instead of a placeholder.
+Hosts the PresetEditorPage (M2.5) and routes to the SettingsPage (M2.7).
 """
 
 from __future__ import annotations
@@ -14,12 +14,11 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gtk  # noqa: E402
 
-# Import O1's actual implementations
 from scribesense.config.presets import resolve  # type: ignore
 from scribesense.fontgen import generator  # type: ignore
-
 from scribesense.contracts.presets import Preset  # noqa: E402
 from scribesense.ui.preset_editor import PresetEditorPage  # noqa: E402
+from scribesense.ui.settings_page import SettingsPage  # noqa: E402
 
 
 class ScribeSenseWindow(Adw.ApplicationWindow):
@@ -34,18 +33,47 @@ class ScribeSenseWindow(Adw.ApplicationWindow):
         self.nav = Adw.NavigationView()
         self.set_content(self.nav)
 
-        # Build the editor page using O1's real fontgen.generator.build_preview
+        # Build the editor page
         editor = PresetEditorPage(
             build_preview=generator.build_preview,
             on_apply=self._on_apply,
         )
+        # Add a settings button to the editor's header
+        self._add_settings_button(editor)
+        
         self.nav.push(editor)
 
         self.connect("close-request", self._on_close_request)
 
+    def _add_settings_button(self, page: PresetEditorPage) -> None:
+        # Find the ToolbarView inside the editor page to add a top bar button
+        toolbar_view = page.get_child()
+        header_bar = toolbar_view.get_top_bar()
+        
+        settings_btn = Gtk.Button(icon_name="emblem-system-symbolic")
+        settings_btn.set_tooltip_text("Settings")
+        settings_btn.connect("clicked", self._on_settings_clicked)
+        header_bar.pack_end(settings_btn)
+
+    def _on_settings_clicked(self, _button: Gtk.Button) -> None:
+        # In a real app, these callables would use O3's SettingsRepo and O4's keybind writer.
+        # For now, we provide mock implementations so the UI works.
+        def get_opt_in() -> bool: return False
+        def set_opt_in(val: bool) -> None: print(f"Opt-in set to {val}")
+        def get_keybind(k: str) -> str: return "SUPER ALT, R"
+        def set_keybind(k: str, v: str) -> None: print(f"Set {k} to {v}")
+        def delete_data() -> None: print("Data deletion requested")
+
+        settings = SettingsPage(
+            get_opt_in=get_opt_in,
+            set_opt_in=set_opt_in,
+            get_keybind=get_keybind,
+            set_keybind=set_keybind,
+            delete_data_fn=delete_data,
+        )
+        self.nav.push(settings)
+
     def _on_apply(self, preset: Preset) -> None:
-        """Called when the user presses Apply."""
-        # This is where M2.1's controller would be invoked.
         dialog = Adw.AlertDialog.new(
             "Apply Pending",
             f"M2.1 apply controller will be wired here for preset '{preset.name}'."
