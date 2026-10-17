@@ -1,0 +1,1 @@
+"""Unit tests for O2's reader package. Must not require a real display."""
