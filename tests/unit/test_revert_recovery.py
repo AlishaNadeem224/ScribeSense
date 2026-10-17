@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import functools
+import sys
+
 import pytest
 
 from scribesense.adapters.fake import FakeAdapter, FakeCrash, FakeWorld
@@ -15,6 +18,21 @@ FILE = "/fake/home/.config/fontconfig/conf.d/99-scribesense.conf"
 KEY = "org.gnome.desktop.interface font-name"
 A = Configuration("Noto Sans", 0.12, 1.5, 1.5, 1.2, 1.0)
 B = Configuration("Noto Sans", 0.20, 2.5, 1.6, 1.2, 1.0)
+
+
+_make_recovery_system = make_recovery_system
+#: Tests that reach into the in-memory double's internals.
+MEMORY_ONLY = {"test_missing_baseline_backup_is_reported_and_keeps_recovery_info"}
+
+
+@pytest.fixture(autouse=True, params=["memory", "sqlite"])
+def journal_kind(request, monkeypatch: pytest.MonkeyPatch) -> str:  # type: ignore[no-untyped-def]
+    """Run every test on the in-memory double and on the real SQLite journal (M4.10)."""
+    if request.param == "sqlite" and request.node.originalname in MEMORY_ONLY:
+        pytest.skip("reaches into the in-memory double's internals")
+    monkeypatch.setattr(sys.modules[__name__], "make_recovery_system",
+                        functools.partial(_make_recovery_system, journal=request.param))
+    return request.param
 
 
 @pytest.fixture
@@ -79,6 +97,25 @@ def test_failed_revert_is_unfinished_and_retried_successfully(world: FakeWorld) 
     report = system.reset()  # retries the REVERT_FAILED tx, then restores baselines
     assert report.failed == []
     assert system.journal.state(tx) is TxState.REVERTED
+    assert world.snapshot_all() == original
+
+
+def test_unexpected_adapter_exception_during_revert_is_failed_not_a_crash(world: FakeWorld) -> None:
+    original = world.snapshot_all()
+    adapter = FakeAdapter(world, {"t": [FILE, KEY]})
+    system = make_recovery_system(world, [adapter])
+    tx = system.apply(A, keep=False)
+    real_revert = adapter.revert
+
+    def broken(item, backup):  # type: ignore[no-untyped-def]
+        raise OSError("disk went away")  # not a ScribeSenseError
+
+    adapter.revert = broken  # type: ignore[method-assign]
+    report = system.revert(tx)
+    assert set(report.failed) == {FILE, KEY}
+    assert system.journal.state(tx) is TxState.REVERT_FAILED  # recovery info kept, retried later
+    adapter.revert = real_revert  # type: ignore[method-assign]
+    assert system.reset().failed == []
     assert world.snapshot_all() == original
 
 

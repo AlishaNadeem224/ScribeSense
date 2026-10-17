@@ -212,8 +212,6 @@ If the documents disagree, the latest explicitly confirmed team decision in
 
 ## What is **not** in this project
 
-To prevent confusion with earlier proposals:
-
 - **No conversational layer.** No chat, no assistant.
 - **No passive typing or interaction monitoring.** Nothing is captured without an
   explicit user action.
@@ -226,9 +224,8 @@ To prevent confusion with earlier proposals:
   host's fontconfig, gsettings, browser preferences, or Flatpak overrides — which is
   the entire product. ScribeSense installs natively.
 
-These were considered in Phase-I and dropped in the Phase-II pivot. They are not
-"scheduled for later"; the only items marked Later in the current plan are: shadow
-mode, drift detection, Electron support, GNOME support, a recommender, and a voice
+The items marked Later in the current plan are: shadow mode, drift 
+detection, Electron support, GNOME support, a recommender, and a voice
 assistant — see `ScribeSense_Architecture.html` "After the MVP".
 
 ---

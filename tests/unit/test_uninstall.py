@@ -151,10 +151,49 @@ def test_a_failed_revert_is_reported_and_the_uninstall_continues(world: FakeWorl
     keybinds = FakeKeybinds()
     report = run(s, FakeFonts(A_FONT, STRAY), keybinds)
     assert report.reset.failed  # every revert failed ...
-    assert keybinds.calls == 1 and report.keybinds == "removed"  # ... and the uninstall still went on
-    assert report.fonts_removed == [STRAY] and report.fonts_kept_referenced == [A_FONT]  # unresolved -> font kept
+    assert report.fonts_removed == [STRAY] and report.fonts_kept_referenced == [A_FONT]  # ... the rest went on
+    # ... but the login check and recovery keybind stay, so the failed items are retried (O4 review, 2026-10-16)
+    assert keybinds.calls == 0 and report.keybinds == "kept_for_recovery"
     assert un.exit_code(report) is ExitCode.FAILED
     assert "scribesense reset" in un.format_report(report)  # offers `reset`
+
+
+def test_a_crashed_unconfirmed_apply_keeps_its_font_and_the_login_check(world: FakeWorld) -> None:
+    # The apply crashed before Keep, so `managed` was never set; its revert then fails. Its font may still be in use.
+    s = RecoverySystem(world, [FakeAdapter(world, {"t": [FILE, KEY, OTHER]})])
+    s.apply(A, keep=False)
+    s.crash()
+    failing = FakeAdapter(world, {"t": [FILE, KEY, OTHER]}, fail_on={"revert": ErrorCode.ADAPTER_COMMAND_FAILED})
+    s.adapters = {failing.name: failing}
+    fonts, keybinds = FakeFonts(A_FONT, STRAY), FakeKeybinds()
+    report = run(s, fonts, keybinds)
+    assert s.journal.unfinished()  # still to be recovered
+    assert report.fonts_kept_referenced == [A_FONT]  # named by the unfinished apply's planned write (R2-9)
+    assert report.fonts_removed == [STRAY]  # nothing references this one
+    assert keybinds.calls == 0 and report.keybinds == "kept_for_recovery"
+
+
+@pytest.mark.parametrize("journal_kind", ["memory", "sqlite"])
+def test_the_lock_is_held_for_the_whole_uninstall(world: FakeWorld, journal_kind: str) -> None:
+    from scribesense.safety.lock import ApplyLock
+    from scribesense.safety.recovery import LockPolicy
+    from scribesense.safety.testing import make_recovery_system
+
+    s = make_recovery_system(world, [FakeAdapter(world, {"t": [FILE, KEY, OTHER]})], journal=journal_kind)
+    s.apply(A, keep=True)
+    lock = s.journal._lock if journal_kind == "sqlite" else ApplyLock()  # the journal shares the policy's lock
+    free_during: list[bool] = []
+
+    class Probe(FakeFonts):
+        def remove(self, key: str) -> bool:
+            other = ApplyLock()  # another process trying to start an apply
+            free_during.append(other.try_acquire("service"))
+            other.release()
+            return super().remove(key)
+
+    report = run(s, Probe(A_FONT, STRAY), policy=LockPolicy(lock, "uninstall"))
+    assert report.error is None and free_during == [False, False]  # nobody could start an apply meanwhile
+    assert not lock.held and not ApplyLock().is_locked()  # released at the end
 
 
 def test_a_font_that_cannot_be_removed_is_reported_and_the_rest_goes_on(system: RecoverySystem) -> None:

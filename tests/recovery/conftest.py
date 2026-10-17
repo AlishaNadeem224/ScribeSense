@@ -32,6 +32,7 @@ RecoverySystem — what the scenarios call (backed by the real modules, store in
 
 from __future__ import annotations
 
+import functools
 import importlib
 
 import pytest
@@ -42,12 +43,13 @@ BLOCKED = ("BLOCKED: recovery slice needs the journal (M4.10), revert (M4.11) an
            "the journal waits for O3's K9 sign-off. Provide scribesense.safety.testing.make_recovery_system.")
 
 
-@pytest.fixture
-def make_system():  # type: ignore[no-untyped-def]
+@pytest.fixture(params=["memory", "sqlite"])
+def make_system(request):  # type: ignore[no-untyped-def]
+    """Every scenario runs on the in-memory double and on the real SQLite journal (M4.10)."""
     try:
         module = importlib.import_module(HOOK_MODULE)
     except ModuleNotFoundError as exc:
         if exc.name == HOOK_MODULE:
             pytest.skip(BLOCKED)
         raise
-    return getattr(module, HOOK_FUNCTION)
+    return functools.partial(getattr(module, HOOK_FUNCTION), journal=request.param)
