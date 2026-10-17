@@ -9,15 +9,22 @@ Order (card M3.8):
   2. remove the generated fonts EXCEPT those still referenced by skipped / unresolved settings, or whose use cannot
      be determined (R2-9) — unless `remove_fonts_anyway`.
   3. remove the keybind file and its include line, and with them the login check (`recover --login`), through
-     `safety.keybinds.remove_keybinds` (hand-edited blocks are left alone and reported).
+     `safety.keybinds.remove_keybinds` (hand-edited blocks are left alone and reported) — but only when nothing is
+     left for recovery: if a revert failed or a transaction is still unfinished, the hooks stay so the login check
+     and the recovery keybind can retry.
   4. keep the data — unless "delete all" was asked for AND confirmed. Never delete user data without confirmation.
 
 Nothing here installs anything, edits another owner's files, or touches a desktop on its own: every effect goes
 through the injected journal, adapters, font operations and keybind remover.
+
+Lock (K4 rule 6, owner "uninstall"): taken once through `policy` before step 1 and held until the end, so no apply
+can start between the reset and the font / keybind / data steps. The journal must share `policy.lock` (the SQLite
+journal then uses the held lock for its revert tx and leaves releasing it to this module).
 """
 
 from __future__ import annotations
 
+import re
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -27,11 +34,12 @@ from typing import Literal, Protocol
 from scribesense.contracts.adapter import Adapter
 from scribesense.contracts.cli import ExitCode
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
+from scribesense.contracts.fonts import READING_FAMILY_PREFIX, UI_FAMILY_PREFIX
 from scribesense.contracts.journal import Journal
 from scribesense.contracts.paths import data_dir
 from scribesense.log import log, log_path
 from scribesense.safety.keybinds import remove_keybinds
-from scribesense.safety.recovery import LockPolicy
+from scribesense.safety.recovery import LockPolicy, acquire_for_recovery
 from scribesense.safety.recovery import reset as recovery_reset
 from scribesense.safety.revert import RevertReport
 from scribesense.store.core import Store
@@ -40,7 +48,7 @@ from scribesense.store.core import Store
 FONT_FALLBACK_NOTE = "these apps may fall back to another font and their appearance may change"
 CONFIRM_WORD = "delete"
 
-KeybindOutcome = Literal["removed", "absent", "left_edited", "failed"]
+KeybindOutcome = Literal["removed", "absent", "left_edited", "failed", "kept_for_recovery"]
 DataOutcome = Literal["kept", "deleted", "preferences_only", "not_confirmed"]
 
 
@@ -85,10 +93,32 @@ def _terminal_confirm(question: str) -> bool:
     return sys.stdin.readline().strip() == CONFIRM_WORD
 
 
+def _recovery_pending(journal: Journal, report: UninstallReport) -> bool:
+    """Something could not be restored yet: a revert failed, or a transaction is still unfinished."""
+    return bool(report.reset.failed) or bool(journal.unfinished())
+
+
+#: A generated family name inside a planned write ("AccessSans-<key>" / "AccessSansUI-<key>", K7, A19).
+_FAMILY_IN_PAYLOAD = re.compile(
+    rf"(?:{re.escape(UI_FAMILY_PREFIX)}|{re.escape(READING_FAMILY_PREFIX)})([0-9a-f]{{12}})(?![0-9a-f])")
+
+
 def _referenced_font_keys(journal: Journal) -> set[str]:
-    """Font keys a location we could not restore still points at (kept for a retry)."""
-    return {r.managed_font_key for r in journal.locations()
+    """Font keys something may still use after the reset, so they are kept for a retry:
+
+    * a location we could not restore that is still managed or unresolved (`managed_font_key`);
+    * a planned write of a still-unfinished transaction — e.g. a crashed, unconfirmed apply whose revert failed:
+      it never set `managed`, but the setting it wrote may still name its font.
+    """
+    keys = {r.managed_font_key for r in journal.locations()
             if r.managed_font_key and (r.managed_sha256 is not None or r.unresolved is not None)}
+    for tx in journal.unfinished():
+        for item in journal.items(tx):
+            if item.intent is not None:
+                payload = item.intent.payload
+                text = payload.decode("utf-8", "replace") if isinstance(payload, bytes) else payload
+                keys |= set(_FAMILY_IN_PAYLOAD.findall(text))
+    return keys
 
 
 def _remove_fonts(report: UninstallReport, journal: Journal, fonts: FontOps, store: Store | None,
@@ -180,21 +210,43 @@ def uninstall(
     if delete_data and store is None:
         raise ValueError("delete_data needs the store")
     report = UninstallReport()
+    if policy is not None:
+        try:
+            acquire_for_recovery(policy)  # held for the WHOLE uninstall, not only the reset
+        except ScribeSenseError as exc:
+            report.error = exc.code
+            log(exc.code, "uninstall", step="lock")
+            return report
     try:
-        report.reset = recovery_reset(journal, adapters, policy=policy)
-    except ScribeSenseError as exc:  # lock not obtained, or the journal itself failed: change nothing else
+        _run(report, journal, adapters, store=store, delete_data=delete_data,
+             remove_fonts_anyway=remove_fonts_anyway, confirm=confirm, fonts=fonts, keybind_remover=keybind_remover)
+    finally:
+        if policy is not None:
+            policy.lock.release()
+    return report
+
+
+def _run(report: UninstallReport, journal: Journal, adapters: Mapping[str, Adapter], *, store: Store | None,
+         delete_data: bool, remove_fonts_anyway: bool, confirm: Callable[[str], bool] | None,
+         fonts: FontOps | None, keybind_remover: Callable[[], bool]) -> None:
+    try:
+        report.reset = recovery_reset(journal, adapters)  # the lock is already held (or there is no policy)
+    except ScribeSenseError as exc:  # the journal itself failed: change nothing else
         report.error = exc.code
         log(exc.code, "uninstall", step="reset")
-        return report
+        return
     _remove_fonts(report, journal, fonts or CacheFontOps(), store, remove_fonts_anyway)
-    _remove_keybinds(report, keybind_remover)
+    if _recovery_pending(journal, report):
+        report.keybinds = "kept_for_recovery"  # the login check and recovery keybind must stay to retry
+        log(ErrorCode.RECOVERY_OBLIGATIONS_REMAIN, "uninstall", step="keybinds")
+    else:
+        _remove_keybinds(report, keybind_remover)
     if delete_data and store is not None:
         try:
             _delete_data(report, journal, store, confirm or _terminal_confirm)
         except ScribeSenseError as exc:
             report.error = exc.code
             log(exc.code, "uninstall", step="data")
-    return report
 
 
 def exit_code(report: UninstallReport) -> ExitCode:
@@ -237,6 +289,8 @@ def format_report(report: UninstallReport) -> str:
         "absent": "No keybinds or login check were installed.",
         "left_edited": "The keybind block was edited by hand, so it was left in place. Remove it yourself.",
         "failed": "The keybinds or login check could not be removed (see the log for the code).",
+        "kept_for_recovery": "Keybinds and the login check were kept so recovery can retry what could not be "
+                             "restored. Run `scribesense reset`, then uninstall again.",
     }[report.keybinds])
     lines.append({
         "kept": "Your ScribeSense data was kept. Use --delete-data to remove it.",

@@ -1604,6 +1604,12 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > obligations remain** (`reset.failed` non-empty / unfinished txs) — nothing retries at the next login. Skip keybind removal then.
 > (4) minor: a failed Hyprland reload after the files were removed reports the keybind step as failed (exit 1).
 > Missing tests for (1)–(3). Open: should uninstall stop a running service (`quit`) before `--delete-data` unlinks its open database?
+> **Fixed by O4 (2026-10-17, cross-owner change in `uninstall.py` + `tests/unit/test_uninstall.py`, at O4's request — O3 to review):**
+> (1) the lock is taken once via `acquire_for_recovery(policy)` and released in a `finally` after the last step; `reset` runs without a
+> policy and the SQLite journal reuses the held lock (the journal must share `policy.lock`). (2) `_referenced_font_keys` also keeps the
+> font keys named in planned writes of unfinished transactions. (3) new keybind outcome `kept_for_recovery`: the keybinds and login
+> check stay while a revert failed or a tx is unfinished (a drift-skipped setting does not block removal — it is final). The existing test
+> that expected removal after a failed revert now expects `kept_for_recovery`. (4) not changed (report wording only).
 
 #### M3.9 CI and import rules
 | Field | Spec |
