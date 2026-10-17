@@ -32,10 +32,10 @@ def _cmd_reset(args: argparse.Namespace) -> int:
         print(f"Restored: {report.restored}, Skipped: {report.skipped}, Failed: {report.failed}")
         return int(ExitCode.OK if report.failed == 0 else ExitCode.FAILED)
     except TypeError as e:
-        print(f"Reset failed: missing dependencies (M3.1 store not fully wired). {e}", file=sys.stderr)
+        print(f"reset failed: missing dependencies (M3.1 store not fully wired). {e}", file=sys.stderr)
         return int(ExitCode.FAILED)
     except Exception as e:
-        print(f"Reset failed: {e}", file=sys.stderr)
+        print(f"reset failed: {e}", file=sys.stderr)
         return int(ExitCode.FAILED)
 
 
@@ -45,10 +45,10 @@ def _cmd_recover(args: argparse.Namespace) -> int:
         recover_at_login()
         return int(ExitCode.OK)
     except TypeError as e:
-        print(f"Recovery failed: missing dependencies (M3.1 store not fully wired). {e}", file=sys.stderr)
+        print(f"recover failed: missing dependencies (M3.1 store not fully wired). {e}", file=sys.stderr)
         return int(ExitCode.FAILED)
     except Exception as e:
-        print(f"Recovery failed: {e}", file=sys.stderr)
+        print(f"recover failed: {e}", file=sys.stderr)
         return int(ExitCode.FAILED)
 
 
@@ -56,17 +56,17 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
     try:
         from scribesense.store.uninstall import uninstall
     except ImportError:
-        print("Uninstall failed: M3.1 store module not found.", file=sys.stderr)
+        print("uninstall failed: M3.1 store module not found.", file=sys.stderr)
         return int(ExitCode.FAILED)
     
     try:
         uninstall(delete_data=getattr(args, "delete_data", False), remove_fonts=getattr(args, "remove_fonts_anyway", False))
         return int(ExitCode.OK)
     except TypeError as e:
-        print(f"Uninstall failed: missing dependencies (M3.1 store not fully wired). {e}", file=sys.stderr)
+        print(f"uninstall failed: missing dependencies (M3.1 store not fully wired). {e}", file=sys.stderr)
         return int(ExitCode.FAILED)
     except Exception as e:
-        print(f"Uninstall failed: {e}", file=sys.stderr)
+        print(f"uninstall failed: {e}", file=sys.stderr)
         return int(ExitCode.FAILED)
 
 
@@ -75,7 +75,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     try:
         return int(run_doctor())
     except Exception as e:
-        print(f"Doctor failed: {e}", file=sys.stderr)
+        print(f"doctor failed: {e}", file=sys.stderr)
         return int(ExitCode.FAILED)
 
 
@@ -116,12 +116,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     raw_args = list(sys.argv if argv is None else argv)
     args_to_parse = raw_args[1:] if raw_args and not raw_args[0].startswith("-") else raw_args
     
-    # Use parse_known_args to prevent SystemExit(2) on unknown commands
-    args, unknown = parser.parse_known_args(args_to_parse)
-
-    if unknown and not args.command:
-        print(f"scribesense: unknown command '{unknown[0]}'", file=sys.stderr)
-        return int(ExitCode.USAGE)
+    # Catch SystemExit that argparse raises for unknown commands.
+    try:
+        args = parser.parse_args(args_to_parse)
+    except SystemExit:
+        if args_to_parse and args_to_parse[0] not in subparsers.choices:
+            print(f"scribesense: unknown command '{args_to_parse[0]}'", file=sys.stderr)
+            return int(ExitCode.USAGE)
+        return int(ExitCode.FAILED)
 
     if not args.command:
         # Default action: launch UI
