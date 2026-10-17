@@ -1,8 +1,4 @@
-"""M2.4 — the application window.
-
-Hosts the PresetEditorPage (M2.5) and routes to the SettingsPage (M2.7).
-Adds an optional tray icon (M2.8).
-"""
+"""M2.4 — the application window."""
 
 from __future__ import annotations
 
@@ -18,6 +14,8 @@ from gi.repository import Adw, Gtk  # noqa: E402
 from scribesense.config.presets import resolve  # type: ignore
 from scribesense.fontgen import generator  # type: ignore
 from scribesense.contracts.presets import Preset  # noqa: E402
+from scribesense.reader.capture import from_clipboard  # noqa: E402
+from scribesense.reader.popup import ReaderWindow  # noqa: E402
 from scribesense.ui.preset_editor import PresetEditorPage  # noqa: E402
 from scribesense.ui.settings_page import SettingsPage  # noqa: E402
 from scribesense.ui.tray import TrayIcon  # noqa: E402
@@ -40,10 +38,9 @@ class ScribeSenseWindow(Adw.ApplicationWindow):
             build_preview=generator.build_preview,
             on_apply=self._on_apply,
         )
-        self._add_settings_button(self.editor)
+        self._add_header_buttons(self.editor)
         self.nav.push(self.editor)
 
-        # M2.8 Optional tray
         self.tray = TrayIcon(
             app_id=app_id,
             on_apply=self._on_tray_apply,
@@ -53,13 +50,38 @@ class ScribeSenseWindow(Adw.ApplicationWindow):
 
         self.connect("close-request", self._on_close_request)
 
-    def _add_settings_button(self, page: PresetEditorPage) -> None:
+    def _add_header_buttons(self, page: PresetEditorPage) -> None:
         toolbar_view = page.get_child()
         header_bar = toolbar_view.get_top_bar()
+        
+        # Settings button
         settings_btn = Gtk.Button(icon_name="emblem-system-symbolic")
         settings_btn.set_tooltip_text("Settings")
         settings_btn.connect("clicked", self._on_settings_clicked)
         header_bar.pack_end(settings_btn)
+
+        # Reader button (M2.9)
+        reader_btn = Gtk.Button(icon_name="utilities-terminal-symbolic")
+        reader_btn.set_tooltip_text("Open reader from clipboard")
+        reader_btn.connect("clicked", self._on_reader_clicked)
+        header_bar.pack_start(reader_btn)
+
+    def _on_reader_clicked(self, _button: Gtk.Button) -> None:
+        result = from_clipboard()
+        if result.code is not None:
+            print(f"Capture failed: {result.code.value}")
+            return
+        
+        # Find the most recently installed font
+        installed = generator.installed_sets()
+        font_set = installed[-1] if installed else None
+        
+        reader = ReaderWindow(
+            text=result.text,
+            font_set=font_set,
+            application=self.get_application(),
+        )
+        reader.present()
 
     def _on_settings_clicked(self, _button: Gtk.Button) -> None:
         def get_opt_in() -> bool: return False
@@ -76,7 +98,6 @@ class ScribeSenseWindow(Adw.ApplicationWindow):
         dialog.present(self)
 
     def _on_tray_apply(self) -> None:
-        # Applies the first built-in preset as a demonstration
         from scribesense.config.presets import BUILTINS
         if BUILTINS:
             self._on_apply(BUILTINS[0])
@@ -85,9 +106,7 @@ class ScribeSenseWindow(Adw.ApplicationWindow):
         self.get_application().quit()
 
     def _on_close_request(self, *_args: object) -> bool:
-        # If we have a tray icon, closing the window hides it (the app stays
-        # running in the tray). If not, closing the window quits the app.
         if self.tray._indicator is not None:
             self.set_visible(False)
-            return True  # Prevent the window from closing
+            return True
         return False
