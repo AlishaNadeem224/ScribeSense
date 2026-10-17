@@ -9,8 +9,6 @@ Routing rules (A1, A15):
   - `confirm <tx>` never forwards. It runs as a fresh process.
   - `reset`, `recover`, `uninstall`, `doctor` never need the service (A2).
   - everything else forwards to the running service, starting it if needed.
-
-M2.11 wires these commands to the actual functions implemented by O3 and O4.
 """
 
 from __future__ import annotations
@@ -58,7 +56,7 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
     except ImportError:
         print("uninstall failed: M3.1 store module not found.", file=sys.stderr)
         return int(ExitCode.FAILED)
-    
+
     try:
         uninstall(delete_data=getattr(args, "delete_data", False), remove_fonts=getattr(args, "remove_fonts_anyway", False))
         return int(ExitCode.OK)
@@ -104,19 +102,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     subparsers.add_parser("apply")
     subparsers.add_parser("preset")
     subparsers.add_parser("read")
-    
-    # Confirm takes a single positional argument (the tx ID)
+
     p_confirm = subparsers.add_parser("confirm")
     p_confirm.add_argument("tx", nargs="?")
-    
+
     subparsers.add_parser("quit")
 
-    # The test suite passes the full argument list including the executable name,
-    # e.g. ["scribesense", "reset"]. We must strip the first element before parsing.
     raw_args = list(sys.argv if argv is None else argv)
     args_to_parse = raw_args[1:] if raw_args and not raw_args[0].startswith("-") else raw_args
-    
-    # Catch SystemExit that argparse raises for unknown commands.
+
     try:
         args = parser.parse_args(args_to_parse)
     except SystemExit:
@@ -136,7 +130,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # A15: confirm runs as a fresh process.
     if args.command in _FRESH:
-        print("scribesense: 'confirm' is not implemented yet (arrives with M2.3)", file=sys.stderr)
+        # M2.3: the countdown window is pending O4's IPC handler. Until then,
+        # applies are committed by the caller (RecoverySystem). To undo a
+        # committed change, run `scribesense reset`.
+        print(
+            "scribesense: M2.3 confirm window is not implemented yet (pending O4's IPC handler).\n"
+            "Current behaviour: applies commit via RecoverySystem. To undo, use\n"
+            "Ctrl+Alt+Shift+Super+Backspace or run `scribesense reset`.",
+            file=sys.stderr,
+        )
         return int(ExitCode.FAILED)
 
     # A2: recovery commands do not load UI.
@@ -154,7 +156,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "quit":
         return _cmd_quit(args)
 
-    # All other commands (apply, preset, read) are handled by the UI app.
     try:
         from scribesense.ui.app import run as run_app
         return int(run_app(raw_args))
