@@ -1392,6 +1392,14 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 >   it is **not** enforced inside `add_item` because the fake adapter uses free names.
 > - Not done here (M3.2): the retention *policy* (30 days / last 10 / when it runs at start-up).
 
+> **Reviewed by O4 (2026-10-16): approved — nothing blocks M4.10.** Every K4 method has a `JournalTables` backing; durability
+> (WAL, `synchronous=FULL`, FK), empty backups/intents, recovery mode and concurrent writers verified by probes. For O3:
+> (1) nested `Store.transaction()` has no SAVEPOINT — an inner failure the caller catches still commits the inner writes with the outer
+> transaction (M4.10 never catches inside one); (2) constraint violations escape as raw `sqlite3.IntegrityError` — map to an ErrorCode or
+> export a store error type (`safety/` may not import `sqlite3`, R3); (3) coverage key `(tx_id, target_id)` + `INSERT OR REPLACE` lets two
+> adapters with the same `target_id` overwrite each other (latent — real ids are adapter-prefixed; the in-memory double appends);
+> (4) the `-wal` file is created 0644 (DB is 0600); (5) unverified: a failed `COMMIT` may leave the transaction open.
+
 #### M3.2 Retention
 | Field | Spec |
 |---|---|
@@ -1423,6 +1431,8 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 >   records survive, backups removed only when unreferenced, no pruning while a tx is active, rollback on a mid-prune failure, log privacy.
 > - **Finding for O4:** `safety/memory_journal.py` `prune_history` does not yet keep the newest COMPLETED apply (D4 / draft F2, accepted
 >   by O4); the SQL layer does. Until it does, the in-memory double and the SQL journal differ there (only the SQL test covers it).
+>   **Done (O4, 2026-10-16):** the in-memory `prune_history` now also keeps the newest COMPLETED apply and txs touching an unresolved
+>   location; both journals agree. **Reviewed by O4 (2026-10-16): approved** — matches K9 D4; storage errors skip pruning.
 
 #### M3.3 Test sandbox
 | Field | Spec |
@@ -1584,6 +1594,22 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > - **Ownership note:** the new top-level module is O3's by analogy with `doctor.py`; the ownership table in AGENTS.md does not list it. O2/O4 to
 >   confirm.
 > - 21 unit tests (fake desktop, fonts, keybinds; both outcomes of every failure rule) + 2 sandbox tests with the real font cache.
+
+> **Reviewed by O4 (2026-10-16): changes needed** (each verified with a probe):
+> (1) **the lock covers only the reset step** — `recovery.reset(policy=…)` releases it in its `finally`, so font removal, keybind removal
+> and `--delete-data` run unlocked and can race a new apply. Fix: `acquire_for_recovery(policy)` once in `uninstall`, call
+> `reset(journal, adapters)` without a policy, release at the end. (2) **a font still in use is removed** after a crashed, unconfirmed apply
+> whose revert failed: `_referenced_font_keys` reads only `managed_font_key`, which an unconfirmed tx never sets (R2-9). Keep the keys named
+> by unfinished txs' intents/applied items, or keep all fonts while `unfinished()` is non-empty. (3) **the login check is removed while
+> obligations remain** (`reset.failed` non-empty / unfinished txs) — nothing retries at the next login. Skip keybind removal then.
+> (4) minor: a failed Hyprland reload after the files were removed reports the keybind step as failed (exit 1).
+> Missing tests for (1)–(3). Open: should uninstall stop a running service (`quit`) before `--delete-data` unlinks its open database?
+> **Fixed by O4 (2026-10-17, cross-owner change in `uninstall.py` + `tests/unit/test_uninstall.py`, at O4's request — O3 to review):**
+> (1) the lock is taken once via `acquire_for_recovery(policy)` and released in a `finally` after the last step; `reset` runs without a
+> policy and the SQLite journal reuses the held lock (the journal must share `policy.lock`). (2) `_referenced_font_keys` also keeps the
+> font keys named in planned writes of unfinished transactions. (3) new keybind outcome `kept_for_recovery`: the keybinds and login
+> check stay while a revert failed or a tx is unfinished (a drift-skipped setting does not block removal — it is final). The existing test
+> that expected removal after a failed revert now expects `kept_for_recovery`. (4) not changed (report wording only).
 
 #### M3.9 CI and import rules
 | Field | Spec |
@@ -1900,6 +1926,17 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > apply · **D5 the SQL for the journal tables lives in `store/journal_tables.py`, written by O3 to K4's spec;
 > M4.10 (`safety/journal.py`) calls it** (import rule R3 unchanged) · D7 only ScribeSense-managed locations
 > are stored (pattern test must accept K3 rule 10b `<Preferences path>#<key>` locations).
+
+> **Implemented 2026-10-16 (O4) — review by O3 pending.** `safety/journal.py` `SqliteJournal(store, lock, role=…)`: K4 on
+> `store.JournalTables`, plus the apply lock. `begin()` takes `lock_path()` (owner record) and holds it until a terminal state or
+> REVERT_FAILED (`keep()` included); if the caller already holds the lock (`recovery.LockPolicy` for `reset` / `recover`), the journal uses
+> it and leaves releasing it to the caller. A store error in `begin()` releases the lock and propagates (refused before any write).
+> `prune_history` refuses (`APPLY_IN_PROGRESS`) while this or another process holds the lock. Tests: `tests/unit/test_sqlite_journal.py`
+> (card acceptance: lock across processes, illegal transitions, a real SIGKILL mid-apply → `unfinished()`), and every revert/recovery
+> unit test and §9 scenario now runs on **both** journals (`make_recovery_system(..., journal="sqlite")`). D7 checked: all 508 locations
+> the real adapters snapshot in their tests match `is_managed_location_shape()`; not enforced in the journal (fakes use free names).
+> Production wiring (who constructs it): the service — `SqliteJournal(Store(default_path()), ApplyLock(), role="service")`; `reset` /
+> `recover --login` / `uninstall` — `Store(default_path(), mode="recovery")` + the same `ApplyLock` the `LockPolicy` holds.
 
 #### M4.11 Revert
 | Field | Spec |

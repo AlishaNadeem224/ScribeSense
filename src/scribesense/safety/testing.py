@@ -10,7 +10,7 @@ are part of that card's acceptance — with K1/K2/K7 stubbed out (fonts are not 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 
 from scribesense.adapters.fake import FakeAdapter, FakeWorld
@@ -20,6 +20,8 @@ from scribesense.contracts.fonts import FontBuildResult, FontSet
 from scribesense.contracts.journal import ActiveConfig, TxId
 from scribesense.contracts.presets import Preset, PresetValues, WordSpacing
 from scribesense.controller.apply_flow import ApplyController
+from scribesense.safety.journal import SqliteJournal
+from scribesense.safety.lock import ApplyLock
 from scribesense.safety.memory_journal import InMemoryJournal
 from scribesense.safety.recovery import reset as recovery_reset
 from scribesense.safety.revert import Reverter, RevertReport
@@ -31,9 +33,11 @@ def fake_fontset(config: Configuration) -> FontSet:
 
 
 class RecoverySystem:
-    def __init__(self, world: FakeWorld, adapters: Sequence[FakeAdapter]) -> None:
+    def __init__(self, world: FakeWorld, adapters: Sequence[FakeAdapter],
+                 open_journal: Callable[[], InMemoryJournal | SqliteJournal] = InMemoryJournal) -> None:
         self.world = world
-        self.journal = InMemoryJournal()
+        self._open_journal = open_journal
+        self.journal = open_journal()
         self._adapter_list: list[Adapter] = list(adapters)
         self.adapters: dict[str, Adapter] = {a.name: a for a in adapters}
         if len(self.adapters) != len(self._adapter_list):
@@ -67,7 +71,13 @@ class RecoverySystem:
         return Reverter(self.journal, self.adapters).revert_tx(tx)
 
     def crash(self) -> None:
-        self.journal.simulate_crash()
+        if isinstance(self.journal, InMemoryJournal):
+            self.journal.simulate_crash()
+            return
+        # The process died: the OS drops the flock and the DB connection; a new process opens both again.
+        self.journal._lock.release()
+        self.journal._t._s.close()
+        self.journal = self._open_journal()
 
     def reset(self) -> RevertReport:
         return recovery_reset(self.journal, self.adapters)
@@ -80,5 +90,14 @@ class RecoverySystem:
         return record.managed_sha256 if record else None
 
 
-def make_recovery_system(world: FakeWorld, adapters: Sequence[FakeAdapter]) -> RecoverySystem:
-    return RecoverySystem(world, adapters)
+def sqlite_journal() -> SqliteJournal:
+    """The real M4.10 journal on a store at `default_path()` (inside the test's data dir in the sandbox)."""
+    from scribesense.store import Store, default_path
+
+    return SqliteJournal(Store(default_path()), ApplyLock())
+
+
+def make_recovery_system(world: FakeWorld, adapters: Sequence[FakeAdapter], *,
+                         journal: str = "memory") -> RecoverySystem:
+    """journal="memory" (M4.10 double) or "sqlite" (the real journal on the store)."""
+    return RecoverySystem(world, adapters, {"memory": InMemoryJournal, "sqlite": sqlite_journal}[journal])

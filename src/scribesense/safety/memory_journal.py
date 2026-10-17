@@ -286,7 +286,12 @@ class InMemoryJournal:
         return self._revision
 
     def prune_history(self, before: datetime, keep_last: int) -> int:
-        """K9 pruning rule: terminal txs only, never location records, their backups or the active config."""
+        """K9 pruning rule (D4): terminal txs only, never location records, their backups or the active config.
+
+        Kept: the newest `keep_last` terminal txs, the newest COMPLETED apply, txs an unfinished revert refers to,
+        and txs with an item at a location that is still unresolved — the same rules as O3's SQL layer
+        (`store.journal_tables.JournalTables.prune_history`), so the double and the real journal agree.
+        """
         if keep_last < 0:
             raise ValueError("keep_last must be >= 0")
         if self._lock_owner is not None:
@@ -296,6 +301,11 @@ class InMemoryJournal:
         # "always keeping the last N" counts finished transactions only (K4 retention rule)
         newest = {t.id for t in finished[len(finished) - keep_last:]} if keep_last else set()
         referenced = {t.reverts for t in self._txs.values() if t.state in UNFINISHED and isinstance(t.reverts, int)}
+        completed = [t for t in finished if t.kind == "apply" and t.state is TxState.COMPLETED]
+        if completed:
+            referenced.add(completed[-1].id)  # the confirmed configuration's own tx (K9 D4, finding F2)
+        unresolved = {loc for loc, r in self._locations.items() if r.unresolved is not None}
+        referenced |= {i.tx for i in self._items.values() if i.snapshot.location in unresolved}
         doomed = {
             t.id for t in ordered
             if t.state in TERMINAL and t.created_at < before and t.id not in newest and t.id not in referenced
