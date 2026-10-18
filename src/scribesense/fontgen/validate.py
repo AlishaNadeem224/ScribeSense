@@ -53,11 +53,10 @@ configuration that never mentions the system's.
 Platform. fontTools and the stdlib for the structural half; ``pango-view`` and
 ``fc-match`` for the rendering half. ``pango-view`` renders to a PNG through cairo's
 image surface with ``-q``, so it needs no display server -- the rendering checks are
-Wayland-compatible because they never touch a display at all. **The rendering half has
-not been executed on Fedora, or anywhere:** ``pango-view`` is not installable on the
-Windows development machine, so every rendering test here runs against an injected
-renderer. See `RENDER_TOLERANCE_PX_PER_GLYPH` and K7 F7 for exactly what that leaves
-unverified.
+Wayland-compatible because they never touch a display at all. The rendering half runs for
+real on Fedora/Ubuntu in the bubblewrap sandbox (tests/unit/fontgen/test_fontgen_integration.py)
+and in O3's probes; unit tests use an injected renderer. `RENDER_TOLERANCE_PX_PER_GLYPH` was
+first tuned on synthetic fonts — re-checked against the bundled fonts (O3's M1.6 review).
 """
 
 from __future__ import annotations
@@ -554,6 +553,29 @@ def _name(font: TTFont, name_id: int) -> str | None:
     return table.getDebugName(name_id) if table is not None else None
 
 
+#: Name records that identify a family to fontconfig / font menus. Copyright, trademark, designer,
+#: description and licence records (0, 7-14) may and do mention the source, so they are not checked.
+_IDENTIFYING_NAME_IDS = (1, 3, 4, 6, 16, 17, 21, 22, 25)
+
+
+def _source_name_leak(source: TTFont, artifact: TTFont) -> int | None:
+    """The first identifying name record of ``artifact`` that still names the source family, or None."""
+    names = set()
+    for name_id in (1, 16, 21, 25):  # family, typographic family, WWS family, variations PS prefix
+        value = _name(source, name_id)
+        if value:
+            names |= {value.casefold(), value.replace(" ", "").casefold()}
+    table = artifact.get("name")
+    if table is None or not names:
+        return None
+    for record in table.names:
+        if record.nameID in _IDENTIFYING_NAME_IDS:
+            text = record.toUnicode().casefold()
+            if any(n and n in text for n in names):
+                return record.nameID
+    return None
+
+
 def _style_from_filename(path: Path, family: str) -> str | None:
     """``AccessSans-<key>-Bold.ttf`` -> ``Bold``, using M1.5's own file naming."""
     stem = path.stem
@@ -1016,12 +1038,19 @@ def _check_structure(
                 f"OS/2.sTypoLineGap: expected {typo_gap}, "
                 f"found {os2_artifact.sTypoLineGap}",
             )
-        if not os2_artifact.fsSelection & USE_TYPO_METRICS:
+        typo_bit = bool(os2_artifact.fsSelection & USE_TYPO_METRICS)
+        if os2_artifact.version >= 4 and not typo_bit:
             # Without the bit set, the sTypo* edit above is invisible to most
             # renderers, so the line height would silently not apply.
             return _record(
                 measurements, f"line:{name}", False, VALIDATION_LINE_METRIC_MISMATCH,
                 "USE_TYPO_METRICS is not set",
+            )
+        if os2_artifact.version < 4 and typo_bit:
+            # M1.4 raises v2/v3 to 4 and never sets the bit below that: an undefined bit.
+            return _record(
+                measurements, f"line:{name}", False, VALIDATION_LINE_METRIC_MISMATCH,
+                f"USE_TYPO_METRICS set on OS/2 version {os2_artifact.version}",
             )
     _record(measurements, f"line:{name}", True, None, f"lineGap {expected_gap}")
 
@@ -1037,6 +1066,15 @@ def _check_structure(
         return _record(
             measurements, f"naming:{name}", False, VALIDATION_FAMILY_COLLISION,
             f"artifact family {artifact.family!r} vs source {source_family!r}",
+        )
+    leaked = _source_name_leak(source, artifact.font)
+    if leaked is not None:
+        # O3's M1.6 review: a source family left in e.g. record 21 (WWS) makes fontconfig list
+        # the generated font under the SOURCE name too — refused here explicitly, not only by
+        # the rendering check by luck.
+        return _record(
+            measurements, f"naming:{name}", False, VALIDATION_FAMILY_COLLISION,
+            f"name record {leaked} still carries the source family",
         )
     _record(measurements, f"naming:{name}", True, None, artifact.family)
 

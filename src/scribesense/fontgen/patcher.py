@@ -141,6 +141,16 @@ _NAME_FULL = 4
 _NAME_POSTSCRIPT = 6
 _NAME_TYPO_FAMILY = 16
 _NAME_TYPO_SUBFAMILY = 17
+_NAME_WWS_FAMILY = 21
+_NAME_WWS_SUBFAMILY = 22
+_NAME_VARIATIONS_PS_PREFIX = 25
+
+#: Records that could still name the SOURCE family after `_rename` rewrites 1/2/3/4/6, so they are removed
+#: (O3's M1.4 review, 2026-10-18: a WWS family left in 21 made fontconfig list the patched font under the source
+#: name, and with a Reserved Font Name — Carlito — that would also break the OFL). 25 only means anything with an
+#: `fvar` table, which a patched font never has.
+_NAME_IDS_DROPPED = (_NAME_TYPO_FAMILY, _NAME_TYPO_SUBFAMILY, _NAME_WWS_FAMILY, _NAME_WWS_SUBFAMILY,
+                     _NAME_VARIATIONS_PS_PREFIX)
 
 USE_TYPO_METRICS = 1 << 7
 """``OS/2.fsSelection`` bit 7. Public so M1.6 can assert the patch set it."""
@@ -271,7 +281,8 @@ def _apply_spacing(font: TTFont, config: Configuration, units_per_em: int) -> No
     # The space is Unicode script Common, never Latin, so it is not in `targets` and
     # cannot receive the letter delta on top of the word factor. Asserted rather than
     # assumed, because a change to M1.3's script rule would silently double-apply here.
-    assert space not in targets, "space glyph must not be in the Latin spacing set"
+    if space in targets:  # an invariant, checked explicitly: `assert` is stripped under -O (O3 review)
+        raise PatchUnsupported("space glyph must not be in the Latin spacing set")
 
     delta = letter_delta_units(config.letter_em, units_per_em)
     if delta:
@@ -319,8 +330,14 @@ def _apply_line_metrics(font: TTFont, line: float, units_per_em: int) -> None:
             line, units_per_em, os2.sTypoAscender, os2.sTypoDescender
         )
         # Without USE_TYPO_METRICS many renderers prefer usWin*/hhea and ignore the
-        # sTypo* set entirely, which would make the OS/2 edit above invisible.
-        os2.fsSelection |= USE_TYPO_METRICS
+        # sTypo* set entirely, which would make the OS/2 edit above invisible. The bit is
+        # only defined from OS/2 version 4 (HarfBuzz ignores it below): versions 2 and 3
+        # have exactly v4's fields, so they are raised to 4; 0 and 1 lack them and are
+        # left without the bit (O3's M1.4 review, 2026-10-18).
+        if os2.version in (2, 3):
+            os2.version = 4
+        if os2.version >= 4:
+            os2.fsSelection |= USE_TYPO_METRICS
 
 
 def _drop_stale_advance_caches(font: TTFont) -> None:
@@ -469,9 +486,9 @@ def _rename(font: TTFont, family: str, subfamily: str) -> None:
     Every platform/encoding/language record already present is rewritten, so a font
     carrying both Macintosh and Windows records stays consistent; writing only one
     platform is how a renamed font ends up resolving under its old name on some
-    systems. ``nameID`` 16/17 are removed rather than rewritten -- with the family
-    name no longer split into a typographic pair, leaving them would reintroduce the
-    source family through the back door.
+    systems. ``nameID`` 16/17, 21/22 (WWS) and 25 (variations PostScript prefix) are
+    removed rather than rewritten -- leaving any of them would reintroduce the source
+    family through the back door (`_NAME_IDS_DROPPED`).
     """
     table = font["name"]
     full = f"{family} {subfamily}".strip()
@@ -482,8 +499,7 @@ def _rename(font: TTFont, family: str, subfamily: str) -> None:
         for record in table.names
     } or {(3, 1, 0x409)}
 
-    for name_id in (_NAME_TYPO_FAMILY, _NAME_TYPO_SUBFAMILY):
-        table.names = [record for record in table.names if record.nameID != name_id]
+    table.names = [record for record in table.names if record.nameID not in _NAME_IDS_DROPPED]
 
     for platform_id, encoding_id, language_id in sorted(platforms):
         for name_id, value in (

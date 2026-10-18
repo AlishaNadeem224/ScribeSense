@@ -210,7 +210,7 @@ def validate(c: Configuration) -> list[Issue]
 | `OUT_OF_RANGE` | error | outside `RANGES[field]` |
 | `UNKNOWN_FONT` | error | `base_family` not in `SHORTLIST` |
 | `NOT_ON_STEP` | error | **guard only** — value was not rounded first; never occurs in the normal flow |
-| `NOT_A_NUMBER` | error | value is not a real number (`None`, `str`, `bool`), e.g. from a corrupt store row — **amendment 2026-10-14 (O1), sign-off by one other owner pending**; `round_to_steps()` passes it through unchanged |
+| `NOT_A_NUMBER` | error | value is not a real number (`None`, `str`, `bool`), e.g. from a corrupt store row — **amendment 2026-10-14 (O1, proposed in M1.1), signed off 2026-10-18 by O4 as the second owner**; `round_to_steps()` passes it through unchanged |
 | `UI_LINE_ABOVE_RECOMMENDED` | warning | `ui_line` > 1.3 |
 
 5. The UI may tell the user a value was rounded; that is UI feedback, not an `Issue`.
@@ -608,8 +608,9 @@ def remove_unused() -> list[str]                                 # keys removed
 > subclass of `FontBuildResult` with two defaulted extras — `warnings` (advisory codes) and `detail` (the
 > pipeline's fine-grained code, e.g. `VALIDATION_ADVANCE_MISMATCH`); `reason_code` is always an `ErrorCode`
 > value, or a K1 `IssueCode` when an invalid configuration was refused. `GENERATOR_ERROR` (an unexpected
-> exception inside the pipeline → `failed`) is **proposed for the ErrorCode list** (Fonts row; owner O1 +
-> one other). `build_preview()` keeps the provisional `PreviewFonts` shape exactly (O1 confirms it); the
+> exception inside the pipeline → `failed`) is **added to the ErrorCode list** (Fonts row; O1 proposed it in
+> M1.8, O4 signed off as the second owner 2026-10-18; the enum line in `contracts/errors.py` is added by a human — agents
+> may not edit contracts). `build_preview()` keeps the provisional `PreviewFonts` shape exactly (O1 confirms it); the
 > returned object adds `close()` and `with … as p:` to delete `temp_dir`, and has no `__del__`, so loaded
 > preview files are never deleted behind the caller's back. A refused preview raises `PreviewUnavailable`
 > (`ScribeSenseError(PREVIEW_UNAVAILABLE)`, with `.reason_code`). `build()` and `build_preview()` take
@@ -653,7 +654,7 @@ owner + one other; existing codes are never renamed or reused. K1 validation cod
 
 | Area | Codes |
 |---|---|
-| Fonts (O1) | `BUNDLED_FONT_MISSING` · `FONT_UNREADABLE` · `BASE_IS_MONOSPACE` · `BASE_IS_ICON_FONT` · `PATCH_UNSUPPORTED` · `VALIDATION_FAILED` · `INSTALL_FAILED` · `PREVIEW_UNAVAILABLE` |
+| Fonts (O1) | `BUNDLED_FONT_MISSING` · `FONT_UNREADABLE` · `BASE_IS_MONOSPACE` · `BASE_IS_ICON_FONT` · `PATCH_UNSUPPORTED` · `VALIDATION_FAILED` · `INSTALL_FAILED` · `PREVIEW_UNAVAILABLE` · `GENERATOR_ERROR` (added 2026-10-18: O1 + O4) |
 | Apply / preflight (O2) | `APPLY_IN_PROGRESS` · `NOT_WRITABLE` · `NO_DISK_SPACE` · `ADAPTER_UNAVAILABLE` · `TX_NOT_PENDING` · `CONFIRM_STARTUP_TIMEOUT` · `CONFIRM_HEARTBEAT_LOST` · `CONFIRM_TIMEOUT` · `SERVICE_UNREACHABLE` |
 | Adapters (O4) | `ADAPTER_TIMEOUT` · `ADAPTER_COMMAND_FAILED` (external command exited non-zero) · `ADAPTER_VERIFY_FAILED` · `UNEXPECTED_ADAPTER_ERROR` · `CHECK_UNAVAILABLE` · `SCHEMA_MISSING` · `QT6CT_NOT_IN_SESSION` · `BROWSER_RUNNING` · `PREFERENCES_UNREADABLE` · `PROFILE_NOT_FOUND` |
 | Safety (O4) | `BACKUP_MISSING` · `BACKUP_CORRUPT` · `CHANGED_DURING_APPLY` · `PLAN_CONFLICT` · `LOCK_TIMEOUT` · `WRITE_NOT_DURABLE` · `REVERT_ITEM_FAILED` · `DRIFT_SKIPPED` · `KEYBIND_CONFLICT` |
@@ -697,7 +698,7 @@ Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9).
 >   O4's `FontReferenceSource`; the moment `list()` stops returning it, that clean-up would miss the custom row's font. **Step 1 (done):** `list_all()`. **Step 2 (after O2 / O4 change that call to `store.presets.list_all` — please do it
 >   first):** O3 makes `list()` return built-ins and user presets only. The UI is unaffected (`known_presets` already filters `custom`). O1 also notes a stale line in their own `config/presets.py:156` (`"""ID of the transient Custom entry."""`).
 > - Also from O1: uninstall removes fonts only through `fontgen.cache`; `ReferenceSource` is not an O1 task (O4 has built it); real bundled fonts will change every content key once.
-> - The K1 amendment `NOT_A_NUMBER` (added by O4, "sign-off by one other owner pending") is a contract change that O3 may sign as that other owner — not part of K9.
+> - The K1 amendment `NOT_A_NUMBER` (added by O4, "sign-off by one other owner pending") is a contract change that O3 may sign as that other owner — not part of K9. **Signed off by O4 on 2026-10-18** (O1 proposed it in M1.1).
 
 ```python
 # ---- Records ----
@@ -944,6 +945,15 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Acceptance tests | Built-ins resolve and validate; all six fields present; target_em recalculated on font change, multiplier kept; Original is not a preset; values match K2 table |
 | Done when | Tests pass · reviewed |
 
+> **Bundled base fonts (2026-10-18, done by O4 for O1, cross-owner):** `fonts/Noto Sans/` — Regular, Bold, Italic, BoldItalic,
+> static instances (wght 400 / 700) of Noto Sans 2.015 from Fedora's `google-noto-sans-vf-fonts`, made reproducibly by
+> `fonts/tools/build_noto_sans.py` (record 25 removed); licence OFL-1.1 **without** a Reserved Font Name (`fonts/Noto Sans/OFL.txt`).
+> `fonts/manifest.toml` records upstream, licence and SHA-256 per file; `tests/unit/fontgen/test_bundled_fonts.py` checks it. The
+> Regular space is 260/1000 em, so `resolve()` now MEASURES it: **Default resolves to word_scale 1.5** (it was 1.75 on the 0.25 em
+> fallback). All three built-ins use Noto Sans, so Apply works end to end. Not yet bundled: Carlito (OFL **with** Reserved Font Name
+> "Carlito" — allowed now that M1.4 drops records 21/22/25, but not added today), Atkinson Hyperlegible and Lexend (not available
+> offline). Bundling real fonts changes every content key once (expected).
+
 #### M1.3 Font eligibility rules
 | Field | Spec |
 |---|---|
@@ -964,6 +974,11 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Acceptance tests | Monospace refused; an icon font refused; only Latin glyphs in the spacing set |
 | Done when | Tests pass · reviewed |
 
+> **Done for O1 by O4 (2026-10-18, cross-owner):** (1) `_rename` drops name records 16, 17, 21, 22 and 25 (`_NAME_IDS_DROPPED`);
+> (2) the typo-metrics bit is set only on OS/2 ≥ 4 — versions 2/3 are raised to 4 (same fields), 0/1 get no bit; (3) the space-glyph
+> invariant is an explicit `PatchUnsupported` instead of an `assert`; (4) real fonts are bundled now (Noto Sans, see M1.2): all three
+> built-ins patch and validate with the real tools in the bubblewrap runner. CFF and Carlito / Atkinson / Lexend remain untested.
+> Tests in `tests/unit/fontgen/test_fontgen.py` (each fails without its fix).
 #### M1.4 Font patcher
 | Field | Spec |
 |---|---|
@@ -1012,6 +1027,10 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Acceptance tests | Same font-building inputs → identical key and bytes; changing any **font-building** input (incl. `ui_line` alone) → new key; `text_scale` (a desktop setting) never changes the key; 1.5 and 1.50 → same key |
 | Done when | Tests pass · reviewed |
 
+> **Done for O1 by O4 (2026-10-18, cross-owner):** (5) docstring updated; (6) explicit check: no identifying name record (1, 3,
+> 4, 6, 16, 17, 21, 22, 25) of the artifact may contain the source family → `VALIDATION_FAMILY_COLLISION`; (7) the typo-bit check
+> follows M1.4: required on OS/2 ≥ 4, refused below; (8) tolerances re-checked on the real Noto Sans — Default, Reading and High
+> Separation all pass `validate_font` with the real `pango-view` / `fc-match` (`test_fontgen_integration.py`).
 #### M1.6 Font validation
 | Field | Spec |
 |---|---|
