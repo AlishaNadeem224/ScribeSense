@@ -1357,6 +1357,35 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > is ready but needs the real journal. Open (O2): who serves the socket (`confirm` M2.3, reset requests,
 > native host), and the `style_changed` push for the extension.
 
+> **O2 deadline fixes (2026-10-18, done by O4 at O2's request — O2 to review; cross-owner change recorded here).**
+> Base: team/O2 `4179940` + team/O4. (1) **Controller restored** to the reviewed version: commit `14f17dd` had put back a
+> pre-review copy (no file backups, no M4.11 Reverter, `BaseException`, no `drawn_ok` / `record_coverage` / `reason_code`),
+> which caused all 30 CI failures. (2) **Service wiring** `controller/service.py` (`Service.open()`): Store + ApplyLock +
+> SqliteJournal(role "service", `on_style_changed` → IPC push) + IpcServer + ApplyController + start-up housekeeping
+> (interrupted builds, retention, `remove_unused` with `FontReferenceSource`); socket requests `get_style`,
+> `open_in_reader`, `keep`/`revert`/`pending` (M2.3), `reset`. Opened on first use by the app. (3) **M2.3 confirm**
+> `ui/confirm.py` `run_confirm(tx)`: fresh process (A15) with a 30 s countdown, Keep / Revert / close / timeout → `keep` or
+> `revert` over the socket; the app starts it via `run_cmd` in a worker thread, then `confirm_watchdog(tx)` reverts anything
+> still pending; Quit reverts an unconfirmed change. (4) **M2.11 CLI**: all K10 commands parse; `reset`, `recover --login`,
+> `uninstall`, `doctor` wired to the real O3/O4 APIs with the journal sharing the LockPolicy's ApplyLock and the store in
+> recovery mode (no DB → nothing to do, nothing created); exit codes per K10 (busy → 3, recovery never 4, `read`/`preset
+> next` → 4 when the app cannot start); argv passed through to the app. (5) **M2.4/A1**: window construction fixed
+> (`app_id`), hide-on-close restored, `quit` quits, coverage report (M2.6) reachable again. (6) **M2.5**: preview fonts
+> loaded into a private `PangoCairo.FontMap` for the preview widget only (never fontconfig), temp dirs always deleted
+> (replace / hide / quit / atexit), built off the GTK thread (latest-only), sliders snapped to K1 steps, K2 word-mode and
+> base-font rules, Original applies (revert all), Custom + user presets + Save as, a failed preview keeps Apply enabled.
+> (7) **M2.9/M2.10**: reader crash fixed (CSS provider; reading family + `reading_line`; `text_scale` left to the GTK
+> adapter — O2 to confirm), `read --selection/--clipboard` and extension text open the reader, errors shown to the user;
+> capture: NOTHING_SELECTED for an empty selection, text-only `wl-paste`, byte cap before decoding, one A17 count.
+> (8) **M2.7**: settings read/write the store (`recommend_opt_in`, keybinds saved on an explicit action, Hyprland only via
+> an explicit "apply keybinds" button), delete-all offers a reset first and says exactly what was deleted. (9) **M2.8**:
+> the tray is reported unavailable on GTK4 (AppIndicator3 is GTK3-only); the app works fully without it.
+> Adapter list for production: `adapters/registry.py` (O4). Verified: full suite with GTK 2048 passed; CI configurations
+> (no GTK typelibs / no PyGObject) 1900 / 1850 passed, 0 failed; the real app started on a private Broadway display
+> (window + editor + service; close hides, Quit exits 0). **Known limits:** apply needs the bundled base fonts (O1) — until
+> they land, Apply stops with `BUNDLED_FONT_MISSING`; a first `scribesense apply X` that starts the app does not exit with
+> the apply result (Gio does not report back to its own launch).
+
 ### O3 — Data & Platform
 
 #### M3.1 Store

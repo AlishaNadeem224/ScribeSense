@@ -1,35 +1,48 @@
-"""M2.8 — System tray icon (Optional).
+"""M2.8 — System tray (optional). Unavailable in this GTK 4 build.
 
-Provides a tray icon using AppIndicator (StatusNotifierItem) for Hyprland/Waybar.
-If the desktop environment does not support tray icons, this module fails
-silently and the app continues to work without it (M2.8 "Must never: Be
-required for any core function").
+Why it is unavailable:
+  The only Python tray bindings on the target systems are AppIndicator3 / AyatanaAppIndicator3. Both
+  are built on GTK 3 (their menus are Gtk.Menu objects), and a process cannot load GTK 3 and GTK 4
+  together: once the app has loaded Gtk 4.0, `gi.require_version("AppIndicator3", "0.1")` fails, and
+  Gtk.Menu / Gtk.MenuItem do not exist in GTK 4 at all. A GTK 4 tray would need its own
+  StatusNotifierItem + com.canonical.dbusmenu implementation over Gio D-Bus, which is not built.
+
+So, per the card ("No tray host -> feature hidden, no error"; "Must never: be required for any core
+function"), the tray is simply reported as unavailable:
+
+  * this module never imports gi, AppIndicator3 or GTK — importing it has no side effects;
+  * `is_available()` returns False and `UNAVAILABLE_REASON` says why;
+  * `TrayIcon` is an inert placeholder with the planned interface, so callers can be written once.
+
+The window does not depend on the tray: closing it always hides it (A1, `set_hide_on_close(True)` in
+ui/window.py), and every tray action (apply, open, quit) is also reachable from the window, the CLI
+(K10) and the keybinds.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
-import gi
+#: Shown in Settings / documentation when someone asks where the tray icon is.
+UNAVAILABLE_REASON = (
+    "The tray icon is not available: the system tray library (AppIndicator) only works with GTK 3, "
+    "and ScribeSense uses GTK 4. Use the window, the keybinds or the scribesense command instead."
+)
 
-# AppIndicator is not always available. We fail gracefully if it is missing.
-try:
-    gi.require_version("AyatanaAppIndicator3", "0.1")
-    from gi.repository import AyatanaAppIndicator3 as AppIndicator
-except (ValueError, ImportError):
-    try:
-        gi.require_version("AppIndicator3", "0.1")
-        from gi.repository import AppIndicator3 as AppIndicator  # type: ignore
-    except (ValueError, ImportError):
-        AppIndicator = None
 
-gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk  # noqa: E402
+def is_available() -> bool:
+    """M2.8 availability check. Always False in a GTK 4 process (see the module docstring)."""
+    return False
 
 
 class TrayIcon:
-    """A system tray icon for ScribeSense."""
+    """Inert placeholder for the M2.8 tray. `available` is always False; every method is a no-op.
+
+    The constructor takes the planned callbacks (apply the current preset, open the window, quit) so a
+    future StatusNotifierItem implementation can replace this class without changing its callers.
+    """
+
+    available = False
 
     def __init__(
         self,
@@ -38,40 +51,11 @@ class TrayIcon:
         on_show: Callable[[], None],
         on_quit: Callable[[], None],
     ) -> None:
-        self._indicator = None
-        if AppIndicator is None:
-            return  # Tray not supported on this system.
-
-        self._indicator = AppIndicator.Indicator.new(
-            f"{app_id}.tray",
-            "preferences-desktop-font",  # Fallback icon name
-            AppIndicator.IndicatorCategory.APPLICATION_STATUS,
-        )
-        self._indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
-
-        menu = Gtk.Menu()
-        
-        item_apply = Gtk.MenuItem(label="Apply Current Preset")
-        item_apply.connect("activate", lambda _w: on_apply())
-        menu.append(item_apply)
-        
-        item_show = Gtk.MenuItem(label="Open ScribeSense")
-        item_show.connect("activate", lambda _w: on_show())
-        menu.append(item_show)
-        
-        menu.append(Gtk.SeparatorMenuItem())
-        
-        item_quit = Gtk.MenuItem(label="Quit")
-        item_quit.connect("activate", lambda _w: on_quit())
-        menu.append(item_quit)
-        
-        menu.show_all()
-        self._indicator.set_menu(menu)
+        self.app_id = app_id
+        self._callbacks = (on_apply, on_show, on_quit)
 
     def set_tooltip(self, text: str) -> None:
-        if self._indicator is not None:
-            self._indicator.set_title(text)
+        """No-op: there is no tray icon to label."""
 
     def stop(self) -> None:
-        if self._indicator is not None:
-            self._indicator.set_status(AppIndicator.IndicatorStatus.PASSIVE)
+        """No-op: there is no tray icon to hide."""
