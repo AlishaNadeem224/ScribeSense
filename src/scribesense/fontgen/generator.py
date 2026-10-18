@@ -90,6 +90,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+from scribesense.config.presets import Preset, resolve
 from scribesense.config.settings import Configuration, round_to_steps, validate
 from scribesense.contracts import fonts as k7
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
@@ -125,6 +126,7 @@ __all__ = [
     "build",
     "build_preview",
     "installed_sets",
+    "preset_keys",
     "remove_unused",
 ]
 
@@ -338,6 +340,13 @@ class ReferenceSource(Protocol):
     application layer; none exists in the repository today, and importing them from here
     would invert the dependency even once they do.
 
+    "A saved preset" means **every** stored preset, the Custom working set included
+    (K9 D3): Custom is persisted, so the font it resolves to is referenced by exactly
+    the same argument as a named preset's. Missing it would be the nastiest version of
+    this bug to diagnose -- the user's own current configuration would be the one font
+    the sweep deleted, and the symptom would appear one launch later. `preset_keys` is
+    provided so an implementation does not have to re-derive the key to include them.
+
     An implementation folds all five into one `References`, and reports an open
     transaction separately, because rule 3 also says the sweep "runs only when no tx is
     active" -- a different condition from a reference and one that blocks the whole pass
@@ -349,6 +358,40 @@ class ReferenceSource(Protocol):
 
     def references(self) -> References:
         """Every key referenced by any of K7 rule 3's sources."""
+
+
+def preset_keys(
+    presets: Iterable[Preset],
+    *,
+    files: Mapping[str, str | os.PathLike[str]] | None = None,
+) -> References:
+    """The content keys a set of stored presets refers to -- K7 rule 3's preset source.
+
+    Hand it everything the store holds: the saved user presets **and** the saved Custom
+    row. It exists so that a `ReferenceSource` implementation (M3, another package) can
+    answer "which fonts do the user's presets need?" without re-implementing
+    ``resolve -> plan -> key``. That chain is this package's, and a second copy of it in
+    the store would eventually disagree -- at which point the sweep would delete a font
+    something still points at, which is the one outcome rule 3 exists to prevent.
+
+    A preset that cannot be turned into a key -- it no longer resolves, its base family
+    is not bundled, its sources are unreadable -- sets ``complete=False`` rather than
+    being skipped. Skipping it would quietly convert "I cannot tell what this preset
+    needs" into "this preset needs nothing", and `remove_unused` would then act on an
+    answer that is short by exactly the entries it could not read.
+
+    Not cheap: `plan` opens and hashes each base font per distinct configuration, so
+    call it once per sweep, not per key. It performs no I/O to the install directory and
+    writes nothing.
+    """
+    keys: set[str] = set()
+    complete = True
+    for preset in presets:
+        try:
+            keys.add(plan_build(resolve(preset.values), files=files).key)
+        except Exception:  # noqa: BLE001 -- any failure here means "cannot determine"
+            complete = False
+    return References(frozenset(keys), complete)
 
 
 # --------------------------------------------------------------------------- #
