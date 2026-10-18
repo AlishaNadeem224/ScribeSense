@@ -662,7 +662,7 @@ owner + one other; existing codes are never renamed or reused. K1 validation cod
 | Reader / capture (O2) | `NOTHING_SELECTED` · `CLIPBOARD_EMPTY` · `SELECTION_UNAVAILABLE` · `TOO_LARGE` |
 | Extension / IPC (O4 + O2) | `APP_NOT_RUNNING` · `HOST_MISSING` · `BAD_MESSAGE` |
 
-### K9 — Store repositories (owner O3) — DRAFT 2026-10-09 · **SIGNED OFF by O3 2026-10-15** (journal part accepted by O4 the same day; D3 for O1 to confirm)
+### K9 — Store repositories (owner O3) — DRAFT 2026-10-09 · **SIGNED OFF by O3 2026-10-15** (journal part accepted by O4 the same day; D3 confirmed by O1 2026-10-18)
 
 Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9). Nothing else.
 
@@ -671,11 +671,11 @@ Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9).
 > `recommendation_samples`, `font_registry`, and the DB-wide rules below. Decisions taken (the draft's recommendations):
 > - **D3** built-ins are not stored (they come from `config.BUILTINS`); `custom` is one persisted row with the reserved id `custom`,
 >   written only when the user has values, never seeded with defaults; `original` is never stored; user ids are `uuid4`.
->   Reserved ids: `default`, `reading`, `high-separation`, `custom`, `original`. *(Taken from O1's handoff — O1 to confirm.)*
+>   Reserved ids: `default`, `reading`, `high-separation`, `custom`, `original`. *(Confirmed by O1, 2026-10-18: `custom` is stored as one row and `PresetRepo.list()` does not return it — "stored ≠ listed". `list_all()` returns every stored preset.)*
 > - **D6** the database file is `data_dir()/scribesense.db` (`store.default_path()`); no K8 change.
-> - **D8** `FontRegistryRepo.create()` raises `FONT_IDENTITY_CONFLICT` only when the **font-building** fields differ
->   (`base_family`, `letter_em`, `word_scale`, `reading_line`, `ui_line`) or the files/hashes differ — **never because of `text_scale`**
->   (M1.5: `text_scale` is not part of the key).
+> - **D8** `FontRegistryRepo.create()` raises `FONT_IDENTITY_CONFLICT` only when the font key's numeric inputs (`letter_em`, `word_scale`, `reading_line`,
+>   `ui_line`) or the generated families / styles / files / hashes differ — **never because of `text_scale` or the `base_family` label** (M1.5: both are outside the key;
+>   corrected 2026-10-18 after O1's reply, which found that `base_family` would have caused false conflicts when a shortlist entry is renamed).
 > - **D9** presets and configurations are stored as versioned JSON `{"v":1,…}` with fixed-decimal strings, validated by `validate()`;
 >   only cheap CHECKs in SQL (`kind`, word mode). No decimal columns (SQLite has none). Resolved configs are not persisted next to presets.
 > - **D4** retention rule (applies when M3.2 is built): delete a terminal tx only if older than the cutoff **and** outside the newest
@@ -687,8 +687,17 @@ Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9).
 > Requirements carried into M3.1: `Store.transaction()` must let several journal writes share one transaction so `keep()` is atomic (draft F4);
 > `active_config` is one permanent row whose `style_revision` survives "Original" (F3); retention never deletes the newest `COMPLETED` apply (F2);
 > the D7 pattern test must accept K3 rule 10b locations (`<Preferences path>#<key>`).
-> **Open:** O1 has not confirmed D3 (`custom` as one stored row). The K1 amendment `NOT_A_NUMBER` (added by O4, "sign-off by one other owner
-> pending") is a contract change that O3 may sign as that other owner — O3's decision, not part of K9.
+> **O1's reply to D3 / D8 (received 2026-10-18, via O3): O1 states both as "confirmed" — D3 "with one addition", D8 "but drop base_family".**
+> - **D8: adopted and built (2026-10-18).** `base_family` is out of the registry identity as well (O1's `UNKEYED_FIELDS = ("text_scale", "base_family")`). A changed label with the
+>   same bytes is not a conflict; it is only noted in the log.
+> - **D3: confirmed by O1 (2026-10-18), after a clarifying question.** `custom` is stored as ONE row (id `custom`; `config/presets.py`: `CUSTOM_ID`, `STORABLE_KINDS = {"user","custom"}`, `to_record()` refuses any other id);
+>   `PresetRepo.list()` must NOT return it (editing state, not a catalogue entry — "stored ≠ listed", which is also what K9's "built-ins first, then user presets by name" says). **O1's trap:** whatever decides which fonts are still in use
+>   (K7 rule 3: "a saved preset" includes Custom) must see the custom row, or the clean-up deletes the font of the user's own current configuration. M3.1 therefore adds `PresetRepo.list_all()` (built-ins, custom, user presets; not in the frozen K9
+>   protocol) and its own `FontRegistryRepo.in_use` uses it (regression test). **Two-step change, step 2 pending:** `list()` still returns the custom row today, because `controller/service.py:117` (O2) passes `store.presets.list` into
+>   O4's `FontReferenceSource`; the moment `list()` stops returning it, that clean-up would miss the custom row's font. **Step 1 (done):** `list_all()`. **Step 2 (after O2 / O4 change that call to `store.presets.list_all` — please do it
+>   first):** O3 makes `list()` return built-ins and user presets only. The UI is unaffected (`known_presets` already filters `custom`). O1 also notes a stale line in their own `config/presets.py:156` (`"""ID of the transient Custom entry."""`).
+> - Also from O1: uninstall removes fonts only through `fontgen.cache`; `ReferenceSource` is not an O1 task (O4 has built it); real bundled fonts will change every content key once.
+> - The K1 amendment `NOT_A_NUMBER` (added by O4, "sign-off by one other owner pending") is a contract change that O3 may sign as that other owner — not part of K9.
 
 ```python
 # ---- Records ----
@@ -960,7 +969,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Produce a patched font: wider Latin advances (letter), wider space glyph (word), raised line metrics (line height), ligatures removed, renamed. [D Step 2, F2] |
 | Owner / may be helped? | O1 / no — the core algorithm |
-| Built by / reviewed by | TBD / O3 |
+| Built by / reviewed by | O1 / O3 (approved 2026-10-18, with notes) |
 | Depends on | M1.1, M1.3, fontTools [D A4] |
 | Used by | M1.5 |
 | Provides | `patch(source_path, config, line: float, out_path) -> None` |
@@ -974,6 +983,14 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Change non-Latin glyphs; keep the original family name (shadow mode = Later) |
 | Acceptance tests | Measured advance and space width match config; Devanagari glyphs unchanged; no `liga` feature; TrueType and CFF fonts handled; variable fonts flattened per weight [D Step 2 fixes] |
 | Done when | Tests pass for all 4 shortlist fonts · reviewed |
+
+> **Reviewed by O3 (2026-10-18): approved, with four notes — (1) and (4) to settle before the real fonts land.** Verified with real fontTools on synthetic fonts: only `GSUB`, `OS/2`, `hhea`, `hmtx`, `name` and `head` (checksum only)
+> change; Latin advances +120 at UPM 1000 (letter_em 0.12), space ×1.5, Devanagari unchanged; `liga` removed with the feature indices re-mapped; `LTSH` / `hdmx` deleted; the same inputs twice give identical bytes
+> (`recalcTimestamp` off); nothing is written on failure (atomic temporary file). Notes: (1) **`_rename` leaves name records 21, 22 and 25 (WWS family / subfamily, variations PS prefix) untouched, so the source family
+> survives** — proved with `fc-scan` on a patched font: fontconfig lists it under both the source WWS name and the generated name, which the card's "never keep the original family name" forbids. Remove 21 and 22 (like 16 and 17)
+> and rewrite 25. It matters only if a shortlist font carries those records. M1.6 catches it today only indirectly (see M1.6 note 6). (2) `USE_TYPO_METRICS` (`fsSelection` bit 7) is set on an `OS/2` table of version < 4, where the bit is undefined
+> (fontTools warns on save; HarfBuzz ignores it below v4): bump the version to 4 when the table is v2+, or skip the bit — change M1.6's matching check with it. (3) `assert space not in targets` is a runtime invariant written as an `assert`
+> (stripped under `-O`); use an explicit check. (4) The "Done when: tests pass for all 4 shortlist fonts" condition cannot be met yet: `fonts/` is empty, so only synthetic fixtures are tested; CFF, hinting and real kerning are not demonstrated.
 
 #### M1.5 Variants and naming
 | Field | Spec |
@@ -1000,7 +1017,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Check a built font really carries the requested spacing before it can be activated. [D F2] |
 | Owner / may be helped? | O1 / no |
-| Built by / reviewed by | TBD / O3 |
+| Built by / reviewed by | O1 / O3 (approved 2026-10-18, with notes) |
 | Depends on | M1.5, `pango-view` |
 | Used by | M1.8 |
 | Provides | `validate_font(paths, config) -> ValidationResult(ok, measurements, reason_code)` |
@@ -1014,6 +1031,13 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Use the user's real fontconfig |
 | Acceptance tests | A correct font passes; a deliberately unpatched font fails |
 | Done when | Tests pass · reviewed |
+
+> **Reviewed by O3 (2026-10-18): approved, with four notes.** Verified: isolation (a private fontconfig with no `<include>`, `FONTCONFIG_PATH` and `XDG_CACHE_HOME` redirected, commands through `run_cmd`); a correct build passes with the
+> REAL `pango-view` / `fc-match` (and in the sandbox integration tests); an unpatched font fails (`VALIDATION_ADVANCE_MISMATCH`); a missing tool fails closed (`VALIDATION_TOOL_MISSING`). Notes: (5) the module docstring is stale: "the rendering half
+> has not been executed on Fedora, or anywhere" — it now runs in the sandbox and in O3's probes. (6) The naming check compares name record 1 and requires record 16 absent; it ignores 21, 22 and 25. In a probe a source family left in record 21
+> was caught only by the rendering check (`VALIDATION_RESOLUTION_MISMATCH`), so such a build is refused (fail-closed) instead of shipping a shadowing font — but a shortlist font with WWS names would then never build until M1.4 is fixed. Add an
+> explicit check of every name record for the source family (`VALIDATION_FAMILY_COLLISION`). (7) The check that requires the typo-metrics bit must follow M1.4 note 2. (8) The render tolerances (`RENDER_TOLERANCE_PX_PER_GLYPH`, `MIN_RENDER_TOLERANCE_PX`) are
+> tuned on synthetic fonts and each external call has a 60 s timeout; re-check both when the real fonts are bundled.
 
 #### M1.7 Font cache and install
 | Field | Spec |
@@ -1193,7 +1217,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Application window, navigation, single-instance background service; closing the window doesn't quit; explicit Quit. [D F6, A1] |
 | Owner / may be helped? | O2 / no |
-| Built by / reviewed by | TBD / O3 |
+| Built by / reviewed by | O2 / O3 (approved 2026-10-18, with notes) |
 | Depends on | GTK4 + libadwaita [D A4] |
 | Used by | M2.5–M2.9 |
 | Provides | window, pages, action entry points for M2.11 |
@@ -1207,6 +1231,13 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Be required by the recovery path [D A2] |
 | Acceptance tests | Keyboard-only navigation; screen-reader labels; large text (manual checklist) [D] |
 | Done when | Accessibility checklist passes · reviewed |
+
+> **Reviewed by O3 (2026-10-18): approved, with two notes; the accessibility part of "Done when" is not demonstrated.** Read-only review (GTK 4 / libadwaita are not installed on the O3 machine, so the UI was not run). Verified by reading
+> `ui/app.py` and `ui/window.py`: A1 — `hold()` keeps the service alive, the window hides on close (`set_hide_on_close(True)`), the explicit `quit` is refused with exit 3 while a service call runs and never opens the Service (so it cannot
+> migrate, prune or delete fonts; O3's `uninstall --delete-data` relies on that and treats a non-zero exit as "not stopped"); A15 — an unconfirmed change is reverted at Quit and the store is closed, `confirm` is never forwarded; a start-up
+> error shows a banner with the message and the recovery info instead of a blank window; A2 — the app is imported lazily, only for GUI commands (the import-rule test passes); icon-only window buttons carry accessible labels. Notes:
+> (1) **the UI tests do not run in CI or on the O3 machine** — they skip when the GTK / Adw typelibs are missing; add `gir1.2-gtk-4.0` and `gir1.2-adw-1` to the CI job. (2) "Done when: accessibility checklist passes" is unmet — it needs a graphical
+> session (manual checklist A–E, M3.5 VM).
 
 #### M2.5 Presets, adjust and preview screens
 | Field | Spec |
@@ -1253,7 +1284,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | "Help improve recommendations" opt-in, keybinds, "Delete all ScribeSense data", recovery info. [D F8, F10] |
 | Owner / may be helped? | O2 / no |
-| Built by / reviewed by | TBD / O3 |
+| Built by / reviewed by | O2 / O3 (approved 2026-10-18, with notes) |
 | Depends on | M3.1, M4.14 |
 | Used by | user |
 | Provides | settings UI |
@@ -1267,6 +1298,14 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Enable data collection by default |
 | Acceptance tests | Default off; delete requires confirmation; recovery keybind displayed |
 | Done when | Tests pass · reviewed |
+
+> **Reviewed by O3 (2026-10-18): approved, with three notes.** Read of `ui/settings_page.py` and its wiring in `ui/window.py`, plus probes of the pure helpers with only `gi` stubbed, against a real store and the SQLite journal. Verified: the
+> opt-in is off by default (K9) and a bool setting is stored with the exact type; keybind validation refuses an empty value, a duplicate combination and an injection attempt; a live conflict is shown on screen only, never logged; the recovery keybind and
+> `scribesense reset` are shown; delete-all offers a reset first, then asks for confirmation, and deletes the recovery records only when the journal issues the token (with an apply in progress the records were kept and the preferences were still
+> deleted, as designed). Notes: (3) **delete-all runs outside the apply lock** — `window.py` calls `delete_all_data(service.store, service.journal)` without the service mutex or the lock, though K9 says "apply lock → block applies → reset → delete".
+> Probed: an apply starting between the token and `delete_recovery_data` is refused by the store (`RECOVERY_OBLIGATIONS_REMAIN`, journal intact, nothing lost), but the user sees a generic error after the presets were already deleted. Add a service
+> method that holds the mutex and the lock and treats that code as "recovery kept". (4) **The pure helpers cannot be unit-tested without GTK**: they live in a module that imports GTK at the top, so CI never runs them (they are GTK-free in substance — a
+> small `settings_logic.py` would do). (5) Cosmetic: keybind normalization reorders modifiers and keeps the key's case ("super alt, r" → "SUPER ALT, r"; the default recovery bind becomes "SUPER CTRL ALT SHIFT, BackSpace"); it round-trips through the parser.
 
 #### M2.8 Tray (optional)
 | Field | Spec |
@@ -1984,7 +2023,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 |---|---|
 | Purpose | Record every change before it happens; transaction states; apply lock. [D F4, F5] |
 | Owner / may be helped? | O4 / **no (O4 only)** [D] |
-| Built by / reviewed by | O4 / O3 |
+| Built by / reviewed by | O4 / O3 (approved 2026-10-18, with notes) |
 | Depends on | K3–K5, M3.1 |
 | Used by | M2.1, M2.3, M4.11, M4.12, M3.2 |
 | Provides | K4 |
@@ -2006,7 +2045,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > M4.10 (`safety/journal.py`) calls it** (import rule R3 unchanged) · D7 only ScribeSense-managed locations
 > are stored (pattern test must accept K3 rule 10b `<Preferences path>#<key>` locations).
 
-> **Implemented 2026-10-16 (O4) — review by O3 pending.** `safety/journal.py` `SqliteJournal(store, lock, role=…)`: K4 on
+> **Implemented 2026-10-16 (O4) — reviewed by O3 2026-10-18: approved, with notes (below).** `safety/journal.py` `SqliteJournal(store, lock, role=…)`: K4 on
 > `store.JournalTables`, plus the apply lock. `begin()` takes `lock_path()` (owner record) and holds it until a terminal state or
 > REVERT_FAILED (`keep()` included); if the caller already holds the lock (`recovery.LockPolicy` for `reset` / `recover`), the journal uses
 > it and leaves releasing it to the caller. A store error in `begin()` releases the lock and propagates (refused before any write).
@@ -2017,12 +2056,24 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > Production wiring (who constructs it): the service — `SqliteJournal(Store(default_path()), ApplyLock(), role="service")`; `reset` /
 > `recover --login` / `uninstall` — `Store(default_path(), mode="recovery")` + the same `ApplyLock` the `LockPolicy` holds.
 
+> **Reviewed by O3 (2026-10-18): approved, with three non-blocking notes** (read of `safety/journal.py` and `tests/unit/test_sqlite_journal.py`, plus probes against a temporary store).
+> All 24 K4 methods map to `JournalTables`; the lock follows K4 rule 1 (taken in `begin()`, released at a terminal state and at `REVERT_FAILED`, a caller-held lock is used and
+> left to the caller, a store error in `begin()` releases it); a `keep()` that fails at its last statement leaves the tx awaiting confirmation, the lock held and nothing
+> partial written, and a retry succeeds; a `mode="recovery"` store runs a full revert cycle. Notes for O4:
+> (1) **`begin()` is not thread-safe** — two threads calling it while the first is between taking the lock and recording the tx both get a tx (reproduced with a delayed
+> `create_tx`). Not reachable today: `controller/service.py` serializes apply / keep / revert / reset with an `RLock`. Suggest a `threading.Lock` around `begin()`, `_ended()` and `prune_history()`.
+> (2) **`prune_history()` checks the lock but does not hold it** (K9: "runs under the apply lock"); a race cannot corrupt anything because the SQL never deletes unfinished
+> transactions — hold the lock for the duration or document the check as advisory.
+> (3) **A new apply is accepted while an unfinished tx from a crash exists** (probed: `begin("apply")` returned a tx). A3 says recovery completes before any new Apply; today only the
+> login hook enforces it, and neither the journal nor `apply_flow.py` checks `unfinished()`. Decision for O2/O4: refuse `begin("apply")` while `unfinished()` is non-empty, or check in the controller.
+> Missing tests: two threads in `begin()`; a failing `keep()` keeps the lock and a retry works; a journal on a recovery-mode store; `begin("apply")` with an unfinished tx (whichever behaviour is chosen).
+
 #### M4.11 Revert
 | Field | Spec |
 |---|---|
 | Purpose | Undo one transaction or everything, with the drift rule. [D F4, F10] |
 | Owner / may be helped? | O4 / **no (O4 only)** [D] |
-| Built by / reviewed by | O4 / O3 |
+| Built by / reviewed by | O4 / O3 (approved 2026-10-18, with notes) |
 | Depends on | M4.10, M4.1 |
 | Used by | M2.1, M2.3, M4.12, M3.8 |
 | Provides | `revert_tx(tx) -> RevertReport` · `revert_all() -> RevertReport` |
@@ -2036,6 +2087,11 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Must never | Overwrite a value whose current hash ≠ what we wrote [D] |
 | Acceptance tests | revert_all → byte-identical files/keys; drift case skipped and reported |
 | Done when | Tests pass in sandbox + VM · reviewed |
+
+> **Reviewed by O3 (2026-10-18): approved, with three non-blocking notes.** Verified by reading `safety/revert.py` / its tests and probes: the drift rule never overwrites a value that is neither the
+> snapshot nor what we wrote; items are undone newest-first; one failing item does not stop the others; `finish_tx` is safe to repeat. Notes: (1) `finish_tx` raises `IllegalTransition` for a tx in
+> `SNAPSHOTTED` that already has a recorded intent — K5 has no `SNAPSHOTTED → REVERTING` (reproduced on both journals). Unreachable today (`apply_flow` records intents only after `APPLYING`); go through
+> `APPLYING` first or refuse that sequence. (2) A failed item is reported as `failed` with no error code, so the user cannot see why. (3) `except Exception` in `_revert_one` hides programming errors; log the code.
 
 #### M4.12 Recovery
 | Field | Spec |
@@ -2062,7 +2118,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 |---|---|
 | Purpose | Check which font each target chose and, where possible, which font is drawn. [D Step 3, F3] |
 | Owner / may be helped? | O4 / no |
-| Built by / reviewed by | O4 / O3 |
+| Built by / reviewed by | O4 / O3 (approved 2026-10-18, with notes) |
 | Depends on | M4.1, fc-match, pango-view |
 | Used by | adapters' `verify`, M3.4 |
 | Provides | `chosen_family(target, query)` · `drawn_family_pango(sample)` |
@@ -2099,12 +2155,17 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > directly (Marionette / DevTools) **only inside bubblewrap**, with timeouts and process-group kill; production
 > code under `src/` stays `run_cmd`-only.
 
+> **Reviewed by O3 (2026-10-18): approved, with two non-blocking notes.** Verified: the chosen check (`fc-match`, host or inside a Flatpak sandbox) and the drawn check (fresh-process Pango probe over a fixed
+> sample) stay separate (A14); queries are validated and fontconfig-escaped; failures map to `CHECK_UNAVAILABLE`; the fontset-based probe (O4's fix of 2026-10-15) passes in CI on Ubuntu 24.04. Notes: (1) `probe_argv`
+> uses `sys.executable`, which must be able to import both `gi` and `scribesense` (true with `--system-site-packages`) — say so in a comment. (2) The fontset answers "which font Pango would pick for each character",
+> a good proxy for the layout run but not the run itself — one sentence in the docstring.
+
 #### M4.14 Keybind writer
 | Field | Spec |
 |---|---|
 | Purpose | Write ScribeSense keybinds to a separate file included from the Hyprland config; check conflicts. [D F7, F10; D A18] |
 | Owner / may be helped? | O4 (proposed) / no |
-| Built by / reviewed by | TBD / O3 |
+| Built by / reviewed by | O4 / O3 (approved 2026-10-18, with notes) |
 | Depends on | `hyprctl binds -j` |
 | Used by | M3.8, M2.7 |
 | Provides | `install_keybinds(binds)`, `remove_keybinds()`, `conflicts(binds)` |
@@ -2134,12 +2195,19 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > `parse_keybind(text, action)`, `keybind_status()`. **VM checks:** Lua `dofile`/`pcall` allowed, reload re-runs a
 > Lua config, real `hyprctl binds -j` format, `hl.on("hyprland.start")` not stacking on reload.
 
+> **Reviewed by O3 (2026-10-18): approved, with four non-blocking notes; the card's "VM check" is still open.** Probed in a temporary config dir with a fake `hyprctl`: classic config with CRLF and no trailing newline,
+> a Lua config with a `custom` module (the file is created, then removed again), a Lua file ending in a top-level `return`, a symlinked hook file, a hand-edited block (`DRIFT_SKIPPED`, user's edit kept), a double install
+> (second one changes nothing), a live conflict (`KEYBIND_CONFLICT`, nothing written), and commands containing quotes, `;`, `$`, `\` (shell-quoted, Lua/classic-escaped; `#` and newlines refused). Notes: (1) an empty
+> `config_home()/scribesense/` directory is left after `remove_keybinds()` — remove it when it is empty. (2) The card says "include line journaled"; the implementation keeps the restore facts in the marker line and
+> nothing goes through the journal — change the card wording or journal it. (3) `install_keybinds` refuses while Hyprland is not running unless `allow_unchecked=True`: documented, but the installer must pass it on
+> purpose. (4) Written files are 0644 / dir 0755 (umask-dependent); they hold no secrets.
+
 #### M4.15 Logging
 | Field | Spec |
 |---|---|
 | Purpose | Privacy-safe logs for every module. [D] |
 | Owner / may be helped? | O4 / no |
-| Built by / reviewed by | O4 / O3 |
+| Built by / reviewed by | O4 / O3 (approved 2026-10-18, with notes) |
 | Depends on | K8 |
 | Used by | all |
 | Provides | `log(code, category, **non_content_fields)` |
@@ -2161,6 +2229,12 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > preset, kind, reason` — and only if identifier-shaped (≤ 64 chars, no spaces, no `/`). Any other string is
 > dropped, never written. Never put user content in an identifier field. Logging never raises.
 > File: `logs_dir()/scribesense.log` (0600, dir 0700), rotated at 1 MiB, one old file kept.
+
+> **Reviewed by O3 (2026-10-18): approved, with three non-blocking notes.** Verified: code and category are validated, string values are allowed only in a closed list of field names, writes never raise, the file is
+> 0600, and every `log(...)` call in `src/` passes literals or closed sets (audited). Notes: (1) `re.match` with `$` lets a trailing newline through (`"adapter\n"`) — harmless because it is JSON-escaped, but `fullmatch` is
+> cleaner. (2) The identifier check accepts filename-like strings (`thesis.docx`); the docstring admits that safety rests on the callers — keep reviewing new call sites. (3) The card's canary test over a full session
+> cannot run yet; the VM checklist item G1 covers it.
+
 ---
 
 ## 8. Helper work model [D]

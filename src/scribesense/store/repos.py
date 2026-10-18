@@ -22,6 +22,7 @@ from scribesense.contracts.store import (
     SETTINGS,
     FontRegistryEntry,
 )
+from scribesense.log import log
 from scribesense.store import serialize as ser
 
 if TYPE_CHECKING:
@@ -54,7 +55,22 @@ class PresetRepo:
         return tuple(BUILTINS)
 
     def list(self) -> list[Preset]:
-        """Built-ins first, then the `custom` row if it exists, then user presets by name."""
+        """Built-ins first, then the `custom` row if it exists, then user presets by name.
+
+        NOTE (O1's answer of 2026-10-18, D3): the target behaviour is that `list()` does NOT return `custom` — it is editing
+        state, not a catalogue entry (K9: "built-ins first, then user presets by name"). It still does, until the callers
+        that need EVERY stored preset (the font clean-up in `controller/service.py`) have moved to `list_all()`; then this
+        returns built-ins and user presets only. The UI already filters `custom` out.
+        """
+        return self.list_all()
+
+    def list_all(self) -> list[Preset]:
+        """EVERY preset the store knows: built-ins, the `custom` row if it exists, then user presets by name.
+
+        This is what anything that decides whether a font is still in use must read (K7 rule 3: "a saved preset" includes
+        Custom): a caller that used `list()` and missed the custom row would let the clean-up delete the font of the
+        user's own current configuration. Not in the frozen K9 protocol — an addition of M3.1.
+        """
         rows = self._s.fetchall(
             "SELECT id, name, kind, data FROM presets "
             "ORDER BY CASE kind WHEN 'custom' THEN 0 ELSE 1 END, name COLLATE NOCASE, name, id"
@@ -142,8 +158,8 @@ class FontRegistryRepo:
 
     @staticmethod
     def _identity(e: FontRegistryEntry) -> tuple[object, ...]:
-        """What makes two entries the SAME font set (D8): the font-building fields — never text_scale —
-        plus the families, styles, files and hashes."""
+        """What makes two entries the SAME font set (D8): the font key's numeric inputs — never `text_scale`, never the
+        `base_family` label — plus the generated families, styles, files and hashes."""
         return (ser.font_identity(e.config), e.reading_family, e.ui_family, e.styles, e.files, e.file_sha256)
 
     def create(self, e: FontRegistryEntry) -> None:
@@ -163,6 +179,9 @@ class FontRegistryRepo:
             if existing is not None:
                 if self._identity(existing) != self._identity(e):
                     raise ScribeSenseError(ErrorCode.FONT_IDENTITY_CONFLICT)
+                if existing.config.base_family != e.config.base_family:
+                    # Same bytes, renamed label: not a conflict. The stored label stays; the event is only noted.
+                    log("OK", "store", step="font_identity", reason="family_label_changed")
                 return  # the same font set again: nothing to change
             self._s.execute(
                 "INSERT INTO font_registry (key, config, reading_family, ui_family, styles, files, file_sha256, "
@@ -213,10 +232,10 @@ class FontRegistryRepo:
     def _referenced_by_a_preset(self, config: Configuration) -> bool:
         from scribesense.config.presets import resolve  # O1: preset intent -> concrete Configuration
 
-        wanted = ser.font_identity(config)
-        for preset in self._s.presets.list():  # built-ins and saved presets, incl. the custom row
+        wanted = ser.preset_font_match(config)
+        for preset in self._s.presets.list_all():  # built-ins and EVERY saved preset, incl. the custom row
             try:
-                if ser.font_identity(resolve(preset.values)) == wanted:
+                if ser.preset_font_match(resolve(preset.values)) == wanted:
                     return True
             except Exception:  # noqa: BLE001 — cannot tell whether this preset needs the font: keep it
                 return True

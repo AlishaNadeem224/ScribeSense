@@ -775,7 +775,7 @@ Legend: ✅ built, its acceptance tests from `ARCHITECTURE.md` §7 pass · 🟡 
 - ⬜ M2.9 Reader · ⬜ M2.10 Capture · ⬜ M2.11 CLI
 
 **O3 — Data & Platform**
-- ✅ K9 **signed off by O3 2026-10-15** (O4 accepted the journal decisions D1/D2/D4/D5/D7 the same day — `store/journal_tables.py` is O3's to write; D3 for O1 to confirm; decisions in `ARCHITECTURE.md`, reasoning in `docs/K9_draft.md`) · 🟡 M3.1 Store (built 2026-10-15: `store/` core + 5 repos + `journal_tables.py` for O4's journal; 126 unit tests + 3-process test in the runner; approved by O4 2026-10-16; O3 fixed O4's 5 notes 2026-10-18; O4's SQLite journal now runs on it) · 🟡 M3.2 Retention (built 2026-10-15: `store/retention.py` `prune(journal, now)` — 30 days / last 10, no pruning while a tx is active, errors skip pruning; 28 tests on both journals; approved by O4 2026-10-16, the in-memory double now keeps the newest COMPLETED apply too; the start-up call is O2/O4's) · ✅ M3.3 Sandbox (unit fixture + bubblewrap runner; 10/10 escape tests pass, 2026-10-14; full runner: 14 pass, 1 fail = O4 GTK read-back bug, review by O4 pending)
+- ✅ K9 **signed off by O3 2026-10-15** (O4 accepted the journal decisions D1/D2/D4/D5/D7 the same day — `store/journal_tables.py` is O3's to write; D3 confirmed by O1 2026-10-18; decisions in `ARCHITECTURE.md`, reasoning in `docs/K9_draft.md`) · 🟡 M3.1 Store (built 2026-10-15: `store/` core + 5 repos + `journal_tables.py` for O4's journal; 126 unit tests + 3-process test in the runner; approved by O4 2026-10-16; O3 fixed O4's 5 notes 2026-10-18; O4's SQLite journal now runs on it) · 🟡 M3.2 Retention (built 2026-10-15: `store/retention.py` `prune(journal, now)` — 30 days / last 10, no pruning while a tx is active, errors skip pruning; 28 tests on both journals; approved by O4 2026-10-16, the in-memory double now keeps the newest COMPLETED apply too; the start-up call is O2/O4's) · ✅ M3.3 Sandbox (unit fixture + bubblewrap runner; 10/10 escape tests pass, 2026-10-14; full runner: 14 pass, 1 fail = O4 GTK read-back bug, review by O4 pending)
 - 🟡 M3.4 Render checks (`harness/render.py`: pango engine + unit tests ✅; pango ✅ and qt ✅ verified in the bubblewrap runner (3 passed, 2026-10-15); firefox/chromium engines NOT implemented (known gap, 2026-10-15: they need a live browser process and a protocol — Marionette / DevTools — but `run_cmd` (K3 rule 9) only runs a command to completion, so O4 must approve an exception for the harness; Firefox is `dnf`-installable, Brave is not in Fedora's repos so the Chromium family would use `chromium`) — they report "not implemented" and skip; 2026-10-14) · 🟡 M3.5 VM tests (guard + Hyprland feasibility check + runbook in `vm/`, tested without a VM, 2026-10-14; hypervisor/snapshot decision open; scenarios wait for CLI wiring + M3.8) · 🟡 M3.6 Manual checklist (written `docs/manual-checklist.md`, 2026-10-14; O2 review pending, not yet run) · ✅ M3.7 Doctor (acceptance tests pass, real-host run checked, 2026-10-14; `cli.py` wiring is O2, review by O4 pending) · 🟡 M3.8 Install/uninstall (built 2026-10-15: `uninstall.py` + `docs/INSTALL.md`; 21 unit tests + 2 real-font-cache sandbox tests; NOT wired into `cli.py` (O2) and needs O4's SQLite journal (M4.10); VM acceptance test (byte-identical) waits for M3.5; reviewed by O4 2026-10-16 → O4 fixed lock / fonts / login-check gaps 2026-10-17 → accepted by O3 2026-10-18)
 - 🟡 M3.9 CI + import rules (import rules ✅ incl. deliberate-violation self-test; CI now has a bubblewrap `integration` job, 2026-10-14 — NOT yet run on GitHub; branch protection optional)
 
@@ -910,6 +910,33 @@ scenarios (a real profile picks up `userContent.css` / `user.js` after a restart
 native-messaging path; what is drawn on Wayland) and by the M3.6 manual checklist (restart notice, what the user sees). Those stay open until a graphical
 test VM exists.
 
+**K9 status (2026-10-18, O3):** signed off and built; `docs/K9_draft.md` brought up to date (schema = the migration file, tests listed with their real files, §9 = O1's reply).
+**O1 states D3 and D8 as confirmed.** D8 was corrected by O1 (`base_family` is not part of the registry identity either) and is **adopted and built** with tests. D3: O1 says confirmed, but
+describes `custom` as unsaved while their code stores it and expects `PresetRepo.list()` not to return it (M3.1 does) — O1 to say in one line whether `custom` is one stored row and whether
+`list()` includes it. Still O3's by hand: the "DRAFT" docstring in `contracts/store.py` (agents may not edit `contracts/`).
+
+**M4.10 reviewed by O3 (2026-10-18): approved, with three non-blocking notes for O4** (details in the M4.10 card in `ARCHITECTURE.md`): (1) `SqliteJournal.begin()` is not thread-safe (not reachable
+today, the service serializes with an `RLock`); (2) `prune_history()` checks the apply lock but does not hold it; (3) a new apply is accepted while an unfinished tx from a crash exists —
+A3 relies only on the login hook; O2/O4 to decide where to refuse it. Four tests are missing (listed in the card note).
+
+**M4.11, M4.13, M4.14, M4.15 reviewed by O3 (2026-10-18): all approved, with non-blocking notes for O4** (details in each card in `ARCHITECTURE.md`). M4.11: `finish_tx` raises for a tx in `SNAPSHOTTED` that has an
+intent (unreachable today), failed items carry no error code. M4.13: document the `sys.executable` assumption and what the fontset probe measures. M4.14: an empty `~/.config/scribesense/` is left after removal, the card
+says "include line journaled" but the implementation uses the marker line, the installer must pass `allow_unchecked` on purpose, the VM check is still open. M4.15: use `fullmatch`, identifier fields do not guarantee privacy by
+themselves. Reviews still named for O3: M1.4, M1.6, M2.4, M2.7.
+
+**M1.4 and M1.6 reviewed by O3 (2026-10-18): both approved, with notes for O1** (details in each card in `ARCHITECTURE.md`). M1.4: the patcher leaves name records 21 / 22 / 25 untouched, so the source family stays visible to
+fontconfig (proved with `fc-scan`) — fix before the real fonts land; the typo-metrics bit is set on `OS/2` tables older than v4; the "all 4 shortlist fonts" condition cannot be met until `fonts/` is bundled. M1.6: the naming check ignores
+records 21 / 22 / 25 (the real renderer catches it, fail-closed), the docstring still says the rendering half was never executed, tolerances are tuned on synthetic fonts. Reviews still named for O3: M2.4 and M2.7.
+
+**M2.4 and M2.7 reviewed by O3 (2026-10-18): both approved, with notes for O2** (details in each card in `ARCHITECTURE.md`; read-only review, the UI could not be run on the O3 machine). M2.4: the UI tests skip in CI (no GTK typelibs) and the accessibility
+checklist is not run (needs the graphical VM). M2.7: delete-all runs outside the service mutex and the apply lock (a refused deletion after the presets are gone gives a generic error — nothing is lost); the pure helpers sit in a GTK-importing
+module and are never tested in CI; keybind normalization is cosmetic. **All reviews named for O3 are now recorded:** M4.10, M4.11, M4.13, M4.14, M4.15, M1.4, M1.6, M2.4, M2.7.
+
+**D3 closed (2026-10-18, O3):** O1 confirmed that `custom` is stored as ONE row (id `custom`) and that `PresetRepo.list()` must NOT return it ("stored ≠ listed"). O1's trap — the font clean-up must see the custom row or it deletes the font of the user's
+own configuration — is handled by a new `PresetRepo.list_all()` (step 1, done, with a regression test). **Step 2 is waiting for O2 / O4:** change `controller/service.py:117` from `presets=self.store.presets.list` to `presets=self.store.presets.list_all`;
+only then does O3 make `list()` drop the custom row (today it still returns it, which keeps the clean-up safe). Also: O1 to fix the stale `"""ID of the transient Custom entry."""` in `config/presets.py:156`; the K9 owner to add `list_all` to
+`contracts/store.py` (frozen; agents may not edit it). The "O1 — confirm D3" item in the per-owner list above is done.
+
 ## Status correction (2026-10-18, O4) — after merging O1, O2, O3 and O4 into main
 
 The O3 status update above (2026-10-18) was written on a branch that did not yet contain three merges — O4's
@@ -926,7 +953,8 @@ date. Kept above as written; the current state:
 - **Sign-offs still pending:** K1 `NOT_A_NUMBER` — K1 is O1's contract, so O1 confirms as owner plus one of O3 / O4
   (the O3 note above says "O4", an earlier line says "O1 or O3"; either other owner works); `GENERATOR_ERROR` error code
   (O1 + one other); K4 rule 5 addition `subscribe_style` (O4 + one other); K3 rule 10b and K8 (O4 + one other).
-- **Still open:** O1 — bundled fonts, D3 / D8 confirmation; O2 — review of the deadline fixes, decide the reader's
+- **Still open:** O1 — bundled fonts (D3 and D8 are closed, see the O3 entry above); O2 / O4 — switch
+  `controller/service.py` to `presets.list_all` (O3's D3 step 2); O2 — review of the deadline fixes, decide the reader's
   `text_scale` handling and whether `apply` also returns exit 4, `docs/manual-checklist.md`; O3 — M3.4 browser engines,
   M3.5 VM scenarios, M3.6 graphical sections, M3.8 byte-identical VM test; O4 — VM checks (Hyprland Lua / reload,
   `hyprctl binds -j`, qt6ct format, Chrome Preferences, Flatpak); repo owner — make `integration` a required check.
