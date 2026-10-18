@@ -673,9 +673,9 @@ Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9).
 >   written only when the user has values, never seeded with defaults; `original` is never stored; user ids are `uuid4`.
 >   Reserved ids: `default`, `reading`, `high-separation`, `custom`, `original`. *(Taken from O1's handoff — O1 to confirm.)*
 > - **D6** the database file is `data_dir()/scribesense.db` (`store.default_path()`); no K8 change.
-> - **D8** `FontRegistryRepo.create()` raises `FONT_IDENTITY_CONFLICT` only when the **font-building** fields differ
->   (`base_family`, `letter_em`, `word_scale`, `reading_line`, `ui_line`) or the files/hashes differ — **never because of `text_scale`**
->   (M1.5: `text_scale` is not part of the key).
+> - **D8** `FontRegistryRepo.create()` raises `FONT_IDENTITY_CONFLICT` only when the font key's numeric inputs (`letter_em`, `word_scale`, `reading_line`,
+>   `ui_line`) or the generated families / styles / files / hashes differ — **never because of `text_scale` or the `base_family` label** (M1.5: both are outside the key;
+>   corrected 2026-10-18 after O1's reply, which found that `base_family` would have caused false conflicts when a shortlist entry is renamed).
 > - **D9** presets and configurations are stored as versioned JSON `{"v":1,…}` with fixed-decimal strings, validated by `validate()`;
 >   only cheap CHECKs in SQL (`kind`, word mode). No decimal columns (SQLite has none). Resolved configs are not persisted next to presets.
 > - **D4** retention rule (applies when M3.2 is built): delete a terminal tx only if older than the cutoff **and** outside the newest
@@ -687,8 +687,14 @@ Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9).
 > Requirements carried into M3.1: `Store.transaction()` must let several journal writes share one transaction so `keep()` is atomic (draft F4);
 > `active_config` is one permanent row whose `style_revision` survives "Original" (F3); retention never deletes the newest `COMPLETED` apply (F2);
 > the D7 pattern test must accept K3 rule 10b locations (`<Preferences path>#<key>`).
-> **Open:** O1 has not confirmed D3 (`custom` as one stored row). The K1 amendment `NOT_A_NUMBER` (added by O4, "sign-off by one other owner
-> pending") is a contract change that O3 may sign as that other owner — O3's decision, not part of K9.
+> **O1's reply to D3 / D8 (received 2026-10-18, via O3): O1 states both as "confirmed" — D3 "with one addition", D8 "but drop base_family".**
+> - **D8: adopted and built (2026-10-18).** `base_family` is out of the registry identity as well (O1's `UNKEYED_FIELDS = ("text_scale", "base_family")`). A changed label with the
+>   same bytes is not a conflict; it is only noted in the log.
+> - **D3: O1 says "confirmed", but the substance differs from the signed-off D3.** The reply describes `custom` as unsaved (`ValueError` on save, only `user` persisted); O1's code
+>   stores it (`STORABLE_KINDS = {"user","custom"}`, "K9 D3, confirmed 2026-10-16") and expects `PresetRepo.list()` NOT to return it, while M3.1 returns it. To close D3, O1 needs
+>   one clear line: is `custom` stored as one row (id `custom`), and does `list()` include it?
+> - Also from O1: uninstall removes fonts only through `fontgen.cache`; `ReferenceSource` is not an O1 task (O4 has built it); real bundled fonts will change every content key once.
+> - The K1 amendment `NOT_A_NUMBER` (added by O4, "sign-off by one other owner pending") is a contract change that O3 may sign as that other owner — not part of K9.
 
 ```python
 # ---- Records ----

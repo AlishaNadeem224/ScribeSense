@@ -1,11 +1,12 @@
 # K9 store — working draft (O3)
 
-**Status: SIGNED OFF by O3 on 2026-10-15** (record in `ARCHITECTURE.md`, K9 section). O4 accepted the journal decisions D1, D2, D4, D5, D7 the same day. D3 is for O1 to confirm. Nothing here is built yet; M3.1 builds it.
-`contracts/store.py` is frozen text and is **not** edited by this draft (AGENTS.md §4). `store/` is **not** built (K9 is a draft
-until O3 signs off). When you sign off, the accepted decisions go into `ARCHITECTURE.md` (K9 section) and `PLAN_v2.md`; any item
-marked **needs O4 / O1** needs that owner before it can be accepted.
+**Status (updated 2026-10-18): SIGNED OFF by O3 on 2026-10-15 and BUILT.** The journal decisions D1, D2, D4, D5, D7 were accepted by O4 on 2026-10-15;
+M3.1 (store), M3.2 (retention) and the SQLite journal on top of them (O4, M4.10) exist and were reviewed by O4 on 2026-10-16. The decisions live in `ARCHITECTURE.md`
+(K9 section); this file keeps the reasoning. D8 was corrected on 2026-10-18 after O1's reply (§9). D3: O1 states it as confirmed, but what they describe differs
+from the signed-off D3 — see §9 (one question to O1 is still open). `contracts/store.py` is frozen text; its "DRAFT" docstring is O3's to update by hand
+(AGENTS.md §4: agents never edit `contracts/`).
 
-Date: 2026-10-14 · Sources: ARCHITECTURE.md K4, K9, M3.1, M3.2, R2-1…R2-6; contracts `store.py`, `journal.py`, `adapter.py`, `presets.py`.
+Written 2026-10-14 · Sources: ARCHITECTURE.md K4, K9, M3.1, M3.2, R2-1…R2-6; contracts `store.py`, `journal.py`, `adapter.py`, `presets.py`.
 
 ---
 
@@ -20,20 +21,154 @@ Date: 2026-10-14 · Sources: ARCHITECTURE.md K4, K9, M3.1, M3.2, R2-1…R2-6; co
 | D5 | Who writes SQL for the journal tables? Import rule R3: **only `store/` imports `sqlite3`**, so `safety/` (O4's M4.10 journal) cannot. | `store/` provides the SQL layer for the journal tables (a private `store/journal_tables.py`, written by O3 to O4's K4 spec). O4's `safety/journal.py` calls it. Alternative: relax R3 for one file — rejected, it weakens the one rule that keeps SQLite in one place. | **O4** (this changes who writes what in M4.10) |
 | D6 | The DB file name is not defined (K8 has `data_dir()` but no DB path). | `store.default_path() = data_dir() / "scribesense.db"`; `Store(path)` stays as in K9. No K8 change. | O3 only |
 | D7 | `location` / `target_id` strings go into the store. AGENTS.md §6 forbids user file paths. | Policy: only **tool-config locations ScribeSense itself manages** (fontconfig rule file, gsettings `schema key`, browser pref file) — never user documents. Add a test that every stored `location` matches an adapter-declared location pattern. | O4 + team |
-| D8 | **(new, from O1's handoff — §8)** The K9 rule "same key, different config → `FONT_IDENTITY_CONFLICT`" would raise a false conflict, because the font key deliberately ignores `text_scale`. | Compare only the font-building fields (`base_family`, `letter_em`, `word_scale`, `reading_line`, `ui_line`) plus files and hashes. | O3 only (confirm with O1 that these are the key's inputs) |
+| D8 | **(from O1's handoff — §8; corrected 2026-10-18 by O1's reply — §9)** The K9 rule "same key, different config → `FONT_IDENTITY_CONFLICT`" would raise a false conflict, because the font key deliberately ignores `text_scale` — and `base_family`, which the key covers through the source hash. | Compare only the key's numeric inputs (`letter_em`, `word_scale`, `reading_line`, `ui_line`) plus the generated families, styles, files and hashes. `base_family` stays in the row for display; a different label with the same bytes is not a conflict (only noted in the log). **Built.** | O3 (O1 confirmed, 2026-10-18) |
 | D9 | **(new, from O1's handoff — §8)** O1 proposes typed decimal columns; K9 says versioned JSON; SQLite has no decimal type. | Keep K9's JSON `{"v":1,…}` with fixed-decimal strings; validate with `validate()`; add only cheap CHECKs (`kind`, `word_mode`). Alternative: integers in hundredths. | O3 + O1 |
 
 ---
 
-## 2. Proposed schema (migration `001_initial.sql`) — draft
+## 2. Schema as built (`store/migrations/001_initial.sql`)
 
-Checked 2026-10-14 in a throwaway in-memory SQLite: the script parses; the CHECK / FK constraints reject a hash without payload, two payloads, `retained` without an applied hash, a second `active_config` row, `config` without `font_key`, deleting a referenced backup, and a stored built-in preset. It is **not** a migration file yet and has no repository code behind it.
+This block is the migration file verbatim (2026-10-18). It differs from the first proposal in three places: `presets.kind` allows `'custom'` with the reserved id
+(D3), `transactions.reverts_tx` is `ON DELETE SET NULL`, and the `coverage` key includes the adapter (O4's review note 3). The runner sets
+`PRAGMA user_version` itself, in the same transaction as the migration. All timestamps are UTC ISO-8601 with offset; all JSON is `{"v":1,…}`. Per connection
+(not in the SQL file): WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5000`.
 
-`PRAGMA user_version = 1` is set in the same transaction. All timestamps UTC ISO-8601 with offset. All JSON is `{"v":1,…}`.
-Per connection (not in the SQL file): WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5000`.
+Checked in a throwaway in-memory SQLite and by the store tests: the script parses and its CHECK / foreign-key constraints reject a hash without payload, two
+payloads, `retained` without an applied hash, a second `active_config` row, `config` without `font_key`, deleting a referenced backup, a stored built-in preset, and
+a `custom` kind with any other id.
 
 ```sql
+-- 001_initial — K9 schema, version 1 (O3, M3.1). Applied by store.core.apply_migrations inside ONE transaction;
+-- the runner sets PRAGMA user_version itself. Migrations are never edited after release: add 002_*, 003_* ...
+-- Journal tables are reached only through store/journal_tables.py (D5); journal-table changes stay backward compatible.
+
 -- ---- preferences (deletable by delete_preferences) ----
+CREATE TABLE presets (
+  id         TEXT PRIMARY KEY,                      -- str(uuid4()); built-ins are NOT stored (D3)
+  name       TEXT NOT NULL,
+  kind       TEXT NOT NULL CHECK (kind IN ('user','custom')),   -- D3: 'custom' = the one working-set row
+  data       TEXT NOT NULL,                         -- Preset values, JSON v1
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK ((kind = 'custom') = (id = 'custom'))        -- the custom row has the reserved id; nothing else may
+);
+CREATE TABLE settings (
+  name  TEXT PRIMARY KEY,                           -- must be a key of SETTINGS (checked in code)
+  value TEXT NOT NULL                               -- JSON scalar; exact type re-checked on read
+);
+CREATE TABLE recommendation_samples (
+  id         INTEGER PRIMARY KEY,
+  config     TEXT NOT NULL,                         -- Configuration JSON only — no text, no app names
+  created_at TEXT NOT NULL
+);
+
+-- ---- font registry (content owner: M1.8) ----
+CREATE TABLE font_registry (
+  key            TEXT PRIMARY KEY,
+  config         TEXT NOT NULL,                     -- Configuration JSON v1 (D8: create() compares only the font-building fields, never text_scale)
+  reading_family TEXT NOT NULL,
+  ui_family      TEXT NOT NULL,
+  styles         TEXT NOT NULL,                     -- JSON array
+  files          TEXT NOT NULL,                     -- JSON array (paths under fonts_dir())
+  file_sha256    TEXT NOT NULL,                     -- JSON array, same order as files
+  status         TEXT NOT NULL CHECK (status IN ('building','validated','failed','removed')),
+  reason_code    TEXT,
+  created_at     TEXT NOT NULL,
+  last_used_at   TEXT NOT NULL
+);
+
+-- ---- journal tables (reached only through K4; recovery data, never deleted by delete_preferences) ----
+CREATE TABLE transactions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind        TEXT NOT NULL CHECK (kind IN ('apply','revert','uninstall')),
+  state       TEXT NOT NULL CHECK (state IN ('CREATED','SNAPSHOTTED','APPLYING','VERIFYING',
+                'AWAITING_CONFIRMATION','REVERTING','COMPLETED','REVERTED','FAILED_CLEAN','REVERT_FAILED')),
+  preset_id   TEXT,                                 -- informational; NO foreign key (a preset may be deleted)
+  reverts_tx  INTEGER REFERENCES transactions(id) ON DELETE SET NULL,  -- K4 `reverts: TxId`
+  reverts_all INTEGER NOT NULL DEFAULT 0 CHECK (reverts_all IN (0,1)),   -- K4 `reverts == "all"`
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  CHECK (NOT (reverts_tx IS NOT NULL AND reverts_all = 1))
+);
+CREATE INDEX transactions_state ON transactions(state);
+
+CREATE TABLE backups (
+  id     INTEGER PRIMARY KEY,
+  sha256 TEXT NOT NULL,                             -- verified on read (BACKUP_CORRUPT)
+  bytes  BLOB NOT NULL
+);
+
+CREATE TABLE journal_items (
+  id                  INTEGER PRIMARY KEY,
+  tx_id               INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  -- SnapshotItem
+  location            TEXT NOT NULL,
+  target_adapter      TEXT NOT NULL,
+  target_id           TEXT NOT NULL,
+  target_display_name TEXT NOT NULL,                -- D2: `running` is not stored
+  kind                TEXT NOT NULL CHECK (kind IN ('file','key')),
+  existed             INTEGER NOT NULL CHECK (existed IN (0,1)),
+  old_value           TEXT,                         -- keys: GVariant text; files: NULL
+  old_sha256          TEXT NOT NULL,
+  file_mode           INTEGER,
+  value_type          TEXT,
+  backup_id           INTEGER REFERENCES backups(id) ON DELETE RESTRICT,
+  -- PlannedWrite (D1) — NULL intent_sha256 means "no write was ever planned"
+  intent_sha256       TEXT,
+  intent_text         TEXT,
+  intent_blob         BLOB,
+  -- AppliedItem
+  applied_sha256      TEXT,                         -- NULL = write not confirmed
+  retained            INTEGER NOT NULL DEFAULT 0 CHECK (retained IN (0,1)),
+  revert_outcome      TEXT CHECK (revert_outcome IN ('reverted','skipped_drift','failed')),
+  CHECK ((intent_sha256 IS NULL AND intent_text IS NULL AND intent_blob IS NULL)
+      OR (intent_sha256 IS NOT NULL AND ((intent_text IS NULL) <> (intent_blob IS NULL)))),
+  CHECK (retained = 0 OR applied_sha256 IS NOT NULL)
+);
+CREATE INDEX journal_items_tx ON journal_items(tx_id);
+
+CREATE TABLE location_records (                     -- PERMANENT; one per location (R2-1)
+  location            TEXT PRIMARY KEY,
+  target_adapter      TEXT NOT NULL,
+  target_id           TEXT NOT NULL,
+  target_display_name TEXT NOT NULL,
+  -- own copy of the baseline SnapshotItem, so pruning journal_items never loses an original
+  kind                TEXT NOT NULL CHECK (kind IN ('file','key')),
+  existed             INTEGER NOT NULL CHECK (existed IN (0,1)),
+  old_value           TEXT,
+  old_sha256          TEXT NOT NULL,
+  file_mode           INTEGER,
+  value_type          TEXT,
+  baseline_backup_id  INTEGER REFERENCES backups(id) ON DELETE RESTRICT,
+  managed_sha256      TEXT,                         -- NULL = not managed
+  managed_font_key    TEXT,                         -- no FK: registry rows may be 'removed'
+  unresolved          TEXT                          -- ErrorCode value or NULL
+);
+
+CREATE TABLE active_config (                        -- exactly one row
+  id              INTEGER PRIMARY KEY CHECK (id = 1),
+  config          TEXT,                             -- NULL = Original (K4 active() is None)
+  font_key        TEXT,
+  source_preset_id TEXT,                            -- informational; no FK
+  style_revision  INTEGER NOT NULL DEFAULT 0,       -- must survive set_original(): kept even when config IS NULL
+  CHECK ((config IS NULL) = (font_key IS NULL))
+);
+INSERT INTO active_config (id) VALUES (1);
+
+CREATE TABLE coverage (
+  tx_id               INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  target_adapter      TEXT NOT NULL,
+  target_id           TEXT NOT NULL,
+  target_display_name TEXT NOT NULL,
+  status              TEXT NOT NULL,                -- CoverageStatus value
+  detail_code         TEXT NOT NULL,                -- ErrorCode value or str (K6)
+  PRIMARY KEY (tx_id, target_adapter, target_id)   -- two adapters may reuse a target id
+);
+```
+
+Not in the schema on purpose: no reader text, no window titles, no document paths, no `running` flag, no built-in presets.
+
+---- preferences (deletable by delete_preferences) ----
 CREATE TABLE presets (
   id         TEXT PRIMARY KEY,                      -- str(uuid4()); built-ins are NOT stored (D3)
   name       TEXT NOT NULL,
@@ -220,10 +355,18 @@ Not in the schema on purpose: no reader text, no window titles, no document path
 
 ---
 
-## 6. Acceptance tests → where they would live (once signed off)
+## 6. Acceptance tests → where they live
 
-| K9 test | Proposed file | Level |
+| K9 test | File | Level |
 |---|---|---|
+| 1 round-trip, 2 built-in read-only, 3 settings validation, 4 identity conflict (incl. D8), 5 interrupted build, 6 `FONT_IN_USE`, 12 opt-out + canary sweep | `tests/unit/test_store_repos.py` | unit (temp file DB, real sqlite3) |
+| 8 migrations (empty, each previous version, failure leaves `user_version`), 9 recovery mode, pragmas, transactions, error mapping, 11 `delete_recovery_data` refusal | `tests/unit/test_store_core.py` | unit |
+| journal tables, parity with O4's in-memory journal, **F3, F4**, 10 prune (K9 rule, D4/**F2**) | `tests/unit/test_store_journal_tables.py`, `tests/unit/test_retention.py` | unit |
+| 7 several processes writing at once | `tests/integration/test_store_concurrency.py` | bubblewrap |
+
+Unit tests use `sqlite3` on a real temp file (no process is started, so the sandbox guard allows it); the import-rule test restricts `sqlite3` to `store/`.
+
+---|---|---|
 | 1 round-trip, 2 built-in read-only, 3 settings validation, 4 identity conflict, 5 interrupted build, 6 `FONT_IN_USE` | `tests/unit/test_store_repos.py` | unit (temp file DB, real sqlite3) |
 | 8 migrations (empty, each previous version, failure leaves `user_version`), 9 recovery mode | `tests/unit/test_store_migrations.py` | unit |
 | 10 prune, 11 `delete_recovery_data` refusal, **F2, F3, F4** | `tests/unit/test_store_journal_tables.py`, `test_retention.py` | unit |
@@ -235,9 +378,9 @@ already restricts `sqlite3` to `store/`.
 
 ---
 
-## 7. Sign-off checklist (K9, from ARCHITECTURE.md) — all open
+## 7. Sign-off checklist (K9, from ARCHITECTURE.md) — all ticked 2026-10-15
 
-- [x] Column types (§2) — non-journal tables, 2026-10-15
+- [x] Column types (§2) — 2026-10-15
 - [x] Matches the planned implementation — D3, D4, D6, D7, D8, D9 decided
 - [x] The 12 acceptance tests accepted (plus F2, F3, F4)
 - [x] Journal tables return everything in `JournalItem` / `LocationRecord` (§3) — O4 accepted D1, D2, D5, 2026-10-15
@@ -278,3 +421,21 @@ three built-in intents and their resolved values match the K2 table in `contract
   or added a code, that is a contract change (AGENTS.md §4) and needs a decision entry.
 * **Provisional input:** `target_em` presets resolve through a provisional 0.25 em space width (Default flips between 1.5 and 1.75 near 0.256 em).
   Nothing stored in the store may depend on that being final; another reason not to persist resolved configs beside presets.
+
+---
+
+## 9. O1's reply to D3 and D8 (2026-10-18; O1 states both as confirmed; checked by O3 against `origin/O1`)
+
+* **D8 — O1: "confirmed, but drop base_family". ADOPTED and built (2026-10-18).** O1's `UNKEYED_FIELDS = ("text_scale", "base_family")`: `base_family` is covered by the
+  source hash, so renaming a shortlist entry with identical bytes would have raised a false `FONT_IDENTITY_CONFLICT`. The registry now compares `letter_em`, `word_scale`,
+  `reading_line`, `ui_line` plus families, styles, files and hashes; `base_family` stays in the row for display and a changed label is noted in the log (code-only).
+  O1 also suggests comparing `generator_version` and `source_sha`; both are inside the key, and K9's `FontRegistryEntry` has neither field, so equal keys already imply them.
+  A preset still counts as referencing a font only when its `base_family` matches too (a different family selects different bytes).
+* **D3 — O1: "confirmed, with one addition", but what they describe differs from the signed-off D3.** The reply says `custom` is unsaved state (`ValueError` on save)
+  and only `user` is persisted, but O1's own code stores `custom` (`STORABLE_KINDS = {"user","custom"}`, comment "K9 D3, confirmed 2026-10-16") and the reply ends with a
+  `"kind":"custom"` record to write. O1's code also says the store does not return `custom` from `PresetRepo.list()`; M3.1 does. To close it, O1 needs to say in one line:
+  *is `custom` stored as one row, and does `list()` include it?*
+* The reply also suggests persisting "the user's working configuration" as its own row. K9 already has `active_config` (the confirmed, applied configuration); the
+  unapplied `custom` working set is a different thing — to be settled together with D3.
+* Other points from the reply: uninstall removes fonts only through `fontgen.cache` (`reconcile()`, then `installed_keys()` + `remove(key)`); `ReferenceSource` is not an O1 task
+  (O4 has since built it); bundled fonts will change every content key once (re-resolve rows, do not migrate keys).

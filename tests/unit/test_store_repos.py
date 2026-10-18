@@ -16,6 +16,7 @@ from scribesense.contracts.coverage import CoverageEntry, CoverageStatus
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 from scribesense.contracts.presets import Preset, PresetValues, WordSpacing
 from scribesense.contracts.store import SETTINGS, FontRegistryEntry
+from scribesense.log import log_path
 from scribesense.store import JournalTables, Store
 from scribesense.store import serialize as ser
 
@@ -228,6 +229,23 @@ def test_identity_ignores_text_scale_because_the_key_does(store: Store) -> None:
     store.fonts.create(entry(cfg=config(text_scale=1.5)))  # the same font set: no conflict, nothing changes
     assert store.fonts.get("abc123").config.text_scale == 1.0  # type: ignore[union-attr]
     assert store.fonts.keys() == ["abc123"]
+
+
+def test_identity_ignores_the_base_family_label_because_the_key_does(store: Store) -> None:  # D8 as corrected by O1
+    store.fonts.create(entry(cfg=config(base_family="Noto Sans")))
+    store.fonts.create(entry(cfg=config(base_family="Noto Sans Renamed")))  # same bytes, a renamed shortlist label
+    assert store.fonts.get("abc123").config.base_family == "Noto Sans"  # type: ignore[union-attr]  # label kept for display
+    assert store.fonts.keys() == ["abc123"]
+    assert '"family_label_changed"' in log_path().read_text()  # noted in the log, as a code-only event
+    with pytest.raises(ScribeSenseError) as err:  # but a real difference is still a conflict
+        store.fonts.create(entry(cfg=config(base_family="Renamed", letter_em=0.14)))
+    assert err.value.code is ErrorCode.FONT_IDENTITY_CONFLICT
+
+
+def test_a_preset_with_another_family_does_not_reference_the_font(store: Store) -> None:
+    default_cfg = resolve(BUILTINS[0].values)  # Noto Sans
+    _font_for(store, "other", cfg=replace(default_cfg, base_family="Lexend"))  # same numbers, different family bytes
+    store.fonts.mark_removed("other")  # no preset resolves to a Lexend font: free to remove
 
 
 def test_create_validates_its_input(store: Store) -> None:

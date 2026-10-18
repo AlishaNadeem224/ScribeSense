@@ -22,6 +22,7 @@ from scribesense.contracts.store import (
     SETTINGS,
     FontRegistryEntry,
 )
+from scribesense.log import log
 from scribesense.store import serialize as ser
 
 if TYPE_CHECKING:
@@ -142,8 +143,8 @@ class FontRegistryRepo:
 
     @staticmethod
     def _identity(e: FontRegistryEntry) -> tuple[object, ...]:
-        """What makes two entries the SAME font set (D8): the font-building fields — never text_scale —
-        plus the families, styles, files and hashes."""
+        """What makes two entries the SAME font set (D8): the font key's numeric inputs — never `text_scale`, never the
+        `base_family` label — plus the generated families, styles, files and hashes."""
         return (ser.font_identity(e.config), e.reading_family, e.ui_family, e.styles, e.files, e.file_sha256)
 
     def create(self, e: FontRegistryEntry) -> None:
@@ -163,6 +164,9 @@ class FontRegistryRepo:
             if existing is not None:
                 if self._identity(existing) != self._identity(e):
                     raise ScribeSenseError(ErrorCode.FONT_IDENTITY_CONFLICT)
+                if existing.config.base_family != e.config.base_family:
+                    # Same bytes, renamed label: not a conflict. The stored label stays; the event is only noted.
+                    log("OK", "store", step="font_identity", reason="family_label_changed")
                 return  # the same font set again: nothing to change
             self._s.execute(
                 "INSERT INTO font_registry (key, config, reading_family, ui_family, styles, files, file_sha256, "
@@ -213,10 +217,10 @@ class FontRegistryRepo:
     def _referenced_by_a_preset(self, config: Configuration) -> bool:
         from scribesense.config.presets import resolve  # O1: preset intent -> concrete Configuration
 
-        wanted = ser.font_identity(config)
+        wanted = ser.preset_font_match(config)
         for preset in self._s.presets.list():  # built-ins and saved presets, incl. the custom row
             try:
-                if ser.font_identity(resolve(preset.values)) == wanted:
+                if ser.preset_font_match(resolve(preset.values)) == wanted:
                     return True
             except Exception:  # noqa: BLE001 — cannot tell whether this preset needs the font: keep it
                 return True

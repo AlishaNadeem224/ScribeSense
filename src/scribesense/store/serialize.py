@@ -22,8 +22,11 @@ from scribesense.contracts.store import SERIALIZATION_VERSION
 
 #: Decimals of each canonical numeric field = decimals of its K1 step (K1 RANGES).
 DECIMALS: dict[str, int] = {"letter_em": 2, "word_scale": 2, "reading_line": 1, "ui_line": 1, "text_scale": 2}
-#: The fields that change the generated font files. `text_scale` is deliberately absent (M1.5, decision D8).
-FONT_FIELDS: tuple[str, ...] = ("base_family", "letter_em", "word_scale", "reading_line", "ui_line")
+#: The numeric fields that change the generated font files — the font key's inputs (M1.5). Deliberately absent:
+#: `text_scale` (a display multiplier) and `base_family` (a LABEL: the key hashes the bytes of the font files the family
+#: selects, so renaming a shortlist entry without changing a byte must not look like a different font). Decision D8, as
+#: corrected by O1 on 2026-10-18 (`naming.UNKEYED_FIELDS = ("text_scale", "base_family")`).
+FONT_FIELDS: tuple[str, ...] = ("letter_em", "word_scale", "reading_line", "ui_line")
 
 
 def _corrupt() -> ScribeSenseError:
@@ -84,8 +87,15 @@ def config_from_json(text: object) -> Configuration:
 
 
 def font_identity(c: Configuration) -> tuple[object, ...]:
-    """The font-building fields as compared by the font registry (D8): never `text_scale`."""
-    return (c.base_family, *(fixed(n, getattr(c, n)) for n in FONT_FIELDS[1:]))
+    """What the font registry compares for "the same font set" (D8): the font key's numeric inputs only — never
+    `text_scale`, never the `base_family` label."""
+    return tuple(fixed(n, getattr(c, n)) for n in FONT_FIELDS)
+
+
+def preset_font_match(c: Configuration) -> tuple[object, ...]:
+    """Does a preset resolve to THIS font? There `base_family` does matter: a different family selects different font
+    bytes. Used only to decide that a font is still referenced (over-matching would only keep a font longer)."""
+    return (c.base_family, *font_identity(c))
 
 
 # ---------------------------------------------------------------- Preset

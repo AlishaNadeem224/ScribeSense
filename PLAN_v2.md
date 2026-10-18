@@ -909,3 +909,8 @@ configuration" — **not** "ScribeSense works in a user's browser". The product 
 scenarios (a real profile picks up `userContent.css` / `user.js` after a restart; Brave/Chrome rewriting `Preferences` while running; the extension and
 native-messaging path; what is drawn on Wayland) and by the M3.6 manual checklist (restart notice, what the user sees). Those stay open until a graphical
 test VM exists.
+
+**K9 status (2026-10-18, O3):** signed off and built; `docs/K9_draft.md` brought up to date (schema = the migration file, tests listed with their real files, §9 = O1's reply).
+**O1 states D3 and D8 as confirmed.** D8 was corrected by O1 (`base_family` is not part of the registry identity either) and is **adopted and built** with tests. D3: O1 says confirmed, but
+describes `custom` as unsaved while their code stores it and expects `PresetRepo.list()` not to return it (M3.1 does) — O1 to say in one line whether `custom` is one stored row and whether
+`list()` includes it. Still O3's by hand: the "DRAFT" docstring in `contracts/store.py` (agents may not edit `contracts/`).
