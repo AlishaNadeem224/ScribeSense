@@ -13,7 +13,8 @@ Privacy by construction — content cannot get in:
   category  short lowercase identifier ("adapter", "journal", "ipc", ...).
   fields    names: lowercase identifiers. values: int, float, bool, None or an ErrorCode — in any field.
             STRING values only in the closed list IDENTIFIER_FIELDS (adapter, target, role, ...) and only
-            if they look like an identifier ([A-Za-z0-9_.:+-], at most 64 chars: no spaces, no '/').
+            if they look like an identifier ([A-Za-z0-9_.:+-], at most 64 chars: no spaces, no '/',
+            no newline — patterns are applied with fullmatch, so "adapter\n" is refused).
             A string in any other field is DROPPED, however harmless it looks — shape alone cannot tell
             a short word from a document apart from an identifier.
             Callers must put only identifiers in identifier fields (reviewers check this).
@@ -38,9 +39,10 @@ from scribesense.contracts.errors import ErrorCode
 LOG_NAME = "scribesense.log"
 MAX_LOG_BYTES = 1024 * 1024
 
-_CATEGORY = re.compile(r"^[a-z][a-z0-9_.-]{0,31}$")
-_FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
-_SAFE_STR = re.compile(r"^[A-Za-z0-9_.:+-]{0,64}$")
+# Always used with fullmatch(): `re.match` + `$` would let a trailing newline through ("adapter\n").
+_CATEGORY = re.compile(r"[a-z][a-z0-9_.-]{0,31}")
+_FIELD_NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")
+_SAFE_STR = re.compile(r"[A-Za-z0-9_.:+-]{0,64}")
 _RESERVED = frozenset({"ts", "code", "category", "dropped"})
 #: The only fields that may carry strings — and only identifier-shaped ones.
 IDENTIFIER_FIELDS = frozenset({"adapter", "target", "role", "state", "step", "setting", "preset", "kind", "reason"})
@@ -59,7 +61,7 @@ def _safe_value(name: str, value: object) -> tuple[bool, object]:
         return (value == value and value not in (float("inf"), float("-inf"))), value  # no NaN/inf
     if isinstance(value, ErrorCode):
         return True, value.value
-    if isinstance(value, str) and name in IDENTIFIER_FIELDS and _SAFE_STR.match(value):
+    if isinstance(value, str) and name in IDENTIFIER_FIELDS and _SAFE_STR.fullmatch(value):
         return True, value
     return False, None
 
@@ -67,7 +69,7 @@ def _safe_value(name: str, value: object) -> tuple[bool, object]:
 def build_record(code: ErrorCode | str, category: str, fields: dict[str, object]) -> dict[str, object] | None:
     """The exact record that would be written, or None if the event is refused. Pure; for tests too."""
     code_value = code.value if isinstance(code, ErrorCode) else code
-    if code_value not in _VALID_CODES or not isinstance(category, str) or not _CATEGORY.match(category):
+    if code_value not in _VALID_CODES or not isinstance(category, str) or not _CATEGORY.fullmatch(category):
         return None
     record: dict[str, object] = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
@@ -77,7 +79,7 @@ def build_record(code: ErrorCode | str, category: str, fields: dict[str, object]
     dropped = 0
     for name, value in fields.items():
         ok, safe = _safe_value(name, value)
-        if not ok or not _FIELD_NAME.match(name) or name in _RESERVED:
+        if not ok or not _FIELD_NAME.fullmatch(name) or name in _RESERVED:
             dropped += 1
             continue
         record[name] = safe

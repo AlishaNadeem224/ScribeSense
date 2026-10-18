@@ -458,6 +458,63 @@ def test_remove_with_nothing_installed_is_a_no_op(sandbox) -> None:  # type: ign
     assert runner.calls == []
 
 
+# O3 review note (1), 2026-10-18: the empty config_home()/scribesense/ is removed, nothing else.
+
+@pytest.mark.parametrize("name, original", [("hyprland.lua", PLAIN_LUA), ("hyprland.conf", CLASSIC)],
+                         ids=["lua", "classic"])
+def test_remove_deletes_our_dir_when_empty(sandbox, hypr: Path, name: str, original: bytes) -> None:  # type: ignore[no-untyped-def]
+    (hypr / name).write_bytes(original)
+    before = fingerprint(sandbox.home)
+    install_keybinds(default_keybinds(), CMD, backend=HyprlandBackend(FakeRunner()))
+    own_dir = sandbox.config_home / "scribesense"
+    assert own_dir.is_dir()
+    assert remove_keybinds(backend=HyprlandBackend(FakeRunner())) is True
+    assert not own_dir.exists()
+    assert fingerprint(sandbox.home) == before  # exactly the state before install: nothing else removed
+
+
+def test_remove_keeps_our_dir_when_it_holds_anything_else(sandbox, hypr: Path) -> None:  # type: ignore[no-untyped-def]
+    (hypr / "hyprland.conf").write_bytes(CLASSIC)
+    install_keybinds(default_keybinds(), CMD, backend=HyprlandBackend(FakeRunner()))
+    own_dir = sandbox.config_home / "scribesense"
+    (own_dir / "notes.txt").write_bytes(b"mine")
+    (own_dir / "sub").mkdir()  # an empty subdirectory is still "something else"
+    remove_keybinds(backend=HyprlandBackend(FakeRunner()))
+    assert not own_conf(sandbox).exists()
+    assert (own_dir / "notes.txt").read_bytes() == b"mine" and (own_dir / "sub").is_dir()
+    assert sorted(p.name for p in own_dir.iterdir()) == ["notes.txt", "sub"]
+
+
+def test_remove_keeps_our_dir_when_drift_keeps_our_file(sandbox, hypr: Path) -> None:  # type: ignore[no-untyped-def]
+    (hypr / "hyprland.conf").write_bytes(CLASSIC)
+    install_keybinds(default_keybinds(), CMD, backend=HyprlandBackend(FakeRunner()))
+    data = (hypr / "hyprland.conf").read_bytes()
+    (hypr / "hyprland.conf").write_bytes(data.replace(b"source = ", b"source=  "))  # hand-edited block
+    with pytest.raises(ScribeSenseError) as e:
+        remove_keybinds(backend=HyprlandBackend(FakeRunner()))
+    assert e.value.code == ErrorCode.DRIFT_SKIPPED
+    assert own_conf(sandbox).is_file()  # the edited block may still include it: file and dir stay
+
+
+def test_remove_never_removes_a_symlinked_dir_or_its_target(sandbox, hypr: Path) -> None:  # type: ignore[no-untyped-def]
+    target = sandbox.home / "dotfiles" / "scribesense"
+    target.mkdir(parents=True)
+    (sandbox.config_home / "scribesense").symlink_to(target)
+    (hypr / "hyprland.conf").write_bytes(CLASSIC)
+    install_keybinds(default_keybinds(), CMD, backend=HyprlandBackend(FakeRunner()))
+    remove_keybinds(backend=HyprlandBackend(FakeRunner()))
+    assert (sandbox.config_home / "scribesense").is_symlink() and target.is_dir()
+    assert list(target.iterdir()) == []
+
+
+def test_remove_with_nothing_installed_drops_a_leftover_empty_dir(sandbox) -> None:  # type: ignore[no-untyped-def]
+    own_dir = sandbox.config_home / "scribesense"
+    own_dir.mkdir(parents=True)
+    runner = FakeRunner()
+    assert remove_keybinds(backend=HyprlandBackend(runner)) is False  # not a change Hyprland sees
+    assert runner.calls == [] and not own_dir.exists() and sandbox.config_home.is_dir()
+
+
 # ---------------------------------------------------------------- conflicts
 
 REALISTIC = [

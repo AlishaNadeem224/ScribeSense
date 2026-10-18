@@ -43,7 +43,6 @@ from scribesense.ui.preset_editor import PresetEditorPage  # noqa: E402
 from scribesense.ui.settings_page import (  # noqa: E402
     RESET_COMMAND,
     SettingsPage,
-    delete_all_data,
     error_text,
     install_stored_keybinds,
 )
@@ -248,7 +247,8 @@ class ScribeSenseWindow(Adw.ApplicationWindow):
         def delete_all() -> bool:
             if service is None:
                 raise ScribeSenseError(ErrorCode.SERVICE_UNREACHABLE)
-            return delete_all_data(service.store, service.journal)
+            return service.delete_all_data()  # mutex + apply lock (K9 order, O3's M2.7 note 3); never waits
+            # on the mutex (we are on the GTK main thread): a running apply/revert/reset -> APPLY_IN_PROGRESS at once
 
         def has_obligations() -> bool:
             if service is None:

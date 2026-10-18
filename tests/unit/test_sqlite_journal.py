@@ -12,6 +12,8 @@ import signal
 import subprocess
 import sys
 import textwrap
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -198,3 +200,155 @@ def test_style_changed_hook_runs_after_keep_and_original_and_never_breaks_them(k
     from scribesense.log import log_path
 
     assert '"step": "style_changed"' in log_path().read_text() or "style_changed" in log_path().read_text()
+
+
+# ---- O3 review notes (2026-10-18) ---------------------------------------------------------------------------
+
+def test_two_threads_in_begin_get_exactly_one_tx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Note 1: one journal shared by two threads. The second thread calls begin() while the first holds the apply
+    lock but has not recorded its tx yet (a slow create_tx) — it must not get a tx of its own."""
+    real = JournalTables.create_tx
+    inside = threading.Event()
+
+    def slow_create_tx(self, *a, **k):  # type: ignore[no-untyped-def]
+        inside.set()
+        time.sleep(0.2)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(JournalTables, "create_tx", slow_create_tx)
+    j = journal()
+    got: list[object] = []
+
+    def run() -> None:
+        try:
+            got.append(j.begin("apply", None))
+        except ScribeSenseError as exc:
+            got.append(exc.code)
+
+    first = threading.Thread(target=run)
+    first.start()
+    assert inside.wait(10)  # the first thread holds the lock and is inside create_tx
+    second = threading.Thread(target=run)
+    second.start()
+    first.join(10)
+    second.join(10)
+    assert got.count(ErrorCode.APPLY_IN_PROGRESS) == 1, got
+    (tx,) = [g for g in got if isinstance(g, int)]
+    assert j.lock_held and j.unfinished() == [tx]
+
+
+def test_keep_failing_at_its_last_statement_keeps_the_tx_and_the_lock_and_a_retry_works(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    j = journal()
+    tx = to_awaiting(j)
+    real = Store.execute
+
+    def fail_last(self, sql, params=()):  # type: ignore[no-untyped-def]
+        if sql.startswith("UPDATE transactions SET state"):
+            raise ScribeSenseError(ErrorCode.STORE_IO_ERROR)
+        return real(self, sql, params)
+
+    monkeypatch.setattr(Store, "execute", fail_last)
+    with pytest.raises(ScribeSenseError) as exc:
+        j.keep(tx, ActiveConfig(CFG, "abc123abc123", "default", 0))
+    assert exc.value.code is ErrorCode.STORE_IO_ERROR
+    monkeypatch.setattr(Store, "execute", real)
+
+    assert j.state(tx) is TxState.AWAITING_CONFIRMATION and j.pending_confirmation() == tx
+    assert j.active() is None and j.location(FILE).managed_sha256 is None  # nothing partial committed
+    assert j.lock_held and not ApplyLock().try_acquire("reset")  # still held across processes
+    revision = j.keep(tx, ActiveConfig(CFG, "abc123abc123", "default", 0))
+    assert j.state(tx) is TxState.COMPLETED and j.style_revision() == revision
+    assert not j.lock_held and not ApplyLock().is_locked()
+
+
+def test_a_journal_on_a_recovery_mode_store_runs_begin_and_revert() -> None:
+    service = journal()
+    tx = to_awaiting(service)
+    (item,) = service.items(tx)
+    service._lock.release()  # the service died: the OS dropped its flock (the row stays AWAITING)
+    service._t._s.close()
+
+    lock = ApplyLock()
+    assert lock.try_acquire("recover")  # recover --login takes it through LockPolicy first
+    rec = SqliteJournal(Store(default_path(), mode="recovery"), lock, role="recover")
+    assert rec.unfinished() == [tx]
+    r = rec.begin("revert", None, tx)
+    rec.set_state(tx, TxState.REVERTING)
+    rec.record_revert(tx, item.item_id, "reverted")
+    rec.set_state(tx, TxState.REVERTED)
+    rec.set_state(r, TxState.REVERTING)
+    rec.set_state(r, TxState.REVERTED)
+    assert rec.unfinished() == [] and rec.items(tx)[0].revert_outcome == "reverted"
+    assert lock.held  # the caller's lock stays the caller's
+    lock.release()
+
+
+def test_prune_holds_the_apply_lock_while_it_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Note 2 (K9: pruning runs under the apply lock)."""
+    entered, go = threading.Event(), threading.Event()
+    real = JournalTables.prune_history
+
+    def slow_prune(self, before, keep_last):  # type: ignore[no-untyped-def]
+        entered.set()
+        assert go.wait(10)
+        return real(self, before, keep_last)
+
+    monkeypatch.setattr(JournalTables, "prune_history", slow_prune)
+    j = journal("recover")
+    result: list[int] = []
+    worker = threading.Thread(target=lambda: result.append(j.prune_history(datetime.now(timezone.utc), 0)))
+    worker.start()
+    try:
+        assert entered.wait(10)
+        other = ApplyLock()
+        assert not other.try_acquire("service")  # another process cannot start an Apply mid-prune
+        assert other.read_owner().role == "recover"  # taken with this journal's role
+    finally:
+        go.set()
+        worker.join(10)
+    assert result == [0]
+    assert not ApplyLock().is_locked()  # released when the prune ended
+
+
+def test_prune_uses_a_lock_the_caller_holds_and_leaves_it() -> None:
+    lock = ApplyLock()
+    assert lock.try_acquire("reset")
+    j = SqliteJournal(Store(default_path()), lock, role="reset")
+    assert j.prune_history(datetime.now(timezone.utc), 0) == 0
+    assert lock.held
+    lock.release()
+
+
+@pytest.mark.parametrize("kind", ["memory", "sqlite"])
+def test_apply_is_refused_while_recovery_obligations_remain_but_revert_is_allowed(kind: str) -> None:
+    """Note 3 / A3: recovery completes before any new Apply (decision O4 2026-10-18, both journals)."""
+    from scribesense.safety.memory_journal import InMemoryJournal
+
+    j = InMemoryJournal() if kind == "memory" else journal()
+    tx = to_awaiting(j)
+    j.set_state(tx, TxState.REVERTING)
+    j.set_state(tx, TxState.REVERT_FAILED)  # lock released, tx unfinished
+    with pytest.raises(ScribeSenseError) as exc:
+        j.begin("apply", "default")
+    assert exc.value.code is ErrorCode.RECOVERY_OBLIGATIONS_REMAIN
+    assert not j.lock_held and j.unfinished() == [tx]  # nothing recorded
+    if kind == "sqlite":
+        assert not ApplyLock().is_locked()  # the lock begin() took was released
+    r = j.begin("revert", None, tx)
+    assert j.lock_held and j.unfinished() == [tx, r]
+
+
+def test_refused_apply_leaves_a_lock_the_caller_holds() -> None:
+    first = journal()
+    tx = to_awaiting(first)
+    first._lock.release()  # crashed service
+    lock = ApplyLock()
+    assert lock.try_acquire("reset")
+    j = SqliteJournal(Store(default_path()), lock, role="reset")
+    with pytest.raises(ScribeSenseError) as exc:
+        j.begin("apply", None)
+    assert exc.value.code is ErrorCode.RECOVERY_OBLIGATIONS_REMAIN
+    assert lock.held and not j.lock_held and j.unfinished() == [tx]
+    lock.release()

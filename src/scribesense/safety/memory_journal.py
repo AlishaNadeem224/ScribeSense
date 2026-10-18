@@ -10,12 +10,17 @@ real flock when the process dies.
 
 Lock (K4 rule 1, simplified): an in-process flag, held from begin() until the holding transaction
 reaches a terminal state or REVERT_FAILED (the holding operation is over; the tx stays unfinished and is
-retried by recovery). The real cross-process flock + owner record is safety/lock.py (not built yet).
+retried by recovery). The real cross-process flock + owner record is safety/lock.py (used by SqliteJournal).
+
+Parity with SqliteJournal: `begin("apply")` is refused with RECOVERY_OBLIGATIONS_REMAIN while `unfinished()` is
+non-empty (A3: recovery completes before any new Apply; revert / uninstall stay allowed), and `begin()`,
+`set_state()`, `keep()` and `prune_history()` run under one `threading.RLock`.
 """
 
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -105,6 +110,7 @@ class InMemoryJournal:
         self._next_item = 1
         self._next_backup = 1
         self._lock_owner: TxId | None = None  # process-local (lost on crash)
+        self._mutex = threading.RLock()  # begin / set_state / keep / prune, as in SqliteJournal
 
     # ------------------------------------------------------------- test support
 
@@ -162,24 +168,28 @@ class InMemoryJournal:
         preset_id: str | None,
         reverts: TxId | Literal["all"] | None = None,
     ) -> TxId:
-        if self._lock_owner is not None:
-            raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
-        tx = TxId(self._next_tx)
-        self._next_tx += 1
-        now = self._clock()
-        self._txs[tx] = _Tx(tx, kind, TxState.CREATED, preset_id, reverts, now, now)
-        self._lock_owner = tx
-        return tx
+        with self._mutex:
+            if self._lock_owner is not None:
+                raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
+            if kind == "apply" and self.unfinished():  # A3: recovery completes before any new Apply
+                raise ScribeSenseError(ErrorCode.RECOVERY_OBLIGATIONS_REMAIN)
+            tx = TxId(self._next_tx)
+            self._next_tx += 1
+            now = self._clock()
+            self._txs[tx] = _Tx(tx, kind, TxState.CREATED, preset_id, reverts, now, now)
+            self._lock_owner = tx
+            return tx
 
     def set_state(self, tx: TxId, state: TxState) -> None:
-        record = self._tx(tx)
-        if state is TxState.COMPLETED:
-            raise IllegalTransition("COMPLETED is reached only through keep()")
-        if not can_transition(record.state, state):
-            raise IllegalTransition(f"{record.state} -> {state} is not allowed (K5)")
-        record.state = state
-        record.updated_at = self._clock()
-        self._release_if_owner(tx, state)
+        with self._mutex:
+            record = self._tx(tx)
+            if state is TxState.COMPLETED:
+                raise IllegalTransition("COMPLETED is reached only through keep()")
+            if not can_transition(record.state, state):
+                raise IllegalTransition(f"{record.state} -> {state} is not allowed (K5)")
+            record.state = state
+            record.updated_at = self._clock()
+            self._release_if_owner(tx, state)
 
     def record_snapshot(self, tx: TxId, item: SnapshotItem, file_backup: bytes | None) -> ItemId:
         self._tx(tx)
@@ -265,6 +275,12 @@ class InMemoryJournal:
 
     def keep(self, tx: TxId, active: ActiveConfig) -> int:
         """One atomic step (K4 rule 3): COMPLETED + managed for RETAINED items + active + revision."""
+        with self._mutex:
+            revision = self._keep(tx, active)
+        notify_style_changed(self._on_style_changed, revision)  # outside the mutex, as in SqliteJournal
+        return revision
+
+    def _keep(self, tx: TxId, active: ActiveConfig) -> int:
         record = self._tx(tx)
         if record.state is not TxState.AWAITING_CONFIRMATION:
             raise ScribeSenseError(ErrorCode.TX_NOT_PENDING)
@@ -282,7 +298,6 @@ class InMemoryJournal:
         record.state = TxState.COMPLETED
         record.updated_at = self._clock()
         self._release_if_owner(tx, TxState.COMPLETED)
-        notify_style_changed(self._on_style_changed, self._revision)
         return self._revision
 
     def clear_managed(self, location: str) -> None:
@@ -314,8 +329,12 @@ class InMemoryJournal:
         """
         if keep_last < 0:
             raise ValueError("keep_last must be >= 0")
-        if self._lock_owner is not None:
-            raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
+        with self._mutex:  # no begin() can interleave: the double's stand-in for holding the apply lock
+            if self._lock_owner is not None:
+                raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
+            return self._prune(before, keep_last)
+
+    def _prune(self, before: datetime, keep_last: int) -> int:
         ordered = sorted(self._txs.values(), key=lambda t: (t.created_at, t.id))
         finished = [t for t in ordered if t.state in TERMINAL]
         # "always keeping the last N" counts finished transactions only (K4 retention rule)

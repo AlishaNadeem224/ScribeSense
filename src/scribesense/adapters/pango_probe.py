@@ -67,6 +67,8 @@ def drawn_families(query: str, sample: str) -> list[str]:
     text — which font covers each (non-space) character of the fixed sample. Changed 2026-10-15: the old
     path through layout runs (`run.item.analysis.font`) segfaulted on Ubuntu 24.04 / Pango 1.52 inside
     PyGObject (O3 CI finding); the fontset path uses only plain method calls.
+    The fontset answers "which font would Pango pick for each character": a close proxy for the layout
+    run (shaping, fallback across runs), not the run itself (O3 review note, 2026-10-18).
     """
     Pango, PangoCairo = _load_pango()
     fontmap = PangoCairo.FontMap.get_default()

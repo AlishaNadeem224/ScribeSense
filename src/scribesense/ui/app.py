@@ -157,6 +157,11 @@ _REASONS: dict[str, str] = {
     ErrorCode.SCHEMA_UNSUPPORTED.value: "ScribeSense's data was written by a newer version.",
     ErrorCode.SERVICE_UNREACHABLE.value: "The ScribeSense background service is not running.",
     ErrorCode.TX_NOT_PENDING.value: "The change was no longer waiting for confirmation.",
+    # A3 (M4.10, 2026-10-18): a new Apply is refused until an earlier, unfinished change has been undone.
+    ErrorCode.RECOVERY_OBLIGATIONS_REMAIN.value: (
+        "An earlier change was not fully undone yet. Run “scribesense reset” (or press "
+        "Ctrl+Alt+Shift+Super+Backspace), then try again."
+    ),
 }
 
 

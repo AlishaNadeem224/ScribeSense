@@ -208,6 +208,11 @@ def test_next_preset_cycles_and_wraps(app_mod: Any) -> None:
 
 # ================================================================ wording
 
+def test_a_refused_apply_after_a_crash_tells_the_user_how_to_recover(app_mod: Any) -> None:
+    text = app_mod.reason_text("RECOVERY_OBLIGATIONS_REMAIN")  # A3: journal refuses a new apply (M4.10)
+    assert "scribesense reset" in text and "Backspace" in text and "(RECOVERY_OBLIGATIONS_REMAIN)" in text
+
+
 def test_reason_text_known_unknown_and_missing(app_mod: Any) -> None:
     assert "disk space" in app_mod.reason_text("NO_DISK_SPACE") and "(NO_DISK_SPACE)" in app_mod.reason_text(
         "NO_DISK_SPACE")

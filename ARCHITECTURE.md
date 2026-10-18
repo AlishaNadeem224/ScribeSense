@@ -1279,6 +1279,11 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Acceptance tests | All four statuses render with correct text |
 | Done when | Tests pass · reviewed |
 
+> **Done by O4 for O2 (2026-10-18, cross-owner):** (3) `Service.delete_all_data()` deletes under the service mutex AND the apply lock
+> (a pending/active change → `APPLY_IN_PROGRESS`, refused at once rather than freezing the GTK thread); a `RECOVERY_OBLIGATIONS_REMAIN`
+> from the store means "recovery records kept", never a generic error; `ui/window.py` calls it. (4) The GTK-free helpers moved to
+> `ui/settings_logic.py` (re-exported by `settings_page.py`), tested in `tests/unit/ui/test_settings_logic.py` without `gi`, so CI runs
+> them. Also D3 step 2: the start-up font clean-up uses `store.presets.list_all` — **O3 may now make `list()` drop the custom row.**
 #### M2.7 Settings screen
 | Field | Spec |
 |---|---|
@@ -2018,6 +2023,13 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > journal `keep()` → socket → host → browser frame), `test_sqlite_journal.py`.
 > **Packaging (O3):** exclude `extension/test/`, `extension/tools/` and any `__pycache__` from the packed extension.
 
+> **O4 response (2026-10-18): all three notes done, with the four missing tests.** (1) `begin()`, the end-of-tx bookkeeping and
+> `prune_history()` share a mutex in both journals (two threads → one tx, the other `APPLY_IN_PROGRESS`). (2) `prune_history()` now
+> HOLDS the apply lock while it runs (takes it if free, `APPLY_IN_PROGRESS` if not; a caller-held lock is used and left to the caller).
+> (3) **Decision (O4, A3):** `begin("apply")` is refused with `RECOVERY_OBLIGATIONS_REMAIN` while `unfinished()` is non-empty, in both
+> journals; `begin("revert")` / `begin("uninstall")` stay allowed. The controller turns it into a stopped report; the app tells the
+> user to run `scribesense reset` (or the recovery keybind) first. A tx left in REVERT_FAILED therefore blocks Apply until a reset
+> succeeds — intended.
 #### M4.10 Journal
 | Field | Spec |
 |---|---|
@@ -2068,6 +2080,10 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > login hook enforces it, and neither the journal nor `apply_flow.py` checks `unfinished()`. Decision for O2/O4: refuse `begin("apply")` while `unfinished()` is non-empty, or check in the controller.
 > Missing tests: two threads in `begin()`; a failing `keep()` keeps the lock and a retry works; a journal on a recovery-mode store; `begin("apply")` with an unfinished tx (whichever behaviour is chosen).
 
+> **O4 response (2026-10-18): all three notes done.** (1) `finish_tx` on a SNAPSHOTTED tx with an intent goes SNAPSHOTTED → APPLYING
+> → REVERTING (both legal in K5), tested on both journals. (2) `RevertReport.failed_codes` maps each failed location to an ErrorCode
+> (`ADAPTER_UNAVAILABLE`, the adapter's code, `UNEXPECTED_ADAPTER_ERROR`, `REVERT_ITEM_FAILED`); `merge()` merges them. Not yet shown by
+> the CLI/UI (O2). (3) The unexpected-exception path logs its code (category `revert`, adapter / target ids only).
 #### M4.11 Revert
 | Field | Spec |
 |---|---|
@@ -2113,6 +2129,8 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Acceptance tests | VM: crash + reboot scenario; keybind triggers reset |
 | Done when | VM scenarios pass · manual checklist item passes |
 
+> **O4 response (2026-10-18): both done** — `probe_argv` documents that `sys.executable` must import `gi` and `scribesense`; the
+> fontset probe's docstring says it reports Pango's per-character pick, a proxy for the layout run, not the run itself.
 #### M4.13 Verify
 | Field | Spec |
 |---|---|
@@ -2160,6 +2178,10 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > uses `sys.executable`, which must be able to import both `gi` and `scribesense` (true with `--system-site-packages`) — say so in a comment. (2) The fontset answers "which font Pango would pick for each character",
 > a good proxy for the layout run but not the run itself — one sentence in the docstring.
 
+> **O4 response (2026-10-18):** (1) `remove_keybinds()` now removes `config_home()/scribesense/` when it is empty afterwards (never
+> if it holds anything else), tested; (2) card wording changed (postcondition above) — the restore facts live in the marker line;
+> (3) `install_keybinds`'s docstring now says plainly that the installer must pass `allow_unchecked=True` on purpose when Hyprland is
+> not running; (4) no change (no secrets in those files). The VM check stays open.
 #### M4.14 Keybind writer
 | Field | Spec |
 |---|---|
@@ -2174,7 +2196,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Data it reads/writes | ScribeSense keybind file + one include line in `hyprland.lua` or `hyprland.conf` [D both formats] |
 | Data ownership | Owns the keybind file |
 | Preconditions | No conflict |
-| Postconditions | Include line journaled; survives `reset` [D] |
+| Postconditions | Include line recorded in its marked block (restore facts in the marker line; no K4 journal entry, decision 2026-10-12); survives `reset` [D] |
 | Failure cases + required behaviour | Conflict → refuse, name the conflicting bind |
 | Must never | Edit other parts of the user's Hyprland config |
 | Acceptance tests | Lua and classic configs; conflict detected |
@@ -2234,6 +2256,8 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > 0600, and every `log(...)` call in `src/` passes literals or closed sets (audited). Notes: (1) `re.match` with `$` lets a trailing newline through (`"adapter\n"`) — harmless because it is JSON-escaped, but `fullmatch` is
 > cleaner. (2) The identifier check accepts filename-like strings (`thesis.docx`); the docstring admits that safety rests on the callers — keep reviewing new call sites. (3) The card's canary test over a full session
 > cannot run yet; the VM checklist item G1 covers it.
+> **O4 response (2026-10-18):** (1) identifier, category and field-name checks use `re.fullmatch` (`"adapter\n"` is refused),
+> tested in `tests/unit/test_log.py`; (2) agreed — new call sites keep being reviewed; (3) VM item G1, unchanged.
 
 ---
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import json
 import sys
 
 import pytest
@@ -11,8 +12,10 @@ from scribesense.adapters.fake import FakeAdapter, FakeCrash, FakeWorld
 from scribesense.contracts.config import Configuration
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 from scribesense.contracts.states import TxState
+from scribesense.log import log_path
 from scribesense.safety.recovery import recover_at_login
-from scribesense.safety.testing import make_recovery_system
+from scribesense.safety.revert import Reverter, RevertReport
+from scribesense.safety.testing import fake_fontset, make_recovery_system
 
 FILE = "/fake/home/.config/fontconfig/conf.d/99-scribesense.conf"
 KEY = "org.gnome.desktop.interface font-name"
@@ -192,3 +195,133 @@ def test_no_drawn_check_still_counts_as_passed(world: FakeWorld) -> None:
     system = make_recovery_system(world, [adapter])
     system.apply(A, keep=True)
     assert system.managed(FILE) is not None
+
+
+# ---------------------------------------------------------------- O3 review of M4.11 (2026-10-18)
+
+
+def _revert_log() -> list[dict]:  # type: ignore[type-arg]
+    if not log_path().exists():
+        return []
+    rows = [json.loads(x) for x in log_path().read_text().splitlines()]
+    return [r for r in rows if r["category"] == "revert"]
+
+
+def test_finish_tx_from_snapshotted_with_an_intent_goes_through_applying(world: FakeWorld) -> None:
+    """Note 1: an intent recorded while still SNAPSHOTTED -> SNAPSHOTTED -> APPLYING -> REVERTING, reverted."""
+    original = world.snapshot_all()
+    adapter = FakeAdapter(world, {"t": [FILE, KEY]})
+    system = make_recovery_system(world, [adapter])
+    journal = system.journal
+    tx = journal.begin("apply", preset_id="default")
+    target = adapter.target_for(FILE)
+    ids = {}
+    for snap in adapter.snapshot(target):
+        backup = world.state(snap.location).data if snap.kind == "file" else None
+        ids[snap.location] = journal.record_snapshot(tx, snap, backup)
+    journal.set_state(tx, TxState.SNAPSHOTTED)
+    planned = adapter.plan(target, fake_fontset(A), A)
+    for pw in planned:
+        journal.record_intent(tx, ids[pw.location], pw)
+    adapter.apply(planned[0])  # the write happened; the state never left SNAPSHOTTED
+    assert journal.state(tx) is TxState.SNAPSHOTTED
+    report = Reverter(journal, system.adapters).finish_tx(tx)
+    assert report.ok and report.failed_codes == {}
+    assert journal.state(tx) is TxState.REVERTED
+    assert world.snapshot_all() == original
+
+
+def _no_op_revert(item, backup):  # type: ignore[no-untyped-def]
+    return None  # "succeeds" but restores nothing
+
+
+def _os_error_revert(item, backup):  # type: ignore[no-untyped-def]
+    raise OSError("disk went away")
+
+
+@pytest.mark.parametrize(
+    ("breakage", "expected"),
+    [
+        ("missing_adapter", ErrorCode.ADAPTER_UNAVAILABLE),
+        ("scribesense_error", ErrorCode.ADAPTER_TIMEOUT),
+        ("unexpected_exception", ErrorCode.UNEXPECTED_ADAPTER_ERROR),
+        ("restore_did_not_match", ErrorCode.REVERT_ITEM_FAILED),
+    ],
+)
+def test_failed_items_carry_their_error_code(world: FakeWorld, breakage: str, expected: ErrorCode) -> None:
+    """Note 2: every failed location says why, with an existing ErrorCode value."""
+    adapter = FakeAdapter(world, {"t": [FILE, KEY]})
+    system = make_recovery_system(world, [adapter])
+    tx = system.apply(A, keep=False)
+    adapters = dict(system.adapters)
+    if breakage == "missing_adapter":
+        adapters = {}
+    elif breakage == "scribesense_error":
+        adapter.fail_on = {"revert": ErrorCode.ADAPTER_TIMEOUT}
+    elif breakage == "unexpected_exception":
+        adapter.revert = _os_error_revert  # type: ignore[method-assign]
+    else:
+        adapter.revert = _no_op_revert  # type: ignore[method-assign]
+    report = Reverter(system.journal, adapters).revert_tx(tx)
+    assert set(report.failed) == {FILE, KEY}
+    assert report.failed_codes == {FILE: expected.value, KEY: expected.value}
+    assert not report.ok
+    assert system.journal.state(tx) is TxState.REVERT_FAILED
+
+
+def test_successful_and_drift_items_have_no_error_code(world: FakeWorld) -> None:
+    system = make_recovery_system(world, [FakeAdapter(world, {"t": [FILE, KEY]})])
+    tx = system.apply(A, keep=False)
+    world.external_edit(KEY, "'User Choice 12'")
+    report = system.revert(tx)
+    assert report.restored == [FILE] and report.skipped == [KEY]
+    assert report.failed_codes == {}
+
+
+def test_merge_keeps_the_error_codes() -> None:
+    a = RevertReport(failed=["x"], failed_codes={"x": ErrorCode.ADAPTER_TIMEOUT.value})
+    b = RevertReport(restored=["z"], failed=["x", "y"],
+                     failed_codes={"x": ErrorCode.REVERT_ITEM_FAILED.value, "y": ErrorCode.BACKUP_MISSING.value})
+    a.merge(b)
+    assert a.failed == ["x", "y"] and a.restored == ["z"]
+    assert a.failed_codes == {"x": ErrorCode.REVERT_ITEM_FAILED.value, "y": ErrorCode.BACKUP_MISSING.value}
+    assert not a.ok
+    assert RevertReport().failed_codes == {} and RevertReport().ok
+
+
+def test_reset_report_carries_the_codes_of_unfinished_txs(world: FakeWorld) -> None:
+    """recovery merges finish_tx reports, so the codes reach `reset` / login recovery."""
+    adapter = FakeAdapter(world, {"t": [FILE, KEY]})
+    system = make_recovery_system(world, [adapter])
+    system.apply(A, keep=False)
+    system.crash()
+    adapter.fail_on = {"revert": ErrorCode.ADAPTER_TIMEOUT}
+    report = recover_at_login(system.journal, system.adapters)
+    assert report.failed_codes == {FILE: "ADAPTER_TIMEOUT", KEY: "ADAPTER_TIMEOUT"}
+
+
+@pytest.mark.parametrize(
+    ("breakage", "expected"),
+    [("scribesense_error", ErrorCode.ADAPTER_TIMEOUT), ("unexpected_exception", ErrorCode.UNEXPECTED_ADAPTER_ERROR)],
+)
+def test_adapter_exception_during_revert_is_logged_with_ids_only(
+    world: FakeWorld, breakage: str, expected: ErrorCode
+) -> None:
+    """Note 3: the code is logged (category "revert", adapter + target ids); no location, no message."""
+    adapter = FakeAdapter(world, {"t": [FILE, KEY]})
+    system = make_recovery_system(world, [adapter])
+    tx = system.apply(A, keep=False)
+    if breakage == "scribesense_error":
+        adapter.fail_on = {"revert": ErrorCode.ADAPTER_TIMEOUT}
+    else:
+        adapter.revert = _os_error_revert  # type: ignore[method-assign]
+    before = len(_revert_log())
+    system.revert(tx)
+    rows = _revert_log()[before:]
+    assert len(rows) == 2  # one per failed item
+    for row in rows:
+        assert row["code"] == expected.value
+        assert row["adapter"] == "fake" and row["target"] == "t"
+        assert "dropped" not in row
+    text = log_path().read_text()
+    assert FILE not in text and "fontconfig" not in text and "disk went away" not in text

@@ -113,6 +113,9 @@ def probe_argv(query: str, sample: str = SAMPLE) -> list[str]:
     """The fresh-process command line of the Pango probe (sample must be a fixed SAMPLES entry)."""
     if sample not in SAMPLES:
         raise ValueError("the drawn check only lays out fixed samples, never user content")
+    # sys.executable must be able to import BOTH `gi` (system PyGObject) and `scribesense`: true for the
+    # supported setup (`uv venv --system-site-packages`, AGENTS.md §8). If it cannot, the probe exits
+    # non-zero and the drawn check fails with run_cmd's error — never a false pass.
     # -P (Python >= 3.11): do not put the current directory on sys.path, so a stray module in the
     # caller's working directory can never shadow the probe or gi.
     return [sys.executable, "-P", "-m", PROBE_MODULE, _check_query(query), sample]
@@ -135,8 +138,9 @@ def drawn_family_pango(query: str, sample: str = SAMPLE, *, runner: Runner = run
     """Drawn check (A14): the families Pango actually uses to lay out the fixed `sample` for `query`.
 
     Runs `python -P -m scribesense.adapters.pango_probe <query> <sample>` in a fresh process
-    (DEFAULT_TIMEOUTS["other"] unless `timeout` is given). Returns the distinct families of the runs in
-    first-use order: a single entry means every run was drawn in that family.
+    (DEFAULT_TIMEOUTS["other"] unless `timeout` is given). Returns the distinct families in first-use
+    order: a single entry means every character was given that family. The probe asks Pango's fontset
+    which font it would pick for each character — a close proxy for the layout run, not the run itself.
     """
     argv = probe_argv(query, sample)
     deadline = DEFAULT_TIMEOUTS["other"] if timeout is None else timeout

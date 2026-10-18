@@ -8,6 +8,8 @@ Team decisions D1–D5 (2026-10-12):
   D2        ScribeSense owns ONE generated file outside the user's dotfiles:
             config_home()/scribesense/hyprland.lua (Lua config) or .../hyprland.conf (classic config).
             It holds the binds and (D4) the login-recovery hook (`<cmd> recover --login`, A3).
+            remove_keybinds() also removes config_home()/scribesense/ when it is empty afterwards
+            (never when it holds anything else; never anything outside it).
   D1        Exactly one managed include block in one hook file, between marker comment lines:
               Lua      hook = hypr/custom.lua if hyprland.lua loads a "custom" module (ML4W-style rice;
                        custom.lua is created when missing), else hypr/hyprland.lua itself.
@@ -606,8 +608,13 @@ class HyprlandBackend:
         return config_home() / "hypr"
 
     @staticmethod
+    def own_dir() -> Path:
+        """config_home()/scribesense/ — the directory of our generated file (D2)."""
+        return config_home() / "scribesense"
+
+    @staticmethod
     def own_file(fmt: Format) -> Path:
-        return config_home() / "scribesense" / ("hyprland.lua" if fmt == "lua" else "hyprland.conf")
+        return HyprlandBackend.own_dir() / ("hyprland.lua" if fmt == "lua" else "hyprland.conf")
 
     def detect(self) -> Format:
         d = self.hypr_dir()
@@ -684,7 +691,11 @@ class HyprlandBackend:
             _write_through(path, new)
 
     def unwrite(self) -> tuple[bool, bool]:
-        """Remove our blocks (both formats, every candidate hook file) and our files. Drift is skipped."""
+        """Remove our blocks (both formats, every candidate hook file) and our files. Drift is skipped.
+
+        Then config_home()/scribesense/ itself is removed if it is EMPTY (O3 review note (1),
+        2026-10-18) — see _remove_own_dir_if_empty.
+        """
         changed = drifted = False
         for fmt in ("lua", "classic"):
             own = self.own_file(fmt)  # type: ignore[arg-type]
@@ -704,7 +715,21 @@ class HyprlandBackend:
             if not keep_own and own.exists():
                 delete_durable(own)
                 changed = True
+        self._remove_own_dir_if_empty()
         return changed, drifted
+
+    def _remove_own_dir_if_empty(self) -> None:
+        """os.rmdir(config_home()/scribesense) — best effort, never anything else.
+
+        rmdir removes only an empty directory and never follows a symlink, so a directory that still
+        holds anything (a drifted block's file, another module's or the user's files) or a symlinked
+        one is left as it is; any OSError is ignored. Not counted as a change (Hyprland never reads
+        the directory itself) and not fsynced: a crash at worst leaves an empty directory behind.
+        """
+        try:
+            os.rmdir(self.own_dir())
+        except OSError:
+            pass
 
     def live_binds(self) -> list[LiveBind]:
         try:
@@ -757,6 +782,12 @@ def install_keybinds(
 ) -> KeybindStatus:
     """Write our file + the include block, then reload. Idempotent.
 
+    Hyprland not running (e.g. installing from a TTY or before the first login): the conflict check
+    needs a live Hyprland, so this raises CHECK_UNAVAILABLE and writes NOTHING by default. The
+    installer (M3.8) must pass allow_unchecked=True ON PURPOSE in that case — a deliberate choice to
+    install without a conflict check, never a default. allow_unchecked only skips an unavailable
+    check: a conflict that IS found still refuses (KEYBIND_CONFLICT).
+
     Returns the status after the write with `reload` set: "reloaded", or "skipped" when Hyprland is not
     running (HYPRLAND_INSTANCE_SIGNATURE unset/empty) — not an error, the files apply at the next login.
     Raises ValueError (bad binds/command), KEYBIND_CONFLICT (nothing written; conflicts() names them),
@@ -787,7 +818,8 @@ def install_keybinds(
 def remove_keybinds(*, backend: DesktopBackend | None = None) -> bool:
     """Uninstall only (M3.8) — never called by reset or login recovery.
 
-    Removes every clean block and our files, restoring each hook file byte-for-byte. Returns True if
+    Removes every clean block and our files, restoring each hook file byte-for-byte, then
+    config_home()/scribesense/ if it is now empty (kept if it holds anything else). Returns True if
     anything changed (then reloads; skipped silently when Hyprland is not running). Hand-edited blocks are left untouched, as is the file they may
     include, and DRIFT_SKIPPED is raised after the rest was removed.
 

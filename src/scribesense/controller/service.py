@@ -18,6 +18,9 @@ Socket requests the service answers (one JSON object per line, same user only):
     reset           K4 rule 6: `scribesense reset` asks a running service to reset
     pending         M2.3: which tx is awaiting confirmation (the confirm window checks it is still current)
 
+Delete-all (M2.7 / K9 "apply lock -> block applies -> reset -> delete"): `delete_all_data()` holds the service mutex
+and the apply lock while it deletes, so no apply can start between the journal's token and the deletion.
+
 Apply (M2.1) leaves the tx AWAITING_CONFIRMATION; `keep()` / `revert()` finish it. The confirm process is started by
 the UI (it is a GUI process); if it never answers, `confirm_watchdog()` reverts after the confirmation deadline.
 """
@@ -104,7 +107,12 @@ class Service:
         return service
 
     def housekeeping(self) -> None:
-        """Once at start-up (M3.1/M3.2/K7 rule 3): interrupted builds, retention, unused fonts. Never fatal."""
+        """Once at start-up (M3.1/M3.2/K7 rule 3): interrupted builds, retention, unused fonts. Never fatal.
+
+        The font clean-up reads `presets.list_all()`, not `list()`: K7 rule 3's "a saved preset" includes the stored
+        `custom` row (K9 D3), which `list()` stops returning (O3's D3 note) — missing it would delete the font of the
+        user's own current configuration.
+        """
         from scribesense.fontgen import generator
         from scribesense.log import log
         from scribesense.safety.font_references import FontReferenceSource
@@ -114,7 +122,7 @@ class Service:
             ("builds", lambda: self.store.recover_interrupted_builds()),
             ("prune", lambda: prune(self.journal, datetime.now(timezone.utc))),
             ("fonts", lambda: generator.remove_unused(references=FontReferenceSource(
-                self.journal, self.adapters, presets=self.store.presets.list, lock=self.lock))),
+                self.journal, self.adapters, presets=self.store.presets.list_all, lock=self.lock))),
         ):
             try:
                 run()
@@ -192,6 +200,37 @@ class Service:
             return False  # kept or reverted meanwhile
         return True
 
+    # ---------------------------------------------------------------- delete all data (M2.7, K9)
+
+    def delete_all_data(self) -> bool:
+        """M2.7 "Delete all ScribeSense data", in K9's order "apply lock -> block applies -> delete".
+
+        Runs under the service mutex AND the apply lock (K4 rule 1), held for the whole deletion, so no apply can start
+        between `journal.no_obligations()` and `delete_recovery_data` (O3's M2.7 note 3). Refused with
+        `APPLY_IN_PROGRESS` — before anything is deleted — while a change awaits Keep/Revert here or another process
+        holds the lock. The reset (R2) is the UI's separate, earlier step (`original()`).
+
+        The service mutex is taken WITHOUT waiting: the caller is the Settings dialog's response handler on the GTK
+        main thread, and apply / revert / reset hold the mutex for their whole run (an apply includes the font build).
+        Waiting would freeze the window only to refuse afterwards, so a busy mutex is refused at once, the same as a
+        busy lock ("refuse while busy").
+
+        Returns True if the recovery records were deleted too, False if they were kept (see `delete_store_data`).
+        """
+        if not self._mutex.acquire(blocking=False):  # an apply / revert / reset is running on another thread
+            raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
+        try:
+            if self._pending is not None or self.lock.held:  # our own tx holds the lock until it ends
+                raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
+            if not self.lock.try_acquire("service"):
+                raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
+            try:
+                return delete_store_data(self.store, self.journal)
+            finally:
+                self.lock.release()
+        finally:
+            self._mutex.release()
+
     # ---------------------------------------------------------------- socket (K4 rule 5, K11)
 
     def handle(self, message: Message) -> Message:
@@ -236,3 +275,25 @@ class Service:
                 return {"v": PROTOCOL_VERSION, "ok": True, "active": True, "revision": revision,
                         "css": browser_css(fonts, active.config)}
         return {"v": PROTOCOL_VERSION, "ok": True, "active": False, "revision": revision}
+
+
+def delete_store_data(store: Any, journal: Any) -> bool:
+    """The store steps of delete-all (K9 API). The caller holds the apply lock — use `Service.delete_all_data()`.
+
+    Preferences (presets, settings, samples) are always deleted. Recovery records are deleted only with the token of
+    `journal.no_obligations()`; otherwise they are kept, so `scribesense reset` can still restore the original
+    desktop. The store re-checks the token inside its transaction: `RECOVERY_OBLIGATIONS_REMAIN` from it means the
+    world changed since the token was issued, and is reported as "recovery records kept" (False), never as an error.
+    Returns True if the recovery records were deleted too.
+    """
+    store.delete_preferences()
+    token = journal.no_obligations()
+    if token is None:
+        return False
+    try:
+        store.delete_recovery_data(precondition=token)
+    except ScribeSenseError as exc:
+        if exc.code is not ErrorCode.RECOVERY_OBLIGATIONS_REMAIN:
+            raise
+        return False
+    return True

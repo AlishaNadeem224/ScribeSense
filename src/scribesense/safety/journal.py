@@ -14,6 +14,13 @@ what K4 gives the journal itself:
   K5                 illegal transitions are refused by JournalTables (`IllegalTransition`, a ValueError).
   Push (K11)         `on_style_changed(revision)` runs after `keep()` / `set_original()` commit — the only two
                      changes of the confirmed style. The service passes `IpcServer.publish_style_changed`.
+  Recovery first     `begin("apply")` is refused with `RECOVERY_OBLIGATIONS_REMAIN` while `unfinished()` is
+  (A3, O4 2026-10-18) non-empty — checked after taking the lock, which is released again. `begin("revert")` /
+                     `begin("uninstall")` stay allowed (recovery needs them).
+  Threads            `begin()`, the end-of-tx bookkeeping (`set_state` / `keep`) and `prune_history()` run under one
+                     `threading.RLock`, so two threads of one process never both get a tx.
+  Pruning (K9)       `prune_history()` runs under the apply lock: it uses a lock the caller holds, or takes it for its
+                     duration with this journal's role. Held elsewhere, or a tx active here → `APPLY_IN_PROGRESS`.
 
 "Cannot persist → apply refused before any write" (M4.10 card): a store error in `begin()` releases the lock and
 propagates as `ScribeSenseError(STORE_*)`, before the controller has snapshotted or written anything.
@@ -24,6 +31,7 @@ same journal, revert and recovery scenarios on both.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from datetime import datetime
 from typing import Literal
@@ -70,6 +78,7 @@ class SqliteJournal:
         self._role: LockRole = role
         self._active_tx: TxId | None = None  # the tx this process opened and that still holds the lock
         self._release_on_end = False  # True only if begin() took the lock (not the caller)
+        self._mutex = threading.RLock()  # begin / end-of-tx bookkeeping / prune (O3 review note 1)
 
     @property
     def lock_held(self) -> bool:
@@ -84,46 +93,63 @@ class SqliteJournal:
         preset_id: str | None,
         reverts: TxId | Literal["all"] | None = None,
     ) -> TxId:
-        if self._active_tx is not None:
-            raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
-        took_lock = False
-        if not self._lock.held:
-            if not self._lock.try_acquire(self._role):
+        with self._mutex:
+            if self._active_tx is not None:
                 raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
-            took_lock = True
-        try:
-            tx = self._t.create_tx(kind, preset_id, reverts)
-        except BaseException:
-            if took_lock:
-                self._lock.release()
-            raise
-        self._active_tx, self._release_on_end = tx, took_lock
-        return tx
+            took_lock = False
+            if not self._lock.held:
+                if not self._lock.try_acquire(self._role):
+                    raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
+                took_lock = True
+            try:
+                if kind == "apply" and self._t.unfinished():  # A3: recovery completes before any new Apply
+                    raise ScribeSenseError(ErrorCode.RECOVERY_OBLIGATIONS_REMAIN)
+                tx = self._t.create_tx(kind, preset_id, reverts)
+            except BaseException:
+                if took_lock:
+                    self._lock.release()
+                raise
+            self._active_tx, self._release_on_end = tx, took_lock
+            return tx
 
     def _ended(self, tx: TxId, state: TxState) -> None:
-        if self._active_tx == tx and (state in TERMINAL or state is TxState.REVERT_FAILED):
-            self._active_tx = None
-            if self._release_on_end:
-                self._lock.release()
-            self._release_on_end = False
+        with self._mutex:
+            if self._active_tx == tx and (state in TERMINAL or state is TxState.REVERT_FAILED):
+                self._active_tx = None
+                if self._release_on_end:
+                    self._lock.release()
+                self._release_on_end = False
 
     def set_state(self, tx: TxId, state: TxState) -> None:
-        self._t.set_tx_state(tx, state)
-        self._ended(tx, state)
+        with self._mutex:
+            self._t.set_tx_state(tx, state)
+            self._ended(tx, state)
 
     def keep(self, tx: TxId, active: ActiveConfig) -> int:
-        revision = self._t.keep(tx, active)
-        self._ended(tx, TxState.COMPLETED)
-        notify_style_changed(self._on_style_changed, revision)
+        with self._mutex:
+            revision = self._t.keep(tx, active)  # fails -> nothing committed, tx still awaiting, lock still held
+            self._ended(tx, TxState.COMPLETED)
+        notify_style_changed(self._on_style_changed, revision)  # outside the mutex: the hook may be slow
         return revision
 
     def prune_history(self, before: datetime, keep_last: int) -> int:
-        """K9 pruning; refused while any tx is active here or another process holds the apply lock."""
+        """K9 pruning, run under the apply lock (taken for the duration unless the caller holds it).
+        Refused (`APPLY_IN_PROGRESS`) while a tx is active here or another process holds the lock."""
         if keep_last < 0:
             raise ValueError("keep_last must be >= 0")
-        if self._active_tx is not None or (not self._lock.held and self._lock.is_locked()):
-            raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
-        return self._t.prune_history(before, keep_last)
+        with self._mutex:
+            if self._active_tx is not None:
+                raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
+            took_lock = False
+            if not self._lock.held:
+                if not self._lock.try_acquire(self._role):
+                    raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
+                took_lock = True
+            try:
+                return self._t.prune_history(before, keep_last)
+            finally:
+                if took_lock:
+                    self._lock.release()
 
     # ------------------------------------------------------------- records (K4 rule 2: committed on return)
 

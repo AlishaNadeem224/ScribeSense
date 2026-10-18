@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -87,6 +89,48 @@ def test_crash_releases_lock_but_keeps_the_unfinished_tx() -> None:
     assert j.unfinished() == [tx]
 
 
+def test_two_threads_in_begin_get_exactly_one_tx() -> None:
+    """O3 note 1 (parity with SqliteJournal): a slow clock widens the window inside begin()."""
+    inside = threading.Event()
+
+    def slow_clock() -> datetime:
+        inside.set()
+        time.sleep(0.2)
+        return datetime.now(timezone.utc)
+
+    j = InMemoryJournal(slow_clock)
+    got: list[object] = []
+
+    def run() -> None:
+        try:
+            got.append(j.begin("apply", None))
+        except ScribeSenseError as exc:
+            got.append(exc.code)
+
+    first = threading.Thread(target=run)
+    first.start()
+    assert inside.wait(10)
+    second = threading.Thread(target=run)
+    second.start()
+    first.join(10)
+    second.join(10)
+    assert got.count(ErrorCode.APPLY_IN_PROGRESS) == 1, got
+    assert len(j.unfinished()) == 1 and j.lock_held
+
+
+def test_apply_after_a_crash_is_refused_until_recovery_ran() -> None:
+    """A3 (decision O4 2026-10-18): recovery completes before any new Apply; revert stays allowed."""
+    j = InMemoryJournal()
+    tx, _ = apply_to_awaiting(j)
+    j.simulate_crash()
+    with pytest.raises(ScribeSenseError) as exc:
+        j.begin("apply", None)
+    assert exc.value.code is ErrorCode.RECOVERY_OBLIGATIONS_REMAIN
+    assert not j.lock_held and j.unfinished() == [tx]
+    j.begin("uninstall", None, "all")  # uninstall (a revert of everything) is allowed too
+    assert j.lock_held
+
+
 # ---------------------------------------------------------------- K5 transitions
 
 def test_illegal_transition_is_refused() -> None:
@@ -105,13 +149,13 @@ def test_completed_only_through_keep() -> None:
 
 def test_unfinished_includes_awaiting_and_revert_failed_but_not_failed_clean() -> None:
     j = InMemoryJournal()
+    c = j.begin("apply", None)  # before the crash: a new apply is refused while anything is unfinished (A3)
+    j.set_state(c, TxState.FAILED_CLEAN)
     a, _ = apply_to_awaiting(j)
     j.simulate_crash()
     b = j.begin("revert", None, "all")
     j.set_state(b, TxState.REVERTING)
     j.set_state(b, TxState.REVERT_FAILED)
-    c = j.begin("apply", None)
-    j.set_state(c, TxState.FAILED_CLEAN)
     assert j.unfinished() == [a, b]
     assert j.pending_confirmation() == a
 
