@@ -433,8 +433,7 @@ three built-in intents and their resolved values match the K2 table in `contract
 * **D3 — CONFIRMED by O1 (2026-10-18), after the question "is `custom` stored as one row, and does `list()` include it?".** Answer: **yes, one row; no, `list()` does not include it** ("stored ≠ listed"; O1's
   `config/presets.py` states it twice, and it matches K9's own "built-ins first, then user presets by name"). The earlier reply that described `custom` as unsaved was the first D3 draft, not O1's position. **O1's trap:** the font
   clean-up (K7 rule 3: "a saved preset" includes Custom) needs every stored preset; a caller that pipes `list()` into it would delete the font of the user's own current configuration. M3.1 adds `PresetRepo.list_all()` for that
-  (built-ins, custom, user presets; an addition to the frozen K9 protocol — to be written into the contract text by the K9 owner) and uses it itself (regression test). `list()` is changed in two steps because `controller/service.py:117` (O2)
-  passes `store.presets.list` to O4's `FontReferenceSource`: step 1 (done) `list_all()`; step 2 (after that call moves to `list_all`) `list()` drops the custom row.
+  (built-ins, custom, user presets; an addition to the frozen K9 protocol — to be written into the contract text by the K9 owner) and uses it itself (regression test). `list()` was changed in two steps: step 1 `list_all()`; step 2 (done 2026-10-18, after O4 moved the clean-up in `controller/service.py` to `list_all`) `list()` drops the custom row — read it with `get("custom")`.
 * The reply also suggests persisting "the user's working configuration" as its own row. K9 already has `active_config` (the confirmed, applied configuration); the
   unapplied `custom` working set is a different thing — to be settled together with D3.
 * Other points from the reply: uninstall removes fonts only through `fontgen.cache` (`reconcile()`, then `installed_keys()` + `remove(key)`); `ReferenceSource` is not an O1 task
