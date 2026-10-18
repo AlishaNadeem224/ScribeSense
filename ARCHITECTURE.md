@@ -2026,7 +2026,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 |---|---|
 | Purpose | Undo one transaction or everything, with the drift rule. [D F4, F10] |
 | Owner / may be helped? | O4 / **no (O4 only)** [D] |
-| Built by / reviewed by | O4 / O3 |
+| Built by / reviewed by | O4 / O3 (approved 2026-10-18, with notes) |
 | Depends on | M4.10, M4.1 |
 | Used by | M2.1, M2.3, M4.12, M3.8 |
 | Provides | `revert_tx(tx) -> RevertReport` · `revert_all() -> RevertReport` |
@@ -2040,6 +2040,11 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Must never | Overwrite a value whose current hash ≠ what we wrote [D] |
 | Acceptance tests | revert_all → byte-identical files/keys; drift case skipped and reported |
 | Done when | Tests pass in sandbox + VM · reviewed |
+
+> **Reviewed by O3 (2026-10-18): approved, with three non-blocking notes.** Verified by reading `safety/revert.py` / its tests and probes: the drift rule never overwrites a value that is neither the
+> snapshot nor what we wrote; items are undone newest-first; one failing item does not stop the others; `finish_tx` is safe to repeat. Notes: (1) `finish_tx` raises `IllegalTransition` for a tx in
+> `SNAPSHOTTED` that already has a recorded intent — K5 has no `SNAPSHOTTED → REVERTING` (reproduced on both journals). Unreachable today (`apply_flow` records intents only after `APPLYING`); go through
+> `APPLYING` first or refuse that sequence. (2) A failed item is reported as `failed` with no error code, so the user cannot see why. (3) `except Exception` in `_revert_one` hides programming errors; log the code.
 
 #### M4.12 Recovery
 | Field | Spec |
@@ -2066,7 +2071,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 |---|---|
 | Purpose | Check which font each target chose and, where possible, which font is drawn. [D Step 3, F3] |
 | Owner / may be helped? | O4 / no |
-| Built by / reviewed by | O4 / O3 |
+| Built by / reviewed by | O4 / O3 (approved 2026-10-18, with notes) |
 | Depends on | M4.1, fc-match, pango-view |
 | Used by | adapters' `verify`, M3.4 |
 | Provides | `chosen_family(target, query)` · `drawn_family_pango(sample)` |
@@ -2103,12 +2108,17 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > directly (Marionette / DevTools) **only inside bubblewrap**, with timeouts and process-group kill; production
 > code under `src/` stays `run_cmd`-only.
 
+> **Reviewed by O3 (2026-10-18): approved, with two non-blocking notes.** Verified: the chosen check (`fc-match`, host or inside a Flatpak sandbox) and the drawn check (fresh-process Pango probe over a fixed
+> sample) stay separate (A14); queries are validated and fontconfig-escaped; failures map to `CHECK_UNAVAILABLE`; the fontset-based probe (O4's fix of 2026-10-15) passes in CI on Ubuntu 24.04. Notes: (1) `probe_argv`
+> uses `sys.executable`, which must be able to import both `gi` and `scribesense` (true with `--system-site-packages`) — say so in a comment. (2) The fontset answers "which font Pango would pick for each character",
+> a good proxy for the layout run but not the run itself — one sentence in the docstring.
+
 #### M4.14 Keybind writer
 | Field | Spec |
 |---|---|
 | Purpose | Write ScribeSense keybinds to a separate file included from the Hyprland config; check conflicts. [D F7, F10; D A18] |
 | Owner / may be helped? | O4 (proposed) / no |
-| Built by / reviewed by | TBD / O3 |
+| Built by / reviewed by | O4 / O3 (approved 2026-10-18, with notes) |
 | Depends on | `hyprctl binds -j` |
 | Used by | M3.8, M2.7 |
 | Provides | `install_keybinds(binds)`, `remove_keybinds()`, `conflicts(binds)` |
@@ -2138,12 +2148,19 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > `parse_keybind(text, action)`, `keybind_status()`. **VM checks:** Lua `dofile`/`pcall` allowed, reload re-runs a
 > Lua config, real `hyprctl binds -j` format, `hl.on("hyprland.start")` not stacking on reload.
 
+> **Reviewed by O3 (2026-10-18): approved, with four non-blocking notes; the card's "VM check" is still open.** Probed in a temporary config dir with a fake `hyprctl`: classic config with CRLF and no trailing newline,
+> a Lua config with a `custom` module (the file is created, then removed again), a Lua file ending in a top-level `return`, a symlinked hook file, a hand-edited block (`DRIFT_SKIPPED`, user's edit kept), a double install
+> (second one changes nothing), a live conflict (`KEYBIND_CONFLICT`, nothing written), and commands containing quotes, `;`, `$`, `\` (shell-quoted, Lua/classic-escaped; `#` and newlines refused). Notes: (1) an empty
+> `config_home()/scribesense/` directory is left after `remove_keybinds()` — remove it when it is empty. (2) The card says "include line journaled"; the implementation keeps the restore facts in the marker line and
+> nothing goes through the journal — change the card wording or journal it. (3) `install_keybinds` refuses while Hyprland is not running unless `allow_unchecked=True`: documented, but the installer must pass it on
+> purpose. (4) Written files are 0644 / dir 0755 (umask-dependent); they hold no secrets.
+
 #### M4.15 Logging
 | Field | Spec |
 |---|---|
 | Purpose | Privacy-safe logs for every module. [D] |
 | Owner / may be helped? | O4 / no |
-| Built by / reviewed by | O4 / O3 |
+| Built by / reviewed by | O4 / O3 (approved 2026-10-18, with notes) |
 | Depends on | K8 |
 | Used by | all |
 | Provides | `log(code, category, **non_content_fields)` |
@@ -2165,6 +2182,12 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > preset, kind, reason` — and only if identifier-shaped (≤ 64 chars, no spaces, no `/`). Any other string is
 > dropped, never written. Never put user content in an identifier field. Logging never raises.
 > File: `logs_dir()/scribesense.log` (0600, dir 0700), rotated at 1 MiB, one old file kept.
+
+> **Reviewed by O3 (2026-10-18): approved, with three non-blocking notes.** Verified: code and category are validated, string values are allowed only in a closed list of field names, writes never raise, the file is
+> 0600, and every `log(...)` call in `src/` passes literals or closed sets (audited). Notes: (1) `re.match` with `$` lets a trailing newline through (`"adapter\n"`) — harmless because it is JSON-escaped, but `fullmatch` is
+> cleaner. (2) The identifier check accepts filename-like strings (`thesis.docx`); the docstring admits that safety rests on the callers — keep reviewing new call sites. (3) The card's canary test over a full session
+> cannot run yet; the VM checklist item G1 covers it.
+
 ---
 
 ## 8. Helper work model [D]

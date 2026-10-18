@@ -918,3 +918,9 @@ describes `custom` as unsaved while their code stores it and expects `PresetRepo
 **M4.10 reviewed by O3 (2026-10-18): approved, with three non-blocking notes for O4** (details in the M4.10 card in `ARCHITECTURE.md`): (1) `SqliteJournal.begin()` is not thread-safe (not reachable
 today, the service serializes with an `RLock`); (2) `prune_history()` checks the apply lock but does not hold it; (3) a new apply is accepted while an unfinished tx from a crash exists —
 A3 relies only on the login hook; O2/O4 to decide where to refuse it. Four tests are missing (listed in the card note).
+
+**M4.11, M4.13, M4.14, M4.15 reviewed by O3 (2026-10-18): all approved, with non-blocking notes for O4** (details in each card in `ARCHITECTURE.md`). M4.11: `finish_tx` raises for a tx in `SNAPSHOTTED` that has an
+intent (unreachable today), failed items carry no error code. M4.13: document the `sys.executable` assumption and what the fontset probe measures. M4.14: an empty `~/.config/scribesense/` is left after removal, the card
+says "include line journaled" but the implementation uses the marker line, the installer must pass `allow_unchecked` on purpose, the VM check is still open. M4.15: use `fullmatch`, identifier fields do not guarantee privacy by
+themselves. Reviews still named for O3: M1.4, M1.6, M2.4, M2.7.
+
