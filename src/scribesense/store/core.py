@@ -66,12 +66,21 @@ def map_sqlite_error(exc: sqlite3.Error) -> ScribeSenseError:
     return ScribeSenseError(ErrorCode.STORE_IO_ERROR)
 
 
+class StoreConstraintError(ScribeSenseError):
+    """A constraint (CHECK, foreign key, unique, NOT NULL) refused a write — a caller bug or an inconsistent record,
+    never a transient storage failure. Carries STORE_CORRUPT (K9: "integrity"); its own type keeps it distinguishable.
+    `safety/` may catch it without importing sqlite3 (import rule R3)."""
+
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.STORE_CORRUPT)
+
+
 @contextmanager
 def _guard() -> Iterator[None]:
     try:
         yield
     except sqlite3.IntegrityError:
-        raise  # a constraint violation is a bug in the caller, not a storage failure
+        raise StoreConstraintError() from None
     except sqlite3.Error as exc:
         raise map_sqlite_error(exc) from None
 
@@ -173,6 +182,10 @@ class Store:
             created = not self.path.exists()
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                if created:
+                    # Create the file 0600 BEFORE SQLite does, so the -wal / -shm files (which copy the database
+                    # file's mode) are private too. An empty file is a valid new SQLite database.
+                    os.close(os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600))
             except OSError:
                 raise ScribeSenseError(ErrorCode.STORE_IO_ERROR) from None
         conn = self._connect(set_pragmas=False)
@@ -192,11 +205,6 @@ class Store:
             conn.close()
             self._tls.conn = None
             raise
-        if self.mode == "normal" and created:
-            try:
-                os.chmod(self.path, 0o600)
-            except OSError:
-                pass  # best effort: the data dir itself is 0700
 
     def _connect(self, *, set_pragmas: bool = True) -> sqlite3.Connection:
         target = (f"file:{quote(str(self.path))}?mode=rw" if self.mode == "recovery" else str(self.path))
@@ -257,8 +265,11 @@ class Store:
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
-        """Commit on exit, rollback on exception. A nested call joins the outer transaction. Never wrap an
-        adapter write in this (K9): a transaction must not stay open while a slow external action runs."""
+        """Commit on exit, rollback on exception. A nested call JOINS the outer transaction: there is no savepoint, so
+        if an inner block fails and the caller catches that and carries on, the inner writes are still committed
+        with the outer transaction (K9: "nested call joins the outer one"). Never wrap an adapter write in this
+        (K9): a transaction must not stay open while a slow external action runs. If COMMIT itself fails the
+        transaction is rolled back before the error is raised, so the connection is never left mid-transaction."""
         conn = self.conn()
         depth = self._tls.depth
         if depth == 0:
@@ -274,8 +285,13 @@ class Store:
             raise
         self._tls.depth = depth
         if depth == 0:
-            with _guard():
-                conn.execute("COMMIT")
+            try:
+                with _guard():
+                    conn.execute("COMMIT")
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
 
     # ---- K9 deletions
 

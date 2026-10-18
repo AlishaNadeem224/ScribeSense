@@ -15,6 +15,7 @@ from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 from scribesense.contracts.journal import NoRecoveryObligations
 from scribesense.store import Store, apply_migrations, default_path, latest_version
 from scribesense.store import core as store_core
+from scribesense.store.core import StoreConstraintError
 
 
 def code_of(exc_info) -> ErrorCode:  # type: ignore[no-untyped-def]
@@ -273,10 +274,60 @@ def test_a_read_only_store_is_reported_as_read_only(db: Path) -> None:
     assert store.settings.get("lock_wait_seconds") == 60  # and nothing was claimed as saved
 
 
-def test_constraint_violations_are_not_hidden_as_storage_errors(db: Path) -> None:
+def test_constraint_violations_become_a_store_error_that_safety_can_catch(db: Path) -> None:
     store = Store(db)
-    with pytest.raises(sqlite3.IntegrityError):  # a bug in the caller must stay visible
+    with pytest.raises(StoreConstraintError) as err:
         store.execute("INSERT INTO presets VALUES ('x','x','builtin','{}','t','t')")
+    assert isinstance(err.value, ScribeSenseError) and err.value.code is ErrorCode.STORE_CORRUPT  # K9: "integrity"
+    assert "constraint" not in str(err.value).lower()  # no raw sqlite text, and safety/ never sees sqlite3
+    assert store.fetchone("SELECT COUNT(*) FROM presets")[0] == 0
+
+
+def test_a_constraint_failure_inside_a_transaction_rolls_everything_back(db: Path) -> None:
+    store = Store(db)
+    with pytest.raises(StoreConstraintError):
+        with store.transaction():
+            store.settings.set("lock_wait_seconds", 99)
+            store.execute("INSERT INTO journal_items (tx_id, location, target_adapter, target_id, target_display_name, "
+                          "kind, existed, old_sha256) VALUES (999, 'l', 'a', 't', 'd', 'file', 1, 'h')")  # no such tx
+    assert store.settings.get("lock_wait_seconds") == 60
+
+
+def test_a_failed_commit_never_leaves_the_connection_in_a_transaction(db: Path) -> None:
+    store = Store(db)
+    store.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+    store.execute("CREATE TABLE child (pid INTEGER REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED)")
+    with pytest.raises(StoreConstraintError):
+        with store.transaction():
+            store.execute("INSERT INTO child VALUES (42)")  # accepted now, refused only at COMMIT
+    assert not store.conn().in_transaction  # rolled back, not left open
+    assert store.fetchone("SELECT COUNT(*) FROM child")[0] == 0
+    with store.transaction():  # and the connection is usable straight away
+        store.settings.set("lock_wait_seconds", 80)
+    assert store.settings.get("lock_wait_seconds") == 80
+
+
+def test_nested_transactions_have_no_savepoint(db: Path) -> None:
+    """Documented K9 behaviour: a nested call JOINS the outer one. If the caller catches an inner failure and goes
+    on, the inner writes are committed with the outer transaction (O4 review note 1; M4.10 never catches inside one)."""
+    store = Store(db)
+    with store.transaction():
+        try:
+            with store.transaction():
+                store.settings.set("lock_wait_seconds", 75)
+                raise RuntimeError("inner fails, caller swallows it")
+        except RuntimeError:
+            pass
+    assert store.settings.get("lock_wait_seconds") == 75
+
+
+def test_the_wal_and_shm_files_are_private_too(db: Path) -> None:
+    store = Store(db)
+    store.settings.set("lock_wait_seconds", 70)  # a write, so the -wal file exists
+    for suffix in ("", "-wal", "-shm"):
+        path = Path(str(db) + suffix)
+        assert path.exists(), suffix
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600, (suffix, oct(path.stat().st_mode))
 
 
 # ---------------------------------------------------------------- deletions

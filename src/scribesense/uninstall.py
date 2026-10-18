@@ -12,7 +12,9 @@ Order (card M3.8):
      `safety.keybinds.remove_keybinds` (hand-edited blocks are left alone and reported) — but only when nothing is
      left for recovery: if a revert failed or a transaction is still unfinished, the hooks stay so the login check
      and the recovery keybind can retry.
-  4. keep the data — unless "delete all" was asked for AND confirmed. Never delete user data without confirmation.
+  4. keep the data — unless "delete all" was asked for AND confirmed, AND the ScribeSense service is confirmed stopped
+     (it is asked to quit after the confirmation; if it cannot be confirmed stopped the data is kept — decision C).
+     Never delete user data without confirmation.
 
 Nothing here installs anything, edits another owner's files, or touches a desktop on its own: every effect goes
 through the injected journal, adapters, font operations and keybind remover.
@@ -26,6 +28,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,7 +39,7 @@ from scribesense.contracts.cli import ExitCode
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 from scribesense.contracts.fonts import READING_FAMILY_PREFIX, UI_FAMILY_PREFIX
 from scribesense.contracts.journal import Journal
-from scribesense.contracts.paths import data_dir
+from scribesense.contracts.paths import data_dir, run_cmd
 from scribesense.log import log, log_path
 from scribesense.safety.keybinds import remove_keybinds
 from scribesense.safety.recovery import LockPolicy, acquire_for_recovery
@@ -49,7 +52,53 @@ FONT_FALLBACK_NOTE = "these apps may fall back to another font and their appeara
 CONFIRM_WORD = "delete"
 
 KeybindOutcome = Literal["removed", "absent", "left_edited", "failed", "kept_for_recovery"]
-DataOutcome = Literal["kept", "deleted", "preferences_only", "not_confirmed"]
+DataOutcome = Literal["kept", "deleted", "preferences_only", "not_confirmed", "service_running"]
+
+
+QUIT_TIMEOUT_S = 10.0
+
+
+@dataclass
+class ServiceControl:
+    """How `--delete-data` deals with a running ScribeSense service (decision C, 2026-10-18).
+
+    Deleting the database under a running service would leave it writing to a deleted file and believing the
+    writes were saved. So, only after the user confirmed the deletion: if the service is running, ask it to stop
+    and wait (bounded); if it is still running — or there is no way to tell — the data is KEPT, never deleted.
+
+    running  -> True while a service answers (single-instance check, O2)
+    stop     -> asks it to quit, e.g. `quit_via_cli`; may be None (then a running service is simply refused)
+    """
+
+    running: Callable[[], bool]
+    stop: Callable[[], None] | None = None
+    wait_s: float = 5.0
+    interval_s: float = 0.2
+
+
+def quit_via_cli() -> None:
+    """`scribesense quit` (A1: the running instance exits safely). A child process, so this module still loads no GTK (A2)."""
+    run_cmd(["scribesense", "quit"], QUIT_TIMEOUT_S)
+
+
+def _service_stopped(service: ServiceControl | None) -> bool:
+    """True only when it is CONFIRMED that no service is running. Anything uncertain counts as not stopped."""
+    if service is None:
+        return False  # nobody can tell: never delete under a service we cannot rule out
+    try:
+        if not service.running():
+            return True
+        if service.stop is not None:
+            service.stop()
+        deadline = time.monotonic() + service.wait_s
+        while True:
+            if not service.running():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(service.interval_s)
+    except Exception:  # noqa: BLE001 — a failed check or a failed quit is "cannot confirm"
+        return False
 
 
 class FontOps(Protocol):
@@ -166,12 +215,17 @@ def _remove_keybinds(report: UninstallReport, remover: Callable[[], bool]) -> No
         log(exc.code, "uninstall", step="keybinds")
 
 
-def _delete_data(report: UninstallReport, journal: Journal, store: Store, confirm: Callable[[str], bool]) -> None:
+def _delete_data(report: UninstallReport, journal: Journal, store: Store, confirm: Callable[[str], bool],
+                 service: ServiceControl | None) -> None:
     question = ("Delete all ScribeSense data (history, presets, settings, backups)? This removes ScribeSense's "
                 "records — it is not secure erasure. Restoring the original settings from ScribeSense will no "
                 "longer be possible.")
     if not confirm(question):
         report.data = "not_confirmed"
+        return
+    if not _service_stopped(service):  # only after the user said yes: a service is never stopped unasked
+        report.data = "service_running"
+        log("OK", "uninstall", step="data", reason="service_running")
         return
     token = journal.no_obligations()
     if token is None:
@@ -203,6 +257,7 @@ def uninstall(
     delete_data: bool = False,
     remove_fonts_anyway: bool = False,
     confirm: Callable[[str], bool] | None = None,
+    service: ServiceControl | None = None,
     fonts: FontOps | None = None,
     keybind_remover: Callable[[], bool] = remove_keybinds,
 ) -> UninstallReport:
@@ -219,7 +274,8 @@ def uninstall(
             return report
     try:
         _run(report, journal, adapters, store=store, delete_data=delete_data,
-             remove_fonts_anyway=remove_fonts_anyway, confirm=confirm, fonts=fonts, keybind_remover=keybind_remover)
+             remove_fonts_anyway=remove_fonts_anyway, confirm=confirm, service=service, fonts=fonts,
+             keybind_remover=keybind_remover)
     finally:
         if policy is not None:
             policy.lock.release()
@@ -228,7 +284,7 @@ def uninstall(
 
 def _run(report: UninstallReport, journal: Journal, adapters: Mapping[str, Adapter], *, store: Store | None,
          delete_data: bool, remove_fonts_anyway: bool, confirm: Callable[[str], bool] | None,
-         fonts: FontOps | None, keybind_remover: Callable[[], bool]) -> None:
+         service: ServiceControl | None, fonts: FontOps | None, keybind_remover: Callable[[], bool]) -> None:
     try:
         report.reset = recovery_reset(journal, adapters)  # the lock is already held (or there is no policy)
     except ScribeSenseError as exc:  # the journal itself failed: change nothing else
@@ -243,7 +299,7 @@ def _run(report: UninstallReport, journal: Journal, adapters: Mapping[str, Adapt
         _remove_keybinds(report, keybind_remover)
     if delete_data and store is not None:
         try:
-            _delete_data(report, journal, store, confirm or _terminal_confirm)
+            _delete_data(report, journal, store, confirm or _terminal_confirm, service)
         except ScribeSenseError as exc:
             report.error = exc.code
             log(exc.code, "uninstall", step="data")
@@ -253,7 +309,8 @@ def exit_code(report: UninstallReport) -> ExitCode:
     """K10: 0 = completed (skipped items are described, not failures) · 1 = something failed · 3 = busy. Never 4 (A2)."""
     if report.error in (ErrorCode.LOCK_TIMEOUT, ErrorCode.APPLY_IN_PROGRESS):
         return ExitCode.BUSY
-    if report.error is not None or report.reset.failed or report.fonts_failed or report.keybinds == "failed":
+    if (report.error is not None or report.reset.failed or report.fonts_failed or report.keybinds == "failed"
+            or report.data == "service_running"):  # the deletion that was asked for and confirmed could not be done
         return ExitCode.FAILED
     return ExitCode.OK
 
@@ -298,6 +355,8 @@ def format_report(report: UninstallReport) -> str:
         "preferences_only": "Your presets, settings and samples were deleted. The recovery records were kept "
                             "because something is still unresolved.",
         "deleted": "All ScribeSense data was deleted.",
+        "service_running": "Your data was kept: a ScribeSense service is still running (or could not be checked). "
+                           "Run `scribesense quit`, then run `scribesense uninstall --delete-data` again.",
     }[report.data])
     lines.append(f"restored {len(report.reset.restored)} · skipped {len(report.reset.skipped)} · "
                  f"failed {len(report.reset.failed)}")

@@ -1393,7 +1393,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Local persistence for one user. [D F8] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | O3 / O4 (review pending) |
+| Built by / reviewed by | O3 / O4 (approved 2026-10-16) |
 | Depends on | K1–K8, sqlite3 [D A4] |
 | Used by | M1.8, M2.5–M2.7, M3.2, M4.10 |
 | Provides | K9 repositories, schema, migrations |
@@ -1445,7 +1445,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Prune old **transaction history** (and its per-tx backups). Never `LocationRecord`s or baseline backups. [D F8, R2] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | O3 / O4 (review pending) |
+| Built by / reviewed by | O3 / O4 (approved 2026-10-16) |
 | Depends on | M3.1 |
 | Used by | app startup [P] |
 | Provides | `prune(now)` |
@@ -1459,6 +1459,12 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Delete baselines or unfinished transactions |
 | Acceptance tests | 30-day/last-10 rule; baselines survive |
 | Done when | Tests pass · reviewed |
+
+> **O3 response to O4's M3.1 review (2026-10-18):** (1) nested `Store.transaction()` stays "join" (K9) — now stated in the docstring and pinned by a test;
+> (2) a constraint violation now raises `store.StoreConstraintError` (a `ScribeSenseError` with `STORE_CORRUPT`, K9 "integrity"), so `safety/` can catch it
+> without importing sqlite3; (3) the coverage key is `(tx_id, target_adapter, target_id)`, edited in migration 001 because nothing has shipped yet;
+> (4) the database file is created 0600 before SQLite touches it, so `-wal` / `-shm` are 0600 too; (5) a failed COMMIT rolls back before the error is raised
+> (tested with a deferred foreign key). 5 new tests.
 
 > **Implemented 2026-10-15 (O3, M3.2) — review by O4 pending.** `src/scribesense/store/retention.py`: `prune(journal, now) -> int`,
 > `RETENTION_DAYS = 30`, `KEEP_LAST = 10`. It takes any K4 journal (O4's SQLite journal, which holds the apply lock, or the in-memory
@@ -1598,7 +1604,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Install from repo with `uv`/pip; uninstall with full revert. [D F10] |
 | Owner / may be helped? | O3 / no |
-| Built by / reviewed by | O3 / O4 (review pending) |
+| Built by / reviewed by | O3 / O4 (reviewed 2026-10-16, fixed by O4 2026-10-17, accepted by O3 2026-10-18; VM test pending) |
 | Depends on | M3.7, M4.11, M4.14, M1.7 |
 | Used by | user |
 | Provides | install steps, `scribesense uninstall [--delete-data]` |
@@ -1634,6 +1640,14 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > - **Ownership note:** the new top-level module is O3's by analogy with `doctor.py`; the ownership table in AGENTS.md does not list it. O2/O4 to
 >   confirm.
 > - 21 unit tests (fake desktop, fonts, keybinds; both outcomes of every failure rule) + 2 sandbox tests with the real font cache.
+> **O3 review of O4's changes to `uninstall.py` (2026-10-18): accepted.** The lock is taken once and held for the whole run; fonts named by unfinished
+> transactions' planned writes are kept; the keybinds and login check stay (`kept_for_recovery`) while a revert failed or a transaction is unfinished.
+> All three fix real gaps of the first version, each with a test. O4's question "should `--delete-data` stop a running service first?" — **decided by O3 2026-10-18 (option C), built:** after the user confirms
+> the deletion, `uninstall` asks the service to quit and waits (bounded, default 5 s); if it cannot be confirmed stopped — still running, the check or the
+> quit failed, or `cli.py` supplied no check — **all data is kept** (outcome `service_running`, exit 1, message "run `scribesense quit`, then uninstall
+> --delete-data again"). A service is never touched unless the user confirmed, and never when no deletion was asked for. New: `uninstall.ServiceControl(running,
+> stop, wait_s, interval_s)` and `uninstall.quit_via_cli()` (`run_cmd(["scribesense","quit"], 10)` — a child process, so no GTK here, A2). **For O2:** pass
+> `service=ServiceControl(running=<single-instance check>, stop=quit_via_cli)` to `run_uninstall`; without it `--delete-data` refuses. 12 new tests.
 
 > **Reviewed by O4 (2026-10-16): changes needed** (each verified with a probe):
 > (1) **the lock covers only the reset step** — `recovery.reset(policy=…)` releases it in its `finally`, so font removal, keybind removal

@@ -21,6 +21,7 @@ from scribesense.safety.memory_journal import InMemoryJournal
 from scribesense.safety.testing import RecoverySystem, fake_fontset
 from scribesense.store import Store
 from scribesense import uninstall as un
+from scribesense.uninstall import ServiceControl
 
 FILE = "/fake/home/.config/fontconfig/conf.d/99-scribesense.conf"
 KEY = "org.gnome.desktop.interface font-name"
@@ -28,6 +29,9 @@ OTHER = "/fake/home/.config/qt6ct/qt6ct.conf"
 A = Configuration("Noto Sans", 0.12, 1.5, 1.5, 1.2, 1.0)
 A_FONT = fake_fontset(A).key
 STRAY = "0123456789ab"  # a generated font nothing references
+
+
+NOT_RUNNING = ServiceControl(lambda: False)
 
 
 class FakeFonts:
@@ -277,7 +281,7 @@ def test_confirmed_delete_removes_the_records_and_the_files(real_store: tuple[St
     store, s = real_store
     log_path().parent.mkdir(parents=True, exist_ok=True)
     log_path().write_text("{}\n")
-    report = run(s, store=store, delete_data=True, confirm=lambda q: True)
+    report = run(s, store=store, delete_data=True, confirm=lambda q: True, service=NOT_RUNNING)
     assert report.data == "deleted" and un.exit_code(report) is ExitCode.OK
     assert not store.path.exists() and not Path(str(store.path) + "-wal").exists()
     assert not log_path().exists()
@@ -287,7 +291,7 @@ def test_confirmed_delete_removes_the_records_and_the_files(real_store: tuple[St
 def test_when_something_is_unresolved_only_the_preferences_go(real_store: tuple[Store, RecoverySystem], world: FakeWorld) -> None:
     store, s = real_store
     world.external_edit(KEY, "'My Own Font 12'")  # skipped -> unresolved: recovery records must stay
-    report = run(s, store=store, delete_data=True, confirm=lambda q: True)
+    report = run(s, store=store, delete_data=True, confirm=lambda q: True, service=NOT_RUNNING)
     assert report.data == "preferences_only" and KEY in report.reset.skipped
     assert store.path.exists() and store.fetchone("SELECT COUNT(*) FROM presets")[0] == 0
     assert store.fetchone("SELECT COUNT(*) FROM location_records WHERE unresolved IS NOT NULL")[0] == 1
@@ -331,3 +335,124 @@ def test_the_log_gets_codes_only(system: RecoverySystem, world: FakeWorld) -> No
     run(system, keybinds=FakeKeybinds(ScribeSenseError(ErrorCode.DRIFT_SKIPPED)))
     text = log_path().read_text()
     assert "DRIFT_SKIPPED" in text and "My Own Font" not in text and "/fake/home" not in text
+
+
+# ---------------------------------------------------------------- a running service (decision C)
+
+class FakeService:
+    """running() answers from a script; stop() records the call and may or may not really stop it."""
+
+    def __init__(self, running: list[bool] | bool, *, stops: bool = True, stop_raises: bool = False) -> None:
+        self.script = [running] if isinstance(running, bool) else list(running)
+        self.last = self.script[-1]
+        self.stops, self.stop_raises = stops, stop_raises
+        self.stop_calls = 0
+        self.running_calls = 0
+
+    def running(self) -> bool:
+        self.running_calls += 1
+        return self.script.pop(0) if len(self.script) > 1 else self.last
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+        if self.stop_raises:
+            raise ScribeSenseError(ErrorCode.ADAPTER_COMMAND_FAILED)
+        if self.stops:
+            self.script, self.last = [False], False
+
+    def control(self, wait_s: float = 0.0) -> ServiceControl:
+        return ServiceControl(self.running, self.stop, wait_s=wait_s, interval_s=0.0)
+
+
+def delete_with(store: Store, s: RecoverySystem, service: ServiceControl | None, **kw: Any) -> un.UninstallReport:
+    return run(s, store=store, delete_data=True, confirm=lambda q: True, service=service, **kw)
+
+
+def test_a_running_service_is_stopped_after_the_confirmation_and_then_the_data_goes(real_store: tuple[Store, RecoverySystem]) -> None:
+    store, s = real_store
+    svc = FakeService([True, False])  # running, then gone after the quit
+    report = delete_with(store, s, svc.control())
+    assert svc.stop_calls == 1 and report.data == "deleted" and not store.path.exists()
+
+
+def test_a_service_that_is_not_running_is_left_alone(real_store: tuple[Store, RecoverySystem]) -> None:
+    store, s = real_store
+    svc = FakeService(False)
+    report = delete_with(store, s, svc.control())
+    assert svc.stop_calls == 0 and report.data == "deleted"  # nothing to stop: it is never touched
+
+
+def test_a_service_that_will_not_stop_keeps_all_data(real_store: tuple[Store, RecoverySystem]) -> None:
+    store, s = real_store
+    svc = FakeService(True, stops=False)
+    report = delete_with(store, s, svc.control())
+    assert report.data == "service_running" and svc.stop_calls == 1
+    assert store.path.exists() and store.fetchone("SELECT COUNT(*) FROM presets")[0] == 1  # not even preferences
+    assert store.fetchone("SELECT COUNT(*) FROM transactions")[0] >= 1
+    assert un.exit_code(report) is ExitCode.FAILED  # the deletion that was asked for could not be done
+    text = un.format_report(report)
+    assert "scribesense quit" in text and "uninstall --delete-data" in text and "kept" in text
+
+
+def test_a_failing_quit_counts_as_not_stopped(real_store: tuple[Store, RecoverySystem]) -> None:
+    store, s = real_store
+    svc = FakeService(True, stop_raises=True)
+    assert delete_with(store, s, svc.control()).data == "service_running" and store.path.exists()
+
+
+def test_a_failing_check_counts_as_not_stopped(real_store: tuple[Store, RecoverySystem]) -> None:
+    store, s = real_store
+
+    def broken() -> bool:
+        raise OSError("cannot tell")
+
+    assert delete_with(store, s, ServiceControl(broken, wait_s=0)).data == "service_running" and store.path.exists()
+
+
+def test_with_no_way_to_check_the_data_is_never_deleted(real_store: tuple[Store, RecoverySystem]) -> None:
+    store, s = real_store
+    report = delete_with(store, s, None)  # cli.py has not supplied a check: refuse, do not guess
+    assert report.data == "service_running" and store.path.exists()
+
+
+def test_a_service_without_a_stop_function_is_simply_refused(real_store: tuple[Store, RecoverySystem]) -> None:
+    store, s = real_store
+    svc = FakeService(True)
+    report = delete_with(store, s, ServiceControl(svc.running, None, wait_s=0))
+    assert report.data == "service_running" and store.path.exists()
+
+
+def test_the_wait_is_bounded_and_polls_until_the_service_is_gone(real_store: tuple[Store, RecoverySystem]) -> None:
+    store, s = real_store
+    svc = FakeService([True, True, True, True, False], stops=False)  # takes a few polls to exit after the quit
+    with patch.object(un.time, "sleep"):
+        report = delete_with(store, s, ServiceControl(svc.running, svc.stop, wait_s=5.0, interval_s=0.0))
+    assert report.data == "deleted" and svc.stop_calls == 1
+    assert svc.running_calls >= 5
+
+
+def test_the_service_is_not_touched_unless_the_user_confirmed(real_store: tuple[Store, RecoverySystem]) -> None:
+    store, s = real_store
+    svc = FakeService(True)
+    report = run(s, store=store, delete_data=True, confirm=lambda q: False, service=svc.control())
+    assert report.data == "not_confirmed" and svc.stop_calls == 0 and svc.running_calls == 0
+
+
+def test_the_service_is_not_touched_when_no_deletion_is_asked_for(real_store: tuple[Store, RecoverySystem]) -> None:
+    store, s = real_store
+    svc = FakeService(True)
+    report = run(s, store=store, service=svc.control())
+    assert report.data == "kept" and svc.stop_calls == 0 and svc.running_calls == 0
+
+
+def test_quit_via_cli_runs_scribesense_quit_through_run_cmd() -> None:
+    with patch.object(un, "run_cmd") as runner:
+        un.quit_via_cli()
+    runner.assert_called_once_with(["scribesense", "quit"], un.QUIT_TIMEOUT_S)  # no shell, with a timeout
+
+
+def test_a_missing_scribesense_command_surfaces_as_not_stopped(real_store: tuple[Store, RecoverySystem]) -> None:
+    store, s = real_store
+    with patch.object(un, "run_cmd", side_effect=ScribeSenseError(ErrorCode.ADAPTER_UNAVAILABLE)):
+        control = ServiceControl(lambda: True, un.quit_via_cli, wait_s=0)
+        assert delete_with(store, s, control).data == "service_running" and store.path.exists()

@@ -5,9 +5,9 @@
     prune(journal, now)      M3.2 retention at app start-up
 """
 
-from scribesense.store.core import Store, apply_migrations, default_path, latest_version
+from scribesense.store.core import Store, StoreConstraintError, apply_migrations, default_path, latest_version
 from scribesense.store.journal_tables import IllegalTransition, JournalTables
 from scribesense.store.retention import KEEP_LAST, RETENTION_DAYS, prune
 
-__all__ = ["IllegalTransition", "JournalTables", "KEEP_LAST", "RETENTION_DAYS", "Store", "apply_migrations",
+__all__ = ["IllegalTransition", "JournalTables", "KEEP_LAST", "RETENTION_DAYS", "Store", "StoreConstraintError", "apply_migrations",
            "default_path", "latest_version", "prune"]
