@@ -63,3 +63,20 @@ def test_real_build_of_each_builtin_from_the_bundled_noto_sans(fontconfig, prese
         out = paths.run_cmd(["fc-match", "-f", "%{family}\n%{file}", naming.fc_pattern(family)], timeout=10)
         name, file = out.stdout.decode().splitlines()
         assert name == family and Path(file).parent == paths.fonts_dir() / result.fonts.key
+
+
+@pytest.mark.parametrize("family", ["Carlito", "Atkinson Hyperlegible", "Lexend"])
+@pytest.mark.parametrize("preset_id", ["default", "reading", "high-separation"])
+def test_real_build_of_each_builtin_from_the_other_bundled_families(fontconfig, family: str, preset_id: str) -> None:  # type: ignore[no-untyped-def]
+    """The same real build for the rest of the K1 shortlist (bundled 2026-10-18)."""
+    import dataclasses
+
+    from scribesense.config import presets
+
+    config = presets.resolve(dataclasses.replace(presets.builtin(preset_id).values, base_family=family))
+    result = generator.build(config)
+    assert result.status == "built", (result.reason_code, result.detail, result.warnings)
+    for name_ in (result.fonts.reading_family, result.fonts.ui_family):
+        out = paths.run_cmd(["fc-match", "-f", "%{family}\n%{file}", naming.fc_pattern(name_)], timeout=10)
+        name, file = out.stdout.decode().splitlines()
+        assert name == name_ and Path(file).parent == paths.fonts_dir() / result.fonts.key

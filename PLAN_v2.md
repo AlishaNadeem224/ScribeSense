@@ -986,3 +986,12 @@ restored everything (5 restored, 0 failed).
 the Firefox `prefs.js` revert gap (proposed: key-level location for that pref); M3.5 scenarios and the M3.8 byte-identical
 uninstall test.
 
+## Fonts: Carlito, Atkinson Hyperlegible and Lexend bundled (2026-10-18, O4 for O1, user's go-ahead)
+
+Found during the demo rehearsal: choosing any base font except Noto Sans gave "Preview unavailable" and "Nothing changed
+(BUNDLED_FONT_MISSING)", because only Noto Sans was in `fonts/`. Fixed by bundling the other three K1 shortlist families
+from google/fonts (pinned commit, git blobs verified), with licences, manifest SHA-256 values and `fonts/tools/build_lexend.py`
+(Lexend ships only a variable font; Regular + Bold static instances, no italic). Details and licence notes in the M1.2 card.
+Tests: 2190 passed (unit) · 14 passed (real-tool fontgen integration in bubblewrap). **For O1 (Sukhmani) to review.**
+Still open: the font dropdown should list only families that are actually bundled (guard in O2's `ui/preset_editor.py`),
+so a missing folder can never reach the user again.

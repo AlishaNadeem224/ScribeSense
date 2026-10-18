@@ -953,6 +953,19 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > fallback). All three built-ins use Noto Sans, so Apply works end to end. Not yet bundled: Carlito (OFL **with** Reserved Font Name
 > "Carlito" — allowed now that M1.4 drops records 21/22/25, but not added today), Atkinson Hyperlegible and Lexend (not available
 > offline). Bundling real fonts changes every content key once (expected).
+>
+> **All four shortlist families bundled (2026-10-18, later, O4 for O1, cross-owner):** the font dropdown offered all of K1
+> `SHORTLIST`, but only Noto Sans was in `fonts/`, so choosing any other family refused Preview and Apply with
+> `BUNDLED_FONT_MISSING` (nothing written). Added from google/fonts commit `47d54ca1` (every file checked against its git blob):
+> `fonts/Carlito/` (1.104, four styles, unmodified; OFL-1.1 **with** Reserved Font Name "Carlito"),
+> `fonts/Atkinson Hyperlegible/` (1.006, four styles, unmodified; OFL-1.1, no RFN) and `fonts/Lexend/` (Regular + Bold, static
+> wght 400 / 700 instances of `Lexend[wght].ttf` 1.007 made reproducibly by `fonts/tools/build_lexend.py`; upstream has no italic;
+> OFL-1.1 with RFN "RevReading Lexend", which is not used). Generated fonts are `AccessSans-<key>` in name records 1/4/6; the source
+> name stays only in copyright (0, required by OFL), trademark (7), manufacturer (8), description (10) and URLs (11/12) — OFL clause 3
+> applies to the primary name only. Measured space widths: Carlito 0.226 em (Default → word_scale 1.75), Atkinson 0.280 em and
+> Lexend 0.280 em (Default → 1.5). Tests: `test_bundled_fonts.py` (manifest hashes, every SHORTLIST family bundled + eligible + licence,
+> every family builds, no primary name keeps the source name) and `test_fontgen_integration.py` (all three built-ins × the three new
+> families with the real pango-view / fc-cache / fc-match in bubblewrap). Checked in the real app (headless): every family previews.
 
 #### M1.3 Font eligibility rules
 | Field | Spec |
@@ -977,7 +990,8 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > **Done for O1 by O4 (2026-10-18, cross-owner):** (1) `_rename` drops name records 16, 17, 21, 22 and 25 (`_NAME_IDS_DROPPED`);
 > (2) the typo-metrics bit is set only on OS/2 ≥ 4 — versions 2/3 are raised to 4 (same fields), 0/1 get no bit; (3) the space-glyph
 > invariant is an explicit `PatchUnsupported` instead of an `assert`; (4) real fonts are bundled now (Noto Sans, see M1.2): all three
-> built-ins patch and validate with the real tools in the bubblewrap runner. CFF and Carlito / Atkinson / Lexend remain untested.
+> built-ins patch and validate with the real tools in the bubblewrap runner. Carlito / Atkinson / Lexend were bundled later
+> the same day and pass the same real-tool builds (see M1.2). CFF remains untested.
 > Tests in `tests/unit/fontgen/test_fontgen.py` (each fails without its fix).
 #### M1.4 Font patcher
 | Field | Spec |

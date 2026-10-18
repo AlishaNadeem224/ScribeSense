@@ -16,7 +16,42 @@ Bold = { file = "Noto Sans/NotoSans-Bold.ttf", sha256 = "ca024778c6bc8650aa24057
 Italic = { file = "Noto Sans/NotoSans-Italic.ttf", sha256 = "5d474190b7e5b889af176946a73a9231c302e29070b030e67f1017a373bf2ca6" }
 BoldItalic = { file = "Noto Sans/NotoSans-BoldItalic.ttf", sha256 = "6d2a1abab5ffc2a5e458aa25a123b0f71d329dd8ef0689cd42ca64731d944e86" }
 
-# Not bundled yet:
-# - Carlito: OFL-1.1 WITH Reserved Font Name "Carlito" — bundle only with the M1.4 name-record fix in place (generated
-#   fonts must not carry the reserved name; patcher drops records 16/17/21/22/25 since 2026-10-18).
-# - Atkinson Hyperlegible, Lexend: not available offline; add the official static files + licence when fetched.
+["Carlito"]
+upstream = "Carlito 1.104 (googlefonts/carlito 3a810cab), google/fonts commit 47d54ca1ebb14fd864695f1d39dc734f39017c33, ofl/carlito/ (git blobs verified)"
+licence = "OFL-1.1"
+licence_file = "Carlito/OFL.txt"
+reserved_font_name = "Carlito"  # generated fonts are renamed AccessSans-<key>; the patcher drops records 16/17/21/22/25
+derived = "unmodified upstream files"
+added = "2026-10-18 (O4 for O1, licence checked: OFL-1.1 with Reserved Font Name \"Carlito\"; not used by generated fonts)"
+
+["Carlito".files]
+Regular = { file = "Carlito/Carlito-Regular.ttf", sha256 = "f6418f708baede9789daef5d458c0f53d2a888af9820e8062934e504fedc6595" }
+Bold = { file = "Carlito/Carlito-Bold.ttf", sha256 = "bb5d20f79b82599ec72983597437373a80f2d2085fa91fc144fd74e876a594db" }
+Italic = { file = "Carlito/Carlito-Italic.ttf", sha256 = "0b019225e58d702bfedcbd35c21696769f8ee115cb6343f84c2f240312450d1c" }
+BoldItalic = { file = "Carlito/Carlito-BoldItalic.ttf", sha256 = "b32928186c119599e03ca6a1ffc680fdcb7fac95772f4b95d989cf6cd3861517" }
+
+["Atkinson Hyperlegible"]
+upstream = "Atkinson Hyperlegible 1.006 (googlefonts/atkinson-hyperlegible 1cb31162), google/fonts commit 47d54ca1ebb14fd864695f1d39dc734f39017c33, ofl/atkinsonhyperlegible/ (git blobs verified)"
+licence = "OFL-1.1"
+licence_file = "Atkinson Hyperlegible/OFL.txt"
+reserved_font_name = false
+derived = "unmodified upstream files"
+added = "2026-10-18 (O4 for O1, licence checked: OFL-1.1, no Reserved Font Name)"
+
+["Atkinson Hyperlegible".files]
+Regular = { file = "Atkinson Hyperlegible/AtkinsonHyperlegible-Regular.ttf", sha256 = "7fb917c89019896d0b52ee84b7cbb3304c18cb90b19a62f5e32712bd23e97669" }
+Bold = { file = "Atkinson Hyperlegible/AtkinsonHyperlegible-Bold.ttf", sha256 = "5a3b0c8cc8ca545155150b4512a1fa248298df121c50d6557e651e61fbdab92f" }
+Italic = { file = "Atkinson Hyperlegible/AtkinsonHyperlegible-Italic.ttf", sha256 = "021beda4d3c6edfc78872e436d74009f9a1bcb294331908fe5747c61d3dcc514" }
+BoldItalic = { file = "Atkinson Hyperlegible/AtkinsonHyperlegible-BoldItalic.ttf", sha256 = "7a46f1b0ef2f64b61065c1a6b5a11fcb9b019b44062d88ba121a083cc39e86bf" }
+
+["Lexend"]
+upstream = "Lexend 1.007 (googlefonts/lexend 20491885), google/fonts commit 47d54ca1ebb14fd864695f1d39dc734f39017c33, ofl/lexend/Lexend[wght].ttf (git blob f70999106bfa76d48051b73ad7c888573663879c)"
+licence = "OFL-1.1"
+licence_file = "Lexend/OFL.txt"
+reserved_font_name = "RevReading Lexend"  # not used: the static instances are named "Lexend", generated fonts AccessSans-<key>
+derived = "static instances of the variable font, wght 400 / 700, made by fonts/tools/build_lexend.py (reproducible); upstream has no italic"
+added = "2026-10-18 (O4 for O1, licence checked: OFL-1.1 with Reserved Font Name \"RevReading Lexend\"; not used)"
+
+["Lexend".files]
+Regular = { file = "Lexend/Lexend-Regular.ttf", sha256 = "ef13b363dea2a62e5bda828b8231e54c6997ea668839db25a78573f278f6b98f" }
+Bold = { file = "Lexend/Lexend-Bold.ttf", sha256 = "9fa23c99b0e5b63100869ca5562861e5cee3a4f45046df42fe1260c6b0340295" }
