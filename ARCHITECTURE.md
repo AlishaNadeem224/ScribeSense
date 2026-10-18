@@ -1214,7 +1214,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Application window, navigation, single-instance background service; closing the window doesn't quit; explicit Quit. [D F6, A1] |
 | Owner / may be helped? | O2 / no |
-| Built by / reviewed by | TBD / O3 |
+| Built by / reviewed by | O2 / O3 (approved 2026-10-18, with notes) |
 | Depends on | GTK4 + libadwaita [D A4] |
 | Used by | M2.5–M2.9 |
 | Provides | window, pages, action entry points for M2.11 |
@@ -1228,6 +1228,13 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Be required by the recovery path [D A2] |
 | Acceptance tests | Keyboard-only navigation; screen-reader labels; large text (manual checklist) [D] |
 | Done when | Accessibility checklist passes · reviewed |
+
+> **Reviewed by O3 (2026-10-18): approved, with two notes; the accessibility part of "Done when" is not demonstrated.** Read-only review (GTK 4 / libadwaita are not installed on the O3 machine, so the UI was not run). Verified by reading
+> `ui/app.py` and `ui/window.py`: A1 — `hold()` keeps the service alive, the window hides on close (`set_hide_on_close(True)`), the explicit `quit` is refused with exit 3 while a service call runs and never opens the Service (so it cannot
+> migrate, prune or delete fonts; O3's `uninstall --delete-data` relies on that and treats a non-zero exit as "not stopped"); A15 — an unconfirmed change is reverted at Quit and the store is closed, `confirm` is never forwarded; a start-up
+> error shows a banner with the message and the recovery info instead of a blank window; A2 — the app is imported lazily, only for GUI commands (the import-rule test passes); icon-only window buttons carry accessible labels. Notes:
+> (1) **the UI tests do not run in CI or on the O3 machine** — they skip when the GTK / Adw typelibs are missing; add `gir1.2-gtk-4.0` and `gir1.2-adw-1` to the CI job. (2) "Done when: accessibility checklist passes" is unmet — it needs a graphical
+> session (manual checklist A–E, M3.5 VM).
 
 #### M2.5 Presets, adjust and preview screens
 | Field | Spec |
@@ -1274,7 +1281,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | "Help improve recommendations" opt-in, keybinds, "Delete all ScribeSense data", recovery info. [D F8, F10] |
 | Owner / may be helped? | O2 / no |
-| Built by / reviewed by | TBD / O3 |
+| Built by / reviewed by | O2 / O3 (approved 2026-10-18, with notes) |
 | Depends on | M3.1, M4.14 |
 | Used by | user |
 | Provides | settings UI |
@@ -1288,6 +1295,14 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Enable data collection by default |
 | Acceptance tests | Default off; delete requires confirmation; recovery keybind displayed |
 | Done when | Tests pass · reviewed |
+
+> **Reviewed by O3 (2026-10-18): approved, with three notes.** Read of `ui/settings_page.py` and its wiring in `ui/window.py`, plus probes of the pure helpers with only `gi` stubbed, against a real store and the SQLite journal. Verified: the
+> opt-in is off by default (K9) and a bool setting is stored with the exact type; keybind validation refuses an empty value, a duplicate combination and an injection attempt; a live conflict is shown on screen only, never logged; the recovery keybind and
+> `scribesense reset` are shown; delete-all offers a reset first, then asks for confirmation, and deletes the recovery records only when the journal issues the token (with an apply in progress the records were kept and the preferences were still
+> deleted, as designed). Notes: (3) **delete-all runs outside the apply lock** — `window.py` calls `delete_all_data(service.store, service.journal)` without the service mutex or the lock, though K9 says "apply lock → block applies → reset → delete".
+> Probed: an apply starting between the token and `delete_recovery_data` is refused by the store (`RECOVERY_OBLIGATIONS_REMAIN`, journal intact, nothing lost), but the user sees a generic error after the presets were already deleted. Add a service
+> method that holds the mutex and the lock and treats that code as "recovery kept". (4) **The pure helpers cannot be unit-tested without GTK**: they live in a module that imports GTK at the top, so CI never runs them (they are GTK-free in substance — a
+> small `settings_logic.py` would do). (5) Cosmetic: keybind normalization reorders modifiers and keeps the key's case ("super alt, r" → "SUPER ALT, r"; the default recovery bind becomes "SUPER CTRL ALT SHIFT, BackSpace"); it round-trips through the parser.
 
 #### M2.8 Tray (optional)
 | Field | Spec |

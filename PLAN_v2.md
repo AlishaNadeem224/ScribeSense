@@ -928,3 +928,7 @@ themselves. Reviews still named for O3: M1.4, M1.6, M2.4, M2.7.
 fontconfig (proved with `fc-scan`) — fix before the real fonts land; the typo-metrics bit is set on `OS/2` tables older than v4; the "all 4 shortlist fonts" condition cannot be met until `fonts/` is bundled. M1.6: the naming check ignores
 records 21 / 22 / 25 (the real renderer catches it, fail-closed), the docstring still says the rendering half was never executed, tolerances are tuned on synthetic fonts. Reviews still named for O3: M2.4 and M2.7.
 
+**M2.4 and M2.7 reviewed by O3 (2026-10-18): both approved, with notes for O2** (details in each card in `ARCHITECTURE.md`; read-only review, the UI could not be run on the O3 machine). M2.4: the UI tests skip in CI (no GTK typelibs) and the accessibility
+checklist is not run (needs the graphical VM). M2.7: delete-all runs outside the service mutex and the apply lock (a refused deletion after the presets are gone gives a generic error — nothing is lost); the pure helpers sit in a GTK-importing
+module and are never tested in CI; keybind normalization is cosmetic. **All reviews named for O3 are now recorded:** M4.10, M4.11, M4.13, M4.14, M4.15, M1.4, M1.6, M2.4, M2.7.
+
