@@ -16,14 +16,18 @@ Rules:
   that the browser must not be able to send). Only the K11 fields are forwarded; extra keys are dropped.
 - `open_in_reader` text longer than MAX_READER_CHARS (A17) -> TOO_LARGE, never truncated.
 - Service unreachable -> {"v": 1, "ok": false, "error": "APP_NOT_RUNNING"}.
-- Every framed request gets exactly one framed reply, in order (the extension relies on this).
+- Every framed request gets exactly one framed reply, in order (the extension relies on this). The only
+  other frames are `style_changed` pushes, which the extension tells apart by their `type`.
 - Privacy: message content is never logged — only error codes and the request type (an identifier
   from the allow-list above).
 
-Not done here (TODO, O2 service M2.4): the `style_changed` push. The service socket answers one request
-per connection, so the host has no channel to receive pushes yet. Until the service grows a push path
-(without inventing a new IPC message type here), the extension re-requests `get_style` on every
-(re)connect and retry, which K11 already names as the source of correctness.
+Push (K11 "the service pushes style_changed"): a watcher thread keeps an `ipc.subscribe_style` subscription
+open to the service and forwards each revision as {"v": 1, "type": "style_changed", "revision": N}. The first
+one arrives as soon as the subscription opens, so a service started after the browser is noticed at the
+watcher's next retry (at most WATCH_BACKOFF_MAX_S later) without the extension having to poll.
+Service not running, or gone → re-subscribe with backoff (WATCH_BACKOFF_MIN_S … WATCH_BACKOFF_MAX_S). One lock
+serialises every frame written to stdout, so a push never lands inside a reply. A push is only a hint; the
+extension's `get_style` reply is what counts, and it still re-fetches on every (re)connect.
 
 This module never installs anything. `render_host_manifest()` only RETURNS the JSON the installer
 (M3.8) writes into the browser's NativeMessagingHosts directory.
@@ -35,7 +39,8 @@ import json
 import re
 import struct
 import sys
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -48,9 +53,12 @@ HOST_NAME = "com.scribesense.host"
 HOST_DESCRIPTION = "ScribeSense native messaging host"
 FORWARDED_TYPES = frozenset({"get_style", "open_in_reader"})
 REQUEST_TIMEOUT_S = 5.0
+WATCH_BACKOFF_MIN_S = 1.0
+WATCH_BACKOFF_MAX_S = 30.0
 
 Message = dict[str, Any]
 Sender = Callable[..., Message]  # ipc.request(message, *, timeout=...) -> reply
+Subscriber = Callable[..., Iterable[int]]  # ipc.subscribe_style(*, timeout=...) -> revisions
 
 _LENGTH = struct.Struct("=I")  # native byte order, 4 bytes, no padding
 _CHUNK = 65536
@@ -172,25 +180,72 @@ def handle(payload: bytes, *, send: Sender = ipc.request) -> Message:
     return ipc.error_reply(code)
 
 
-def serve(stdin: BinaryIO, stdout: BinaryIO, *, send: Sender = ipc.request) -> int:
-    """Bridge until the browser closes the port. Returns the process exit status (0)."""
-    while True:
+class FrameWriter:
+    """Every frame to the browser goes through here: one lock, so a push never lands inside a reply."""
+
+    def __init__(self, stream: BinaryIO) -> None:
+        self._stream = stream
+        self._lock = threading.Lock()
+
+    def write(self, message: Message) -> None:
+        with self._lock:
+            write_frame(self._stream, message)
+
+
+def watch_style(writer: FrameWriter, stop: threading.Event, *,
+                subscribe: Subscriber = ipc.subscribe_style) -> None:
+    """Forward the service's style revisions as K11 `style_changed` pushes until `stop` or the browser is gone."""
+    delay = WATCH_BACKOFF_MIN_S
+    while not stop.is_set():
         try:
-            payload = read_frame(stdin)
+            for revision in subscribe(timeout=REQUEST_TIMEOUT_S):
+                if stop.is_set():
+                    return
+                try:
+                    writer.write(ipc.style_changed(revision))
+                except OSError:  # stdout closed: the browser went away (only this ends the watcher)
+                    return
+                delay = WATCH_BACKOFF_MIN_S  # connected: the next outage starts from the shortest wait
         except ScribeSenseError as exc:
-            log(exc.code, "extension", step="frame")
+            if exc.code is not ErrorCode.SERVICE_UNREACHABLE:
+                log(exc.code, "extension", step="watch")
+        except Exception:  # noqa: BLE001 — a socket error or a bug must never end the pushes; retry later
+            log(ErrorCode.SERVICE_UNREACHABLE, "extension", step="watch")
+        stop.wait(delay)
+        delay = min(delay * 2, WATCH_BACKOFF_MAX_S)
+
+
+def serve(stdin: BinaryIO, stdout: BinaryIO, *, send: Sender = ipc.request,
+          subscribe: Subscriber | None = None) -> int:
+    """Bridge until the browser closes the port. Returns the process exit status (0).
+
+    `subscribe` (normally `ipc.subscribe_style`, see `main`) starts the push watcher; None = no pushes.
+    """
+    writer = FrameWriter(stdout)
+    stop = threading.Event()
+    if subscribe is not None:
+        threading.Thread(target=watch_style, args=(writer, stop), kwargs={"subscribe": subscribe},
+                         name="scribesense-style-watch", daemon=True).start()
+    try:
+        while True:
             try:
-                write_frame(stdout, ipc.error_reply(exc.code))
-            except OSError:
+                payload = read_frame(stdin)
+            except ScribeSenseError as exc:
+                log(exc.code, "extension", step="frame")
+                try:
+                    writer.write(ipc.error_reply(exc.code))
+                except OSError:
+                    return 0
+                continue  # oversized: skipped and in sync; truncated: the next read sees the end
+            if payload is None:
                 return 0
-            continue  # oversized: skipped and in sync; truncated: the next read sees the end
-        if payload is None:
-            return 0
-        reply = handle(payload, send=send)
-        try:
-            write_frame(stdout, reply)
-        except OSError:  # browser went away
-            return 0
+            reply = handle(payload, send=send)
+            try:
+                writer.write(reply)
+            except OSError:  # browser went away
+                return 0
+    finally:
+        stop.set()
 
 
 # --- Host manifest (for the installer, M3.8) -------------------------------------------------------
@@ -221,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point the browser starts. Chrome passes the caller origin as argv[1]; it is not needed:
     the host manifest's allowed_origins already limits who may start the host."""
     del argv
-    return serve(sys.stdin.buffer, sys.stdout.buffer)
+    return serve(sys.stdin.buffer, sys.stdout.buffer, subscribe=ipc.subscribe_style)
 
 
 if __name__ == "__main__":

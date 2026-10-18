@@ -35,6 +35,7 @@ from scribesense.contracts.journal import (
     TxKind,
 )
 from scribesense.contracts.states import TERMINAL, UNFINISHED, TxState, can_transition
+from scribesense.log import log
 
 
 class IllegalTransition(ValueError):
@@ -74,11 +75,25 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+
+def notify_style_changed(callback: Callable[[int], None] | None, revision: int) -> None:
+    """Run the `on_style_changed` hook after a committed Keep / Original. The change is already durable, so
+    a failing hook (e.g. no extension listening) is logged and ignored — it never breaks or undoes it."""
+    if callback is None:
+        return
+    try:
+        callback(revision)
+    except Exception:  # noqa: BLE001
+        log(ErrorCode.SERVICE_UNREACHABLE, "journal", step="style_changed")
+
+
 class InMemoryJournal:
     """K4 Journal without storage. Satisfies scribesense.contracts.journal.Journal."""
 
-    def __init__(self, clock: Callable[[], datetime] = _utcnow) -> None:
+    def __init__(self, clock: Callable[[], datetime] = _utcnow, *,
+                 on_style_changed: Callable[[int], None] | None = None) -> None:
         self._clock = clock
+        self._on_style_changed = on_style_changed  # K11 push hook, see notify_style_changed
         self._txs: dict[TxId, _Tx] = {}
         self._items: dict[ItemId, _Item] = {}
         self._backups: dict[str, _Backup] = {}
@@ -267,6 +282,7 @@ class InMemoryJournal:
         record.state = TxState.COMPLETED
         record.updated_at = self._clock()
         self._release_if_owner(tx, TxState.COMPLETED)
+        notify_style_changed(self._on_style_changed, self._revision)
         return self._revision
 
     def clear_managed(self, location: str) -> None:
@@ -283,6 +299,10 @@ class InMemoryJournal:
     def set_original(self) -> int:
         self._revision += 1
         self._active = None
+        notify_style_changed(self._on_style_changed, self._revision)
+        return self._revision
+
+    def style_revision(self) -> int:
         return self._revision
 
     def prune_history(self, before: datetime, keep_last: int) -> int:

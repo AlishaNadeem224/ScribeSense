@@ -221,3 +221,198 @@ def test_host_manifest_rejects_bad_extension_ids(ext_id: str) -> None:
 def test_host_manifest_requires_an_absolute_path() -> None:
     with pytest.raises(ValueError):
         native_host.render_host_manifest(EXT_ID, "bin/host")
+
+
+# --- style_changed push (K11) ----------------------------------------------------------------------
+
+import os  # noqa: E402
+import select  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+
+from scribesense.contracts.adapter import AppliedItem, PlannedWrite, SnapshotItem, Target, state_sha256  # noqa: E402
+from scribesense.contracts.config import Configuration  # noqa: E402
+from scribesense.contracts.journal import ActiveConfig  # noqa: E402
+from scribesense.contracts.states import TxState  # noqa: E402
+
+
+def _run_watcher(writer, stop, subscribe, timeout: float = 5.0) -> None:  # type: ignore[no-untyped-def]
+    """watch_style on a daemon thread with a deadline: a regression fails the test instead of hanging it."""
+    t = threading.Thread(target=native_host.watch_style, args=(writer, stop), kwargs={"subscribe": subscribe},
+                         daemon=True)
+    t.start()
+    t.join(timeout)
+    stop.set()
+    assert not t.is_alive(), "watch_style did not return"
+
+
+def test_watcher_forwards_revisions_and_resubscribes_after_an_outage(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(native_host, "WATCH_BACKOFF_MIN_S", 0.01)
+    out, stop, calls = io.BytesIO(), threading.Event(), []
+
+    def subscribe(*, timeout: float):  # type: ignore[no-untyped-def]
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise ScribeSenseError(ErrorCode.SERVICE_UNREACHABLE)  # the app is not running yet
+        if len(calls) == 2:
+            yield 3  # it started: greeting
+            yield 4  # a Keep
+            raise ScribeSenseError(ErrorCode.SERVICE_UNREACHABLE)  # it quit
+        yield 5  # it is back
+        stop.set()
+
+    _run_watcher(native_host.FrameWriter(out), stop, subscribe)
+    assert replies(out.getvalue()) == [{"v": 1, "type": "style_changed", "revision": n} for n in (3, 4, 5)]
+    assert calls == [native_host.REQUEST_TIMEOUT_S] * 3
+
+
+def test_watcher_stops_when_the_browser_is_gone() -> None:
+    class Closed(io.BytesIO):
+        def write(self, _b: bytes) -> int:  # type: ignore[override]
+            raise BrokenPipeError
+
+    def subscribe(*, timeout: float):  # type: ignore[no-untyped-def]
+        while True:
+            yield 1
+
+    _run_watcher(native_host.FrameWriter(Closed()), threading.Event(), subscribe)  # returns on its own
+
+
+def test_a_push_never_lands_inside_a_reply() -> None:
+    class Slow(io.BytesIO):
+        def write(self, b: bytes) -> int:  # type: ignore[override]
+            n = 0
+            for i in range(0, len(b), 3):  # dribble bytes so an unlocked writer would interleave
+                n += super().write(b[i:i + 3])
+                time.sleep(0)
+            return n
+
+    out = Slow()
+    writer = native_host.FrameWriter(out)
+    reply = {"v": 1, "ok": True, "active": True, "revision": 7, "css": "x" * 500}
+    threads = [threading.Thread(target=lambda: [writer.write(reply) for _ in range(50)]),
+               threading.Thread(target=lambda: [writer.write(ipc.style_changed(i)) for i in range(50)])]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    frames = replies(out.getvalue())
+    assert len(frames) == 100 and frames.count(reply) == 50
+
+
+def test_end_to_end_keep_pushes_style_changed_to_the_browser() -> None:
+    """Real SQLite journal -> its on_style_changed hook -> real IPC server -> real host -> a browser frame."""
+    from scribesense.safety.journal import SqliteJournal
+    from scribesense.safety.lock import ApplyLock
+    from scribesense.store import Store, default_path
+
+    store = Store(default_path())
+    holder: dict[str, ipc.IpcServer] = {}
+    journal = SqliteJournal(store, ApplyLock(),
+                            on_style_changed=lambda rev: holder["server"].publish_style_changed(rev))
+
+    def service(message: ipc.Message) -> ipc.Message:
+        active = journal.active()
+        if active is None:
+            return {"v": 1, "ok": True, "active": False, "revision": journal.style_revision()}
+        return {"v": 1, "ok": True, "active": True, "revision": active.style_revision, "css": "p{}"}
+
+    stdin_r, stdin_w = os.pipe()
+    stdout_r, stdout_w = os.pipe()
+    host_in, host_out = os.fdopen(stdin_r, "rb", buffering=0), os.fdopen(stdout_w, "wb", buffering=0)
+    browser_in, browser_out = os.fdopen(stdout_r, "rb", buffering=0), os.fdopen(stdin_w, "wb", buffering=0)
+
+    def next_frame() -> dict:
+        assert select.select([browser_in], [], [], 5.0)[0], "no frame from the host within 5 s"
+        return json.loads(native_host.read_frame(browser_in))
+
+    with ipc.IpcServer(service, style_revision=journal.style_revision) as server:
+        holder["server"] = server
+        host = threading.Thread(target=native_host.serve, daemon=True, args=(host_in, host_out),
+                                kwargs={"subscribe": ipc.subscribe_style})
+        host.start()
+        try:
+            assert next_frame() == {"v": 1, "type": "style_changed", "revision": 0}  # greeting
+            browser_out.write(frame({"v": 1, "type": "get_style"}))
+            assert next_frame() == {"v": 1, "ok": True, "active": False, "revision": 0}
+
+            t = Target("fake", "t", "Test", False)
+            tx = journal.begin("apply", "default")
+            item = journal.record_snapshot(tx, SnapshotItem(t, "key", "org.x font-name", True, "'A 11'",
+                                                            state_sha256(True, b"'A 11'"), None, "s"), None)
+            for state in (TxState.SNAPSHOTTED, TxState.APPLYING):
+                journal.set_state(tx, state)
+            journal.record_intent(tx, item, PlannedWrite(t, "org.x font-name", "'B 11'", state_sha256(True, b"'B 11'")))
+            journal.record_applied(tx, item, AppliedItem(t, "org.x font-name", state_sha256(True, b"'B 11'")))
+            journal.set_state(tx, TxState.VERIFYING)
+            journal.mark_retained(tx, item)
+            journal.set_state(tx, TxState.AWAITING_CONFIRMATION)
+            journal.keep(tx, ActiveConfig(Configuration("Noto Sans", 0.12, 1.5, 1.5, 1.2, 1.0), "abcabcabcabc", "default", 0))
+
+            assert next_frame() == {"v": 1, "type": "style_changed", "revision": 1}  # pushed, no polling
+            browser_out.write(frame({"v": 1, "type": "get_style"}))
+            assert next_frame() == {"v": 1, "ok": True, "active": True, "revision": 1, "css": "p{}"}
+            journal.set_original()
+            assert next_frame() == {"v": 1, "type": "style_changed", "revision": 2}
+        finally:
+            browser_out.close()  # the browser closes the port: the host exits
+            host.join(timeout=5)
+            for f in (host_in, host_out, browser_in):
+                f.close()
+    assert not host.is_alive()
+
+
+class _RecordingStop:
+    """A stop event whose wait() records the backoff delays instead of sleeping."""
+
+    def __init__(self, after: int) -> None:
+        self.delays: list[float] = []
+        self._event = threading.Event()
+        self._after = after
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def wait(self, delay: float) -> bool:
+        self.delays.append(delay)
+        if len(self.delays) >= self._after:
+            self._event.set()
+        return self._event.is_set()
+
+
+def test_watcher_backoff_doubles_to_the_cap_and_restarts_after_a_success() -> None:
+    calls = {"n": 0}
+
+    def subscribe(*, timeout: float):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 8:
+            yield 1  # one successful subscription in the middle ...
+        raise ScribeSenseError(ErrorCode.SERVICE_UNREACHABLE)
+
+    stop = _RecordingStop(after=10)
+    native_host.watch_style(native_host.FrameWriter(io.BytesIO()), stop, subscribe=subscribe)  # type: ignore[arg-type]
+    assert stop.delays == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 1.0, 2.0, 4.0]  # ... resets the backoff
+
+
+@pytest.mark.parametrize("error", [BlockingIOError(11, "backlog full"), PermissionError(13, "denied"), RuntimeError("bug")])
+def test_watcher_survives_socket_errors_and_bugs_and_retries(monkeypatch: pytest.MonkeyPatch, error: BaseException) -> None:
+    monkeypatch.setattr(native_host, "WATCH_BACKOFF_MIN_S", 0.01)
+    out, stop, calls = io.BytesIO(), threading.Event(), []
+
+    def subscribe(*, timeout: float):  # type: ignore[no-untyped-def]
+        calls.append(1)
+        if len(calls) == 1:
+            raise error  # not "the browser is gone": the watcher must keep going
+        yield 7
+        stop.set()
+
+    _run_watcher(native_host.FrameWriter(out), stop, subscribe)
+    assert replies(out.getvalue()) == [{"v": 1, "type": "style_changed", "revision": 7}]
+
+
+def test_main_starts_the_push_watcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict = {}
+    monkeypatch.setattr(native_host, "serve", lambda *a, **kw: seen.update(kw) or 0)
+    assert native_host.main(["host", "chrome-extension://x/"]) == 0
+    assert seen["subscribe"] is ipc.subscribe_style
+
