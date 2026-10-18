@@ -55,14 +55,16 @@ class PresetRepo:
         return tuple(BUILTINS)
 
     def list(self) -> list[Preset]:
-        """Built-ins first, then the `custom` row if it exists, then user presets by name.
+        """The catalogue: built-ins first, then user presets by name. The `custom` row is NOT included.
 
-        NOTE (O1's answer of 2026-10-18, D3): the target behaviour is that `list()` does NOT return `custom` — it is editing
-        state, not a catalogue entry (K9: "built-ins first, then user presets by name"). It still does, until the callers
-        that need EVERY stored preset (the font clean-up in `controller/service.py`) have moved to `list_all()`; then this
-        returns built-ins and user presets only. The UI already filters `custom` out.
+        Custom is editing state, not a catalogue entry — "stored ≠ listed" (K9 D3, confirmed by O1 on 2026-10-18; K9: "built-ins
+        first, then user presets by name"). Read it with `get("custom")`. Anything that must see EVERY stored preset — above all the
+        font clean-up (K7 rule 3) — uses `list_all()`.
         """
-        return self.list_all()
+        rows = self._s.fetchall(
+            "SELECT id, name, kind, data FROM presets WHERE kind = 'user' ORDER BY name COLLATE NOCASE, name, id"
+        )
+        return [*self._builtins(), *(ser.preset_from_row(r["id"], r["name"], r["kind"], r["data"]) for r in rows)]
 
     def list_all(self) -> list[Preset]:
         """EVERY preset the store knows: built-ins, the `custom` row if it exists, then user presets by name.

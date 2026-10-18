@@ -995,3 +995,7 @@ from google/fonts (pinned commit, git blobs verified), with licences, manifest S
 Tests: 2190 passed (unit) · 14 passed (real-tool fontgen integration in bubblewrap). **For O1 (Sukhmani) to review.**
 Still open: the font dropdown should list only families that are actually bundled (guard in O2's `ui/preset_editor.py`),
 so a missing folder can never reach the user again.
+
+**D3 step 2 done (2026-10-18, O3, requested by the integrator):** `PresetRepo.list()` now returns built-ins and user presets only; the `custom` row is stored once and read with `get("custom")` ("stored ≠ listed", as O1 confirmed). Safe because O4 had already switched the start-up font clean-up
+(`controller/service.py`) to `presets.list_all`. Test: `test_the_custom_row_is_stored_once_but_never_listed`. The earlier "waiting for O2 / O4" lines about this are closed.
+
