@@ -899,3 +899,5 @@ graphical session) · M3.6 graphical checklist sections · M3.8 byte-identical V
 
 **2026-10-18 (O3):** `--delete-data` vs a running service decided (option C) and built in `uninstall.py` — the service is asked to quit after the user confirms;
 if it cannot be confirmed stopped, all data is kept (exit 1). O2 must supply the "is the service running" check; without it `--delete-data` refuses.
+- **O4 (added 2026-10-18):** look over the new `ServiceControl` / `quit_via_cli` part of `src/scribesense/uninstall.py` (O3 added it on top of O4's own
+  review fixes; 12 tests; not blocking). **O2:** pass `service=ServiceControl(running=…, stop=quit_via_cli)` from `cli.py`, otherwise `--delete-data` refuses.
