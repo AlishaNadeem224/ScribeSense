@@ -966,7 +966,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Produce a patched font: wider Latin advances (letter), wider space glyph (word), raised line metrics (line height), ligatures removed, renamed. [D Step 2, F2] |
 | Owner / may be helped? | O1 / no — the core algorithm |
-| Built by / reviewed by | TBD / O3 |
+| Built by / reviewed by | O1 / O3 (approved 2026-10-18, with notes) |
 | Depends on | M1.1, M1.3, fontTools [D A4] |
 | Used by | M1.5 |
 | Provides | `patch(source_path, config, line: float, out_path) -> None` |
@@ -980,6 +980,14 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Change non-Latin glyphs; keep the original family name (shadow mode = Later) |
 | Acceptance tests | Measured advance and space width match config; Devanagari glyphs unchanged; no `liga` feature; TrueType and CFF fonts handled; variable fonts flattened per weight [D Step 2 fixes] |
 | Done when | Tests pass for all 4 shortlist fonts · reviewed |
+
+> **Reviewed by O3 (2026-10-18): approved, with four notes — (1) and (4) to settle before the real fonts land.** Verified with real fontTools on synthetic fonts: only `GSUB`, `OS/2`, `hhea`, `hmtx`, `name` and `head` (checksum only)
+> change; Latin advances +120 at UPM 1000 (letter_em 0.12), space ×1.5, Devanagari unchanged; `liga` removed with the feature indices re-mapped; `LTSH` / `hdmx` deleted; the same inputs twice give identical bytes
+> (`recalcTimestamp` off); nothing is written on failure (atomic temporary file). Notes: (1) **`_rename` leaves name records 21, 22 and 25 (WWS family / subfamily, variations PS prefix) untouched, so the source family
+> survives** — proved with `fc-scan` on a patched font: fontconfig lists it under both the source WWS name and the generated name, which the card's "never keep the original family name" forbids. Remove 21 and 22 (like 16 and 17)
+> and rewrite 25. It matters only if a shortlist font carries those records. M1.6 catches it today only indirectly (see M1.6 note 6). (2) `USE_TYPO_METRICS` (`fsSelection` bit 7) is set on an `OS/2` table of version < 4, where the bit is undefined
+> (fontTools warns on save; HarfBuzz ignores it below v4): bump the version to 4 when the table is v2+, or skip the bit — change M1.6's matching check with it. (3) `assert space not in targets` is a runtime invariant written as an `assert`
+> (stripped under `-O`); use an explicit check. (4) The "Done when: tests pass for all 4 shortlist fonts" condition cannot be met yet: `fonts/` is empty, so only synthetic fixtures are tested; CFF, hinting and real kerning are not demonstrated.
 
 #### M1.5 Variants and naming
 | Field | Spec |
@@ -1006,7 +1014,7 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 |---|---|
 | Purpose | Check a built font really carries the requested spacing before it can be activated. [D F2] |
 | Owner / may be helped? | O1 / no |
-| Built by / reviewed by | TBD / O3 |
+| Built by / reviewed by | O1 / O3 (approved 2026-10-18, with notes) |
 | Depends on | M1.5, `pango-view` |
 | Used by | M1.8 |
 | Provides | `validate_font(paths, config) -> ValidationResult(ok, measurements, reason_code)` |
@@ -1020,6 +1028,13 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Use the user's real fontconfig |
 | Acceptance tests | A correct font passes; a deliberately unpatched font fails |
 | Done when | Tests pass · reviewed |
+
+> **Reviewed by O3 (2026-10-18): approved, with four notes.** Verified: isolation (a private fontconfig with no `<include>`, `FONTCONFIG_PATH` and `XDG_CACHE_HOME` redirected, commands through `run_cmd`); a correct build passes with the
+> REAL `pango-view` / `fc-match` (and in the sandbox integration tests); an unpatched font fails (`VALIDATION_ADVANCE_MISMATCH`); a missing tool fails closed (`VALIDATION_TOOL_MISSING`). Notes: (5) the module docstring is stale: "the rendering half
+> has not been executed on Fedora, or anywhere" — it now runs in the sandbox and in O3's probes. (6) The naming check compares name record 1 and requires record 16 absent; it ignores 21, 22 and 25. In a probe a source family left in record 21
+> was caught only by the rendering check (`VALIDATION_RESOLUTION_MISMATCH`), so such a build is refused (fail-closed) instead of shipping a shadowing font — but a shortlist font with WWS names would then never build until M1.4 is fixed. Add an
+> explicit check of every name record for the source family (`VALIDATION_FAMILY_COLLISION`). (7) The check that requires the typo-metrics bit must follow M1.4 note 2. (8) The render tolerances (`RENDER_TOLERANCE_PX_PER_GLYPH`, `MIN_RENDER_TOLERANCE_PX`) are
+> tuned on synthetic fonts and each external call has a 60 s timeout; re-check both when the real fonts are bundled.
 
 #### M1.7 Font cache and install
 | Field | Spec |

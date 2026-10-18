@@ -924,3 +924,7 @@ intent (unreachable today), failed items carry no error code. M4.13: document th
 says "include line journaled" but the implementation uses the marker line, the installer must pass `allow_unchecked` on purpose, the VM check is still open. M4.15: use `fullmatch`, identifier fields do not guarantee privacy by
 themselves. Reviews still named for O3: M1.4, M1.6, M2.4, M2.7.
 
+**M1.4 and M1.6 reviewed by O3 (2026-10-18): both approved, with notes for O1** (details in each card in `ARCHITECTURE.md`). M1.4: the patcher leaves name records 21 / 22 / 25 untouched, so the source family stays visible to
+fontconfig (proved with `fc-scan`) — fix before the real fonts land; the typo-metrics bit is set on `OS/2` tables older than v4; the "all 4 shortlist fonts" condition cannot be met until `fonts/` is bundled. M1.6: the naming check ignores
+records 21 / 22 / 25 (the real renderer catches it, fail-closed), the docstring still says the rendering half was never executed, tolerances are tuned on synthetic fonts. Reviews still named for O3: M2.4 and M2.7.
+
