@@ -1976,7 +1976,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 |---|---|
 | Purpose | Record every change before it happens; transaction states; apply lock. [D F4, F5] |
 | Owner / may be helped? | O4 / **no (O4 only)** [D] |
-| Built by / reviewed by | O4 / O3 |
+| Built by / reviewed by | O4 / O3 (approved 2026-10-18, with notes) |
 | Depends on | K3–K5, M3.1 |
 | Used by | M2.1, M2.3, M4.11, M4.12, M3.2 |
 | Provides | K4 |
@@ -1998,7 +1998,7 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > M4.10 (`safety/journal.py`) calls it** (import rule R3 unchanged) · D7 only ScribeSense-managed locations
 > are stored (pattern test must accept K3 rule 10b `<Preferences path>#<key>` locations).
 
-> **Implemented 2026-10-16 (O4) — review by O3 pending.** `safety/journal.py` `SqliteJournal(store, lock, role=…)`: K4 on
+> **Implemented 2026-10-16 (O4) — reviewed by O3 2026-10-18: approved, with notes (below).** `safety/journal.py` `SqliteJournal(store, lock, role=…)`: K4 on
 > `store.JournalTables`, plus the apply lock. `begin()` takes `lock_path()` (owner record) and holds it until a terminal state or
 > REVERT_FAILED (`keep()` included); if the caller already holds the lock (`recovery.LockPolicy` for `reset` / `recover`), the journal uses
 > it and leaves releasing it to the caller. A store error in `begin()` releases the lock and propagates (refused before any write).
@@ -2008,6 +2008,18 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > the real adapters snapshot in their tests match `is_managed_location_shape()`; not enforced in the journal (fakes use free names).
 > Production wiring (who constructs it): the service — `SqliteJournal(Store(default_path()), ApplyLock(), role="service")`; `reset` /
 > `recover --login` / `uninstall` — `Store(default_path(), mode="recovery")` + the same `ApplyLock` the `LockPolicy` holds.
+
+> **Reviewed by O3 (2026-10-18): approved, with three non-blocking notes** (read of `safety/journal.py` and `tests/unit/test_sqlite_journal.py`, plus probes against a temporary store).
+> All 24 K4 methods map to `JournalTables`; the lock follows K4 rule 1 (taken in `begin()`, released at a terminal state and at `REVERT_FAILED`, a caller-held lock is used and
+> left to the caller, a store error in `begin()` releases it); a `keep()` that fails at its last statement leaves the tx awaiting confirmation, the lock held and nothing
+> partial written, and a retry succeeds; a `mode="recovery"` store runs a full revert cycle. Notes for O4:
+> (1) **`begin()` is not thread-safe** — two threads calling it while the first is between taking the lock and recording the tx both get a tx (reproduced with a delayed
+> `create_tx`). Not reachable today: `controller/service.py` serializes apply / keep / revert / reset with an `RLock`. Suggest a `threading.Lock` around `begin()`, `_ended()` and `prune_history()`.
+> (2) **`prune_history()` checks the lock but does not hold it** (K9: "runs under the apply lock"); a race cannot corrupt anything because the SQL never deletes unfinished
+> transactions — hold the lock for the duration or document the check as advisory.
+> (3) **A new apply is accepted while an unfinished tx from a crash exists** (probed: `begin("apply")` returned a tx). A3 says recovery completes before any new Apply; today only the
+> login hook enforces it, and neither the journal nor `apply_flow.py` checks `unfinished()`. Decision for O2/O4: refuse `begin("apply")` while `unfinished()` is non-empty, or check in the controller.
+> Missing tests: two threads in `begin()`; a failing `keep()` keeps the lock and a retry works; a journal on a recovery-mode store; `begin("apply")` with an unfinished tx (whichever behaviour is chosen).
 
 #### M4.11 Revert
 | Field | Spec |

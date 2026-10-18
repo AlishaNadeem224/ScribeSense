@@ -914,3 +914,7 @@ test VM exists.
 **O1 states D3 and D8 as confirmed.** D8 was corrected by O1 (`base_family` is not part of the registry identity either) and is **adopted and built** with tests. D3: O1 says confirmed, but
 describes `custom` as unsaved while their code stores it and expects `PresetRepo.list()` not to return it (M3.1 does) — O1 to say in one line whether `custom` is one stored row and whether
 `list()` includes it. Still O3's by hand: the "DRAFT" docstring in `contracts/store.py` (agents may not edit `contracts/`).
+
+**M4.10 reviewed by O3 (2026-10-18): approved, with three non-blocking notes for O4** (details in the M4.10 card in `ARCHITECTURE.md`): (1) `SqliteJournal.begin()` is not thread-safe (not reachable
+today, the service serializes with an `RLock`); (2) `prune_history()` checks the apply lock but does not hold it; (3) a new apply is accepted while an unfinished tx from a crash exists —
+A3 relies only on the login hook; O2/O4 to decide where to refuse it. Four tests are missing (listed in the card note).
