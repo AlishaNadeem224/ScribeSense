@@ -901,3 +901,11 @@ graphical session) · M3.6 graphical checklist sections · M3.8 byte-identical V
 if it cannot be confirmed stopped, all data is kept (exit 1). O2 must supply the "is the service running" check; without it `--delete-data` refuses.
 - **O4 (added 2026-10-18):** look over the new `ServiceControl` / `quit_via_cli` part of `src/scribesense/uninstall.py` (O3 added it on top of O4's own
   review fixes; 12 tests; not blocking). **O2:** pass `service=ServiceControl(running=…, stop=quit_via_cli)` from `cli.py`, otherwise `--delete-data` refuses.
+
+**Scope note (2026-10-18, O3) — what a green M3.4 does and does not prove.** The M3.4 card prescribes *headless* browsers with a temporary profile
+(`--no-remote --new-instance`), and that is what the drawn-font engines test: given this fontconfig / CSS configuration, which font does the rendering
+engine actually draw (A14). Headless Firefox / Chromium run on a CLI-only machine. A passing M3.4 test therefore means "the engine picks our font from this
+configuration" — **not** "ScribeSense works in a user's browser". The product targets the real desktop browsers on Hyprland; that is only shown by the M3.5 VM
+scenarios (a real profile picks up `userContent.css` / `user.js` after a restart; Brave/Chrome rewriting `Preferences` while running; the extension and
+native-messaging path; what is drawn on Wayland) and by the M3.6 manual checklist (restart notice, what the user sees). Those stay open until a graphical
+test VM exists.
