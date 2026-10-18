@@ -972,3 +972,17 @@ date. Kept above as written; the current state:
   `contracts/errors.py` is added by a human.
 - Still needing a second owner (O4's own proposals): K3 rule 10b, K8, K4 rule 5 `subscribe_style` — O1, O2 or O3.
 
+## O4 VM checks done without the VM (2026-10-18)
+
+On the dev machine (Fedora 44, Hyprland 0.56.2, ML4W Lua config), with all writes on scratch copies / temporary
+profiles / a scratch HOME: Flatpak (real sandbox, Obsidian) PASS · qt6ct format (real file, no `[Fonts]` yet) PASS ·
+Brave Preferences edit kept by the browser PASS · Firefox `user.js` accepted PASS (gap: the stylesheet pref stays in
+`prefs.js` after revert) · real `hyprctl binds -j` parse + no default-keybind conflicts PASS · Lua hook install +
+`Hyprland --verify-config` "config ok" + byte-identical removal PASS. Details in the M4.4–M4.7 and M4.14 cards.
+Also: a full demo dry run (real app on a private display; real fontconfig / GTK / Qt adapters; bundled Noto Sans):
+apply → fc-match picks AccessSans, GTK and Qt fonts switched → Keep → browser `get_style` active → `scribesense reset`
+restored everything (5 restored, 0 failed).
+**Still for the VM / a real session:** a live `hyprctl reload`; Qt / GTK / browsers actually drawing the font on screen;
+the Firefox `prefs.js` revert gap (proposed: key-level location for that pref); M3.5 scenarios and the M3.8 byte-identical
+uninstall test.
+

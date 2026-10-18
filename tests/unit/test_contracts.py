@@ -19,7 +19,7 @@ from scribesense.contracts.states import TERMINAL, TRANSITIONS, UNFINISHED, TxSt
 
 def test_error_codes_are_unique_identifiers() -> None:
     values = [c.value for c in ErrorCode]
-    assert len(values) == len(set(values)) == 56
+    assert len(values) == len(set(values)) == 57
     assert all(c.name == c.value and c.value.isupper() for c in ErrorCode)
 
 

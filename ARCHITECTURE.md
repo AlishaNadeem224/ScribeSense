@@ -1888,6 +1888,11 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > access to the fontconfig folder (rare; font managers); **accepted for now** that the user Flatpak dir comes
 > from `FLATPAK_USER_DIR` / `XDG_DATA_HOME` / `home()` because K8 has no `data_home()` (known K8 gap).
 
+> **VM checks without a VM (2026-10-18, O4 — on this Fedora 44 / Hyprland 0.56.2 machine; every write on scratch copies, temporary profiles or a scratch HOME, real files verified unchanged):**
+> real Flatpak 1.18.2, `md.obsidian.Obsidian`: `detect()` found Zen, OBS and Obsidian; after apply, `fc-match sans-serif` INSIDE the app's sandbox
+> reports `AccessSans-<key>` (before: DejaVu Sans), `verify()` chosen_ok; after revert back to DejaVu Sans, override file removed. The mechanism
+> that works: our fontconfig rule + the `xdg-config/fontconfig:ro` grant + Flatpak's own user-fonts mount (no font-folder grant needed).
+
 #### M4.5 Qt adapter
 | Field | Spec |
 |---|---|
@@ -1913,6 +1918,10 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > symlinks. **[V] in the VM:** the exact Qt 6 `QFont::toString()` field layout, qt6ct's own default size, and that
 > the ScribeSense process sees `QT_QPA_PLATFORMTHEME` (a service started without the session environment would
 > wrongly report Qt as not covered — O2/O3: start the service from the session).
+
+> **VM checks without a VM (2026-10-18, O4 — on this Fedora 44 / Hyprland 0.56.2 machine; every write on scratch copies, temporary profiles or a scratch HOME, real files verified unchanged):**
+> the user's real `qt6ct.conf` has NO `[Fonts]` section (font never set in qt6ct): the adapter adds `[Fonts] general="AccessSansUI-<key>,11,-1,5,400,0,0,0,0,0,0,0,0,0,0,1"`
+> (Qt 6 `QFont::toString`), `verify()` chosen_ok, revert restores the file byte-identically. Not checked: a Qt app actually drawing it (needs a session).
 
 #### M4.6 Firefox adapter
 | Field | Spec |
@@ -1941,6 +1950,12 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > **target ids use a 12-hex hash of the profile path** (`firefox:<root>:<hash>`) so user-chosen profile names never
 > reach logs; the display name keeps the readable name; **revert is allowed while the browser runs** (Firefox never
 > rewrites these files). Real-browser render check: O3's harness (M3.4).
+
+> **VM checks without a VM (2026-10-18, O4 — on this Fedora 44 / Hyprland 0.56.2 machine; every write on scratch copies, temporary profiles or a scratch HOME, real files verified unchanged):**
+> real Firefox, temporary headless profile: `user.js` block and `chrome/userContent.css` written; after a Firefox run `prefs.js` contains
+> `toolkit.legacyUserProfileCustomizations.stylesheets` = true (accepted). Revert deletes `user.js` and `userContent.css`. **Open gap:** Firefox copied
+> the stylesheet pref into `prefs.js`, and deleting `user.js` does not undo that — harmless (no stylesheet left), but uninstall is then not byte-identical
+> for that profile (M3.8 goal). Proposed fix: track that one pref as a key-level location inside `prefs.js` (as K3 rule 10b does for Chromium).
 
 #### M4.7 Chromium preferences adapter
 | Field | Spec |
@@ -1971,6 +1986,12 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > Chromium (native + Flatpak Brave/Chromium). Running = `SingletonLock` → apply **and revert** refuse
 > (`BROWSER_RUNNING`; decision 2026-10-12 — the browser would overwrite a revert on exit; recovery retries).
 > Not yet covered: Chrome Flatpak, Vivaldi, Edge, beta channels (later). VM: Chrome accepts the edit.
+
+> **VM checks without a VM (2026-10-18, O4 — on this Fedora 44 / Hyprland 0.56.2 machine; every write on scratch copies, temporary profiles or a scratch HOME, real files verified unchanged):**
+> real Brave, temporary headless profile: `webkit.webprefs.fonts.{standard,sansserif}.Zyyy` written; after a real Brave run Brave rewrote
+> `Preferences` and **kept both keys unchanged** (no Secure-Preferences MAC on them, no `tracked_preferences_reset`); revert removes them and they stay
+> removed after another run. Notes: Brave aborts on a long socket path (`TMPDIR` must be short — matters for the M3.4 harness); a headless Brave killed by
+> SIGTERM can leave stale `Singleton*` links, which the adapter reads as "running" → PENDING (safe side).
 
 #### M4.8 Browser CSS generator
 | Field | Spec |
@@ -2242,6 +2263,14 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > `config_home()/scribesense/` directory is left after `remove_keybinds()` — remove it when it is empty. (2) The card says "include line journaled"; the implementation keeps the restore facts in the marker line and
 > nothing goes through the journal — change the card wording or journal it. (3) `install_keybinds` refuses while Hyprland is not running unless `allow_unchecked=True`: documented, but the installer must pass it on
 > purpose. (4) Written files are 0644 / dir 0755 (umask-dependent); they hold no secrets.
+
+> **VM checks without a VM (2026-10-18, O4 — on this Fedora 44 / Hyprland 0.56.2 machine; every write on scratch copies, temporary profiles or a scratch HOME, real files verified unchanged):**
+> real `hyprctl binds -j` (106 binds): all parse; with a Lua config every dispatcher is `__lua`, so conflicts are matched by mods + key (as implemented);
+> the defaults (Super+Alt+R, Super+Alt+P, Ctrl+Alt+Shift+Super+BackSpace) have no conflict, and copies of real binds are detected (mouse binds can't be
+> ScribeSense keybinds). Install into a copy of the real ML4W Lua config: hook = `~/.config/hypr/custom.lua` (the file `hyprland.lua` `require`s), one
+> marked `pcall(dofile, …)` block, our file in `hl.bind(…, hl.dsp.exec_cmd(…))` style + `hl.on("hyprland.start", …)` login check. **`Hyprland
+> --verify-config` → "config ok"**, also with our file loaded WITHOUT pcall (controls: a broken custom.lua / a broken own file are reported).
+> `remove_keybinds()` restores the config byte-identically and removes the empty `scribesense/` dir. Not checked: a live `hyprctl reload` (touches the session).
 
 #### M4.15 Logging
 | Field | Spec |

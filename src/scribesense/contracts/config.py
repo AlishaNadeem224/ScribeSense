@@ -10,7 +10,7 @@ Rules:
 2. Call order is always round_to_steps() -> validate().
 3. No exact float equality: on-step checks use STEP_TOLERANCE.
 4. Issue codes: see IssueCode. NOT_ON_STEP is a guard that never fires in the normal flow.
-   NOT_A_NUMBER (amendment 2026-10-14, O1; sign-off pending) — a stored value of the wrong type
+   NOT_A_NUMBER (amendment 2026-10-14, O1; signed off 2026-10-18 by O4) — a stored value of the wrong type
    (None, str, bool) is reported, never coerced; round_to_steps() passes it through unchanged.
 5. Telling the user a value was rounded is UI feedback, not an Issue.
 """
