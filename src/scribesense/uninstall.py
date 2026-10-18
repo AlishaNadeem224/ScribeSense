@@ -77,8 +77,12 @@ class ServiceControl:
 
 
 def quit_via_cli() -> None:
-    """`scribesense quit` (A1: the running instance exits safely). A child process, so this module still loads no GTK (A2)."""
-    run_cmd(["scribesense", "quit"], QUIT_TIMEOUT_S)
+    """`scribesense quit` (A1: the running instance exits safely). A child process, so this module still loads no GTK (A2).
+
+    Runs the CLI module with this interpreter rather than the `scribesense` command by name, which is only on PATH
+    once installed (O4, 2026-10-18: in a development checkout the quit always failed and the data was kept).
+    """
+    run_cmd([sys.executable, "-m", "scribesense.cli", "quit"], QUIT_TIMEOUT_S)
 
 
 def _service_stopped(service: ServiceControl | None) -> bool:

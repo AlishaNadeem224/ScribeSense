@@ -909,3 +909,25 @@ configuration" — **not** "ScribeSense works in a user's browser". The product 
 scenarios (a real profile picks up `userContent.css` / `user.js` after a restart; Brave/Chrome rewriting `Preferences` while running; the extension and
 native-messaging path; what is drawn on Wayland) and by the M3.6 manual checklist (restart notice, what the user sees). Those stay open until a graphical
 test VM exists.
+
+## Status correction (2026-10-18, O4) — after merging O1, O2, O3 and O4 into main
+
+The O3 status update above (2026-10-18) was written on a branch that did not yet contain three merges — O4's
+`FontReferenceSource` (24322f9), the K11 push (e574bdb) and the O2 deadline fixes (e3e9858) — so parts of it are out of
+date. Kept above as written; the current state:
+
+- **Done since:** `cli.py` wires `reset`, `recover --login`, `uninstall` (now with O3's `ServiceControl`), `doctor`
+  (M2.11); the service calls `recover_interrupted_builds()`, `prune()` and `remove_unused()` at start-up
+  (`controller/service.py`); `ReferenceSource` is implemented by O4 (`safety/font_references.py`); the K11 push
+  (`subscribe_style`), the M2.3 confirm window, the M2.5 private preview, the reader and settings fixes are in main.
+  main = O1 + O2 + O3 + O4: 2065+ unit tests and 23 sandbox tests pass, CI configurations green.
+- **Blocker for a live Apply:** no base font is bundled (`fonts/` holds only `.gitkeep` on every branch), so `build()`
+  refuses with `BUNDLED_FONT_MISSING`. Owner O1 (licence check per K2).
+- **Sign-offs still pending:** K1 `NOT_A_NUMBER` — K1 is O1's contract, so O1 confirms as owner plus one of O3 / O4
+  (the O3 note above says "O4", an earlier line says "O1 or O3"; either other owner works); `GENERATOR_ERROR` error code
+  (O1 + one other); K4 rule 5 addition `subscribe_style` (O4 + one other); K3 rule 10b and K8 (O4 + one other).
+- **Still open:** O1 — bundled fonts, D3 / D8 confirmation; O2 — review of the deadline fixes, decide the reader's
+  `text_scale` handling and whether `apply` also returns exit 4, `docs/manual-checklist.md`; O3 — M3.4 browser engines,
+  M3.5 VM scenarios, M3.6 graphical sections, M3.8 byte-identical VM test; O4 — VM checks (Hyprland Lua / reload,
+  `hyprctl binds -j`, qt6ct format, Chrome Preferences, Flatpak); repo owner — make `integration` a required check.
+

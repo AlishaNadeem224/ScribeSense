@@ -38,13 +38,17 @@ DEFAULT_LOCK_WAIT_S = 60.0  # K9 setting lock_wait_seconds (10–600)
 TAKEOVER_ACQUIRE_S = 5.0  # after a successful takeover the OS releases the lock almost immediately
 
 
-def _ask_service_to_reset(timeout: float) -> bool:
-    """True if a running service acknowledged the reset request over IPC."""
+#: `ask_service` answer: the service replied, but refused (e.g. busy) — it is alive, so it is never taken over.
+REFUSED = "refused"
+
+
+def _ask_service_to_reset(timeout: float) -> bool | str:
+    """True: the service did the reset. REFUSED: it answered with an error (alive). False: no reply (K4 rule 6)."""
     try:
         reply = ipc.request({"type": "reset"}, timeout=timeout)
     except ScribeSenseError:
         return False
-    return reply.get("ok") is True
+    return True if reply.get("ok") is True else REFUSED
 
 
 @dataclass
@@ -55,7 +59,7 @@ class LockPolicy:
     role: LockRole
     wait_s: float = DEFAULT_LOCK_WAIT_S
     reply_deadline_s: float = SERVICE_REPLY_DEADLINE_S
-    ask_service: Callable[[float], bool] = _ask_service_to_reset
+    ask_service: Callable[[float], bool | str] = _ask_service_to_reset
     take_over: Callable[[LockOwner], bool] = take_over_service
     on_status: Callable[[str], None] = field(default=lambda _msg: None)  # CLI prints factual status
 
@@ -71,7 +75,13 @@ def acquire_for_recovery(policy: LockPolicy) -> None:
         policy.on_status(f"Waiting for {who} to finish (up to {policy.wait_s:.0f} s)…")
         lock.acquire(policy.role, policy.wait_s)  # never interrupt another recovery
         return
-    if policy.ask_service(policy.reply_deadline_s):
+    answer = policy.ask_service(policy.reply_deadline_s)
+    if answer == REFUSED:
+        # K4 rule 6: takeover is only for "no reply". A service that answered is alive: wait (bounded), never kill it.
+        policy.on_status(f"The ScribeSense service is busy; waiting for it (up to {policy.wait_s:.0f} s)…")
+        lock.acquire(policy.role, policy.wait_s)  # LOCK_TIMEOUT -> exit 3, nothing killed
+        return
+    if answer:
         policy.on_status("The ScribeSense service is resetting; waiting for it to finish…")
         try:
             lock.acquire(policy.role, policy.wait_s)

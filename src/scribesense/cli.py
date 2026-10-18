@@ -206,6 +206,83 @@ def _cmd_recover() -> int:
     return _run_recovery("recover", "recover", recover_at_login)
 
 
+#: The app's single-instance (D-Bus) name — the same string as `scribesense.ui.APP_ID` (a test keeps them equal).
+#: Duplicated on purpose: recovery commands must not import `scribesense.ui` (A2).
+_APP_ID = "io.github.scribesense.ScribeSense"
+
+
+def _session_bus_address() -> str | None:
+    """The user's session bus, found explicitly — never by Gio's autolaunch, which spawns `dbus-launch` outside
+    `run_cmd` and can start a NEW, empty bus that would truthfully say "not running"."""
+    import os
+    from pathlib import Path
+
+    address = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+    if address:
+        return address
+    for runtime in dict.fromkeys(filter(None, (os.environ.get("XDG_RUNTIME_DIR"), f"/run/user/{os.getuid()}"))):
+        bus = Path(runtime) / "bus"
+        if bus.is_socket():
+            return f"unix:path={bus}"
+    return None
+
+
+def _app_name_owned() -> bool:
+    """Is the app registered on the session bus (Gio single instance, A1)? Gio only, never Gtk/Adw (A2).
+
+    M3.8 decision C: "cannot tell" must keep the data, so every case where the answer is unknown RAISES
+    (O3's `ServiceControl` then reports "cannot confirm stopped"): no session bus found (e.g. `sudo -u`, cron, a
+    bare TTY — the desktop's app may still be running), or the bus not answering within 2 s.
+    Only a missing PyGObject is a definite "no": the GUI app cannot run without it.
+    """
+    import threading
+
+    try:
+        from gi.repository import Gio, GLib
+    except ImportError:
+        return False
+    address = _session_bus_address()
+    if address is None:
+        raise ScribeSenseError(ErrorCode.CHECK_UNAVAILABLE)
+    cancellable = Gio.Cancellable()
+    timer = threading.Timer(2.0, cancellable.cancel)  # bounds connecting too, not only the call
+    timer.start()
+    try:
+        flags = Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION
+        bus = Gio.DBusConnection.new_for_address_sync(address, flags, None, cancellable)
+        reply = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                              "NameHasOwner", GLib.Variant("(s)", (_APP_ID,)), GLib.VariantType("(b)"),
+                              Gio.DBusCallFlags.NONE, 2000, cancellable)
+        return bool(reply.unpack()[0])
+    except GLib.Error:
+        raise ScribeSenseError(ErrorCode.CHECK_UNAVAILABLE) from None
+    finally:
+        timer.cancel()
+
+
+def _service_sockets() -> list:
+    """Where a running service may listen: K8 `socket_path()`, plus the user's standard runtime dir — a shell
+    without XDG_RUNTIME_DIR (sudo -u, cron) resolves `socket_path()` to the data-dir fallback instead."""
+    import os
+    from pathlib import Path
+
+    from scribesense.contracts.paths import socket_path
+
+    candidates = [socket_path(), Path(f"/run/user/{os.getuid()}") / "scribesense" / "service.sock"]
+    return list(dict.fromkeys(candidates))
+
+
+def _service_running() -> bool:
+    """M3.8 `ServiceControl.running`: True while a ScribeSense app or its service is alive; raises if unknown.
+
+    Either a service socket answers (the service has the store open), or the app holds its D-Bus name (it may
+    open the store at any moment — the service opens on first use).
+    """
+    from scribesense.safety import ipc
+
+    return any(ipc._someone_listening(path) for path in _service_sockets()) or _app_name_owned()
+
+
 def _cmd_uninstall(delete_data: bool, remove_fonts_anyway: bool) -> int:
     """M3.8 through O3's `run_uninstall` (prints its own report, returns the K10 exit code).
 
@@ -222,7 +299,7 @@ def _cmd_uninstall(delete_data: bool, remove_fonts_anyway: bool) -> int:
     from scribesense.safety.lock import ApplyLock
     from scribesense.safety.recovery import LockPolicy
     from scribesense.store.core import Store
-    from scribesense.uninstall import run_uninstall
+    from scribesense.uninstall import ServiceControl, quit_via_cli, run_uninstall
 
     try:
         store = Store(default_path(), mode="recovery")
@@ -232,7 +309,9 @@ def _cmd_uninstall(delete_data: bool, remove_fonts_anyway: bool) -> int:
         lock = ApplyLock()
         journal = SqliteJournal(store, lock, role="uninstall")
         policy = LockPolicy(lock, "uninstall", wait_s=_lock_wait_seconds(store), on_status=_status)
-        return int(run_uninstall(journal, registry.by_name(), store=store, policy=policy,
+        # M3.8 decision C (O3, 2026-10-18): --delete-data stops a running app first, or keeps everything.
+        service = ServiceControl(running=_service_running, stop=quit_via_cli)
+        return int(run_uninstall(journal, registry.by_name(), store=store, policy=policy, service=service,
                                  delete_data=delete_data, remove_fonts_anyway=remove_fonts_anyway))
     except ScribeSenseError as exc:
         return _fail("uninstall", exc)

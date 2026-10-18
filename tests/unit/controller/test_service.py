@@ -94,3 +94,15 @@ def test_keep_without_a_pending_tx_is_refused(service) -> None:  # type: ignore[
     with pytest.raises(ScribeSenseError) as exc:
         service.keep(1)
     assert exc.value.code is ErrorCode.TX_NOT_PENDING
+
+
+def test_reset_during_the_confirmation_countdown_reverts_the_pending_apply_first(service, world) -> None:  # type: ignore[no-untyped-def]
+    """A `reset` / `uninstall` asking the service while a change awaits Keep must get a real reset, not an error
+    (an error made recovery take the live app over, K4 rule 6)."""
+    report = service.apply(BUILTINS[1])
+    assert service.pending_tx == report.tx
+    reply = ipc.request({"type": "reset"}, timeout=5)
+    assert reply["ok"] is True and reply["failed"] == 0
+    assert world.state(FILE).data == b"orig" and service.pending_tx is None
+    assert service.journal.unfinished() == []
+

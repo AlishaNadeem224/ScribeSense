@@ -143,9 +143,15 @@ class Service:
         """"Original" = revert everything (K2 ORIGINAL, K4 rule 4 step 2) — the same as `scribesense reset`."""
         from scribesense.adapters.registry import by_name
         from scribesense.safety.recovery import reset
+        from scribesense.safety.revert import Reverter
 
         with self._mutex:
-            self._pending = None
+            pending, self._pending = self._pending, None
+            if pending is not None:
+                # The pending apply still holds the journal's lock (K4 rule 1): finish it first, or reset's
+                # begin("revert") is refused (APPLY_IN_PROGRESS) and a `reset` / `uninstall` asking us over the socket
+                # would read that as "not responding" and take the service over (K4 rule 6).
+                Reverter(self.journal, by_name(self.adapters)).revert_tx(pending.tx)
             return reset(self.journal, by_name(self.adapters))
 
     @property

@@ -30,6 +30,7 @@ from typing import Any
 
 import pytest
 
+from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 from scribesense import cli
 from scribesense import uninstall as un
 from scribesense.adapters import registry
@@ -312,6 +313,150 @@ def test_uninstall_flags_reach_run_uninstall(
     assert spy.calls[0]["delete_data"] is delete_data
     assert spy.calls[0]["remove_fonts_anyway"] is remove_anyway
     assert default_path().exists()  # deleting data needs a typed confirmation, never given here
+
+
+def test_delete_data_gets_the_service_check_and_the_quit(
+    world: FakeWorld, adapter: FakeAdapter, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M3.8 decision C: without a ServiceControl, run_uninstall refuses --delete-data; cli.py must pass one."""
+    from scribesense.uninstall import quit_via_cli
+
+    _applied(world, adapter, keep=True)
+    spy = _Spy(monkeypatch)
+    cli.main(["scribesense", "uninstall", "--delete-data"])
+    service = spy.calls[0]["service"]
+    assert service.running is cli._service_running and service.stop is quit_via_cli
+
+
+def test_service_running_checks_the_socket_and_the_app_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scribesense.safety import ipc
+
+    for socket_up, name_owned, expected in ((False, False, False), (True, False, True), (False, True, True)):
+        monkeypatch.setattr(ipc, "_someone_listening", lambda _p, up=socket_up: up)
+        monkeypatch.setattr(cli, "_app_name_owned", lambda owned=name_owned: owned)
+        assert cli._service_running() is expected
+
+
+_REAL_SESSION_BUS_ADDRESS = cli._session_bus_address
+
+
+@pytest.fixture(autouse=True)
+def no_real_session_bus(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gio's sockets bypass the sandbox's Python socket guard: never let a test find the user's real bus."""
+    monkeypatch.setattr(cli, "_session_bus_address", lambda: None)
+
+
+def test_no_findable_session_bus_is_unknown_not_stopped() -> None:
+    pytest.importorskip("gi")
+    with pytest.raises(ScribeSenseError) as exc:  # decision C: cannot tell -> keep the data
+        cli._app_name_owned()
+    assert exc.value.code is ErrorCode.CHECK_UNAVAILABLE
+
+
+def test_a_bus_that_does_not_answer_is_unknown_not_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("gi")
+    from gi.repository import Gio, GLib
+
+    def refused(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise GLib.Error("cancelled")
+
+    monkeypatch.setattr(cli, "_session_bus_address", lambda: "unix:path=/nonexistent/bus")
+    monkeypatch.setattr(Gio.DBusConnection, "new_for_address_sync", refused)
+    with pytest.raises(ScribeSenseError) as exc:
+        cli._app_name_owned()
+    assert exc.value.code is ErrorCode.CHECK_UNAVAILABLE
+
+
+def test_session_bus_address_is_found_explicitly_and_never_autolaunched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import socket as socketlib
+
+    find = _REAL_SESSION_BUS_ADDRESS  # the real lookup (nothing is connected); the autouse fixture is bypassed
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/x/bus")
+    assert find() == "unix:path=/x/bus"
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS")
+    runtime = tmp_path / "rt"
+    runtime.mkdir()
+    sock = socketlib.socket(socketlib.AF_UNIX)
+    sock.bind(str(runtime / "bus"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    try:
+        assert find() == f"unix:path={runtime / 'bus'}"
+    finally:
+        sock.close()
+    monkeypatch.setattr(__import__("os"), "getuid", lambda: 999999)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "empty"))
+    assert find() is None  # nothing findable: None, so the caller reports "unknown" — no autolaunch
+
+
+def test_delete_data_keeps_everything_when_the_check_cannot_run(
+    world: FakeWorld, adapter: FakeAdapter, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scribesense import uninstall
+    from scribesense.safety import ipc
+
+    _applied(world, adapter, keep=True)
+    monkeypatch.setattr(ipc, "_someone_listening", lambda _p: False)  # e.g. sudo -u: wrong runtime dir
+    monkeypatch.setattr(uninstall, "_terminal_confirm", lambda _q: True)
+    monkeypatch.setattr(uninstall, "remove_keybinds", lambda: False)
+    if __import__("importlib").util.find_spec("gi") is None:
+        monkeypatch.setattr(cli, "_app_name_owned", lambda: (_ for _ in ()).throw(ScribeSenseError(ErrorCode.CHECK_UNAVAILABLE)))
+    assert cli.main(["scribesense", "uninstall", "--delete-data"]) == int(ExitCode.FAILED)
+    assert default_path().exists()  # unknown is never "stopped": the data stays
+
+
+def test_service_sockets_include_the_standard_runtime_dir() -> None:
+    import os
+
+    paths = cli._service_sockets()
+    assert Path(f"/run/user/{os.getuid()}/scribesense/service.sock") in paths and len(paths) == len(set(paths))
+
+
+def test_the_app_id_copy_matches_the_ui() -> None:
+    import ast
+
+    # Read scribesense.ui.APP_ID from source: importing scribesense.ui here would break A2 (and trip no_gui).
+    tree = ast.parse((Path(cli.__file__).parent / "ui" / "__init__.py").read_text())
+    values = [n.value.value for n in ast.walk(tree) if isinstance(n, (ast.Assign, ast.AnnAssign))
+              and any(getattr(t, "id", None) == "APP_ID" for t in (n.targets if isinstance(n, ast.Assign) else [n.target]))]
+    assert values == [cli._APP_ID]
+
+
+def test_delete_data_really_deletes_when_no_app_is_running(
+    world: FakeWorld, adapter: FakeAdapter, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scribesense import uninstall
+
+    _applied(world, adapter, keep=True)
+    monkeypatch.setattr(cli, "_service_running", lambda: False)
+    monkeypatch.setattr(uninstall, "_terminal_confirm", lambda _q: True)  # the user typed the confirmation
+    monkeypatch.setattr(uninstall, "remove_keybinds", lambda: False)
+    assert cli.main(["scribesense", "uninstall", "--delete-data"]) == int(ExitCode.OK)
+    assert not default_path().exists()  # deleted — before this wiring, --delete-data always refused
+
+
+def test_delete_data_keeps_everything_while_an_app_is_running(
+    world: FakeWorld, adapter: FakeAdapter, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scribesense import uninstall
+
+    _applied(world, adapter, keep=True)
+    monkeypatch.setattr(cli, "_service_running", lambda: True)
+    monkeypatch.setattr(uninstall, "quit_via_cli", lambda: None)  # asked to quit, but it does not
+    monkeypatch.setattr(uninstall, "_terminal_confirm", lambda _q: True)
+    monkeypatch.setattr(uninstall, "remove_keybinds", lambda: False)
+    monkeypatch.setattr(uninstall.ServiceControl, "__init__", _fast_service_control(uninstall.ServiceControl.__init__))
+    assert cli.main(["scribesense", "uninstall", "--delete-data"]) == int(ExitCode.FAILED)
+    assert default_path().exists()  # never deleted under a running app
+
+
+def _fast_service_control(real_init):  # type: ignore[no-untyped-def]
+    def init(self, *a, **kw):  # type: ignore[no-untyped-def]
+        kw.setdefault("wait_s", 0.05)
+        kw.setdefault("interval_s", 0.01)
+        real_init(self, *a, **kw)
+    return init
 
 
 def test_uninstall_with_no_store_still_runs_and_creates_nothing(

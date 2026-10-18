@@ -1648,6 +1648,20 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > --delete-data again"). A service is never touched unless the user confirmed, and never when no deletion was asked for. New: `uninstall.ServiceControl(running,
 > stop, wait_s, interval_s)` and `uninstall.quit_via_cli()` (`run_cmd(["scribesense","quit"], 10)` — a child process, so no GTK here, A2). **For O2:** pass
 > `service=ServiceControl(running=<single-instance check>, stop=quit_via_cli)` to `run_uninstall`; without it `--delete-data` refuses. 12 new tests.
+> **Wired by O4 (2026-10-18, after merging O1/O2/O3 into main; cross-owner change in `cli.py`, `uninstall.py`, tests):**
+> `cli.py` passes `ServiceControl(running=_service_running, stop=quit_via_cli)`; `_service_running()` = a service socket
+> answers (K8 `socket_path()` and `/run/user/<uid>/scribesense/service.sock`) OR the app owns its D-Bus name
+> `io.github.scribesense.ScribeSense` (Gio only — no GTK, A2). The D-Bus check matters because the service opens on first
+> use. **"Cannot tell" keeps the data:** no findable session bus (env `DBUS_SESSION_BUS_ADDRESS` or a `…/bus` socket —
+> never Gio autolaunch, which would spawn a new empty bus) or a bus that does not answer within 2 s raises
+> `CHECK_UNAVAILABLE`, so `ServiceControl` reports "cannot confirm stopped". Only a missing PyGObject is a definite "no".
+> **Also fixed (review 2026-10-18):** `reset` / `uninstall` during the 30 s confirmation countdown no longer kill the app:
+> `Service.original()` reverts the pending apply before resetting, and `recovery.acquire_for_recovery` treats an error reply
+> from a live service as "busy — wait (bounded, then LOCK_TIMEOUT / exit 3)", never as "no reply" (K4 rule 6: takeover only
+> when there is no reply).
+> `quit_via_cli()` now runs `[sys.executable, "-m", "scribesense.cli", "quit"]` — `scribesense` by name is only on PATH once
+> installed, so in a checkout the quit always failed and `--delete-data` always kept the data. Tests: `test_cli_commands.py`
+> (service check passed; deletes when no app runs; keeps everything while one runs), `test_uninstall.py` (new argv).
 
 > **Reviewed by O4 (2026-10-16): changes needed** (each verified with a probe):
 > (1) **the lock covers only the reset step** — `recovery.reset(policy=…)` releases it in its `finally`, so font removal, keybind removal

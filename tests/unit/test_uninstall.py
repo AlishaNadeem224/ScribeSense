@@ -446,9 +446,12 @@ def test_the_service_is_not_touched_when_no_deletion_is_asked_for(real_store: tu
 
 
 def test_quit_via_cli_runs_scribesense_quit_through_run_cmd() -> None:
+    import sys
+
     with patch.object(un, "run_cmd") as runner:
         un.quit_via_cli()
-    runner.assert_called_once_with(["scribesense", "quit"], un.QUIT_TIMEOUT_S)  # no shell, with a timeout
+    # no shell, with a timeout; this interpreter + the CLI module, so it works before `scribesense` is on PATH
+    runner.assert_called_once_with([sys.executable, "-m", "scribesense.cli", "quit"], un.QUIT_TIMEOUT_S)
 
 
 def test_a_missing_scribesense_command_surfaces_as_not_stopped(real_store: tuple[Store, RecoverySystem]) -> None:

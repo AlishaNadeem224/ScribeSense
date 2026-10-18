@@ -79,6 +79,32 @@ def test_unresponsive_service_is_taken_over() -> None:
     p.lock.release()
 
 
+def test_a_service_that_answers_no_is_waited_for_never_taken_over() -> None:
+    from scribesense.safety.recovery import REFUSED
+
+    service = ApplyLock()
+    service.try_acquire("service")
+    calls = Calls()
+    p = policy(calls, answers=REFUSED, release_on_takeover=service, wait_s=5)  # type: ignore[arg-type]
+    threading.Timer(0.2, service.release).start()  # e.g. it was busy confirming an apply, then finished
+    acquire_for_recovery(p)
+    assert calls.asked == 1 and not calls.taken_over and p.lock.held  # K4 rule 6: an answer is not "no reply"
+    p.lock.release()
+
+
+def test_a_service_that_answers_no_and_stays_busy_times_out_without_a_takeover() -> None:
+    from scribesense.safety.recovery import REFUSED
+
+    service = ApplyLock()
+    service.try_acquire("service")
+    calls = Calls()
+    p = policy(calls, answers=REFUSED, release_on_takeover=service, wait_s=0.2)  # type: ignore[arg-type]
+    with pytest.raises(ScribeSenseError) as exc:
+        acquire_for_recovery(p)
+    assert exc.value.code is ErrorCode.LOCK_TIMEOUT and not calls.taken_over  # exit 3, nothing killed
+    service.release()
+
+
 def test_service_that_acks_but_never_finishes_is_taken_over() -> None:
     service = ApplyLock()
     service.try_acquire("service")
@@ -142,3 +168,7 @@ def test_default_ask_uses_ipc_and_reports_no_service_as_not_answered() -> None:
     assert _ask_service_to_reset(0.2) is False
     with ipc.IpcServer(lambda m: {"v": 1, "ok": m["type"] == "reset"}):
         assert _ask_service_to_reset(1.0) is True
+    from scribesense.safety.recovery import REFUSED
+
+    with ipc.IpcServer(lambda m: {"v": 1, "ok": False, "error": "APPLY_IN_PROGRESS"}):
+        assert _ask_service_to_reset(1.0) == REFUSED  # it answered: alive, never "not responding"
