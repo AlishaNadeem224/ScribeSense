@@ -37,7 +37,8 @@ def _advance(cp: int, mono: bool) -> int:
 
 
 def build_font(path: Path, family: str = "Fixture Sans", style: str = "Regular", *, mono: bool = False,
-               icon: bool = False, cff: bool = False, liga: bool = True, devanagari: bool = True) -> Path:
+               icon: bool = False, cff: bool = False, liga: bool = True, devanagari: bool = True,
+               extra_names: dict[int, str] | None = None, os2_version: int | None = None) -> Path:
     """Write a small, valid TTF/OTF with Latin letters, digits, punctuation, é and (optionally) क."""
     if icon:
         cps = [0x20, 0x41] + list(range(0xE000, 0xE040))
@@ -78,6 +79,10 @@ def build_font(path: Path, family: str = "Fixture Sans", style: str = "Regular",
     if liga and not icon:
         fb.addOpenTypeFeatures("feature liga { sub uni0066 uni0069 by f_i; } liga;")
     path.parent.mkdir(parents=True, exist_ok=True)
+    for name_id, value in (extra_names or {}).items():  # e.g. WWS (21/22) or variations PS prefix (25)
+        fb.font["name"].setName(value, name_id, 3, 1, 0x409)
+    if os2_version is not None:
+        fb.font["OS/2"].version = os2_version
     fb.save(str(path))
     return path
 

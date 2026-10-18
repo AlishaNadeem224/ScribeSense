@@ -47,3 +47,19 @@ def test_real_preview_renders_without_installing(fontconfig, family_files) -> No
     with generator.build_preview(CFG, files=family_files) as preview:
         assert all(Path(f).is_file() for f in preview.files)
     assert not os.path.exists(preview.temp_dir) and not paths.fonts_dir().exists()
+
+
+@pytest.mark.parametrize("preset_id", ["default", "reading", "high-separation"])
+def test_real_build_of_each_builtin_from_the_bundled_noto_sans(fontconfig, preset_id: str) -> None:  # type: ignore[no-untyped-def]
+    """The bundled fonts through the real pango-view / fc-cache / fc-match — also re-checks the render tolerances
+    (RENDER_TOLERANCE_PX_PER_GLYPH) on a real typeface, as O3's M1.6 review asked."""
+    from scribesense.config import presets
+
+    config = presets.resolve(presets.builtin(preset_id).values)
+    result = generator.build(config)  # no files=: fonts/Noto Sans/
+    assert result.status == "built", (result.reason_code, result.detail, result.warnings)
+    assert result.fonts.styles == ("Regular", "Bold", "Italic", "BoldItalic")
+    for family in (result.fonts.reading_family, result.fonts.ui_family):
+        out = paths.run_cmd(["fc-match", "-f", "%{family}\n%{file}", naming.fc_pattern(family)], timeout=10)
+        name, file = out.stdout.decode().splitlines()
+        assert name == family and Path(file).parent == paths.fonts_dir() / result.fonts.key

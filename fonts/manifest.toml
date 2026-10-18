@@ -1,0 +1,22 @@
+# K2: base fonts are BUNDLED in the repo, never taken from the system. One table per shortlist family.
+# The pipeline finds files by name (fonts/<Family>/<Name>-<Style>.ttf, config/bundled.py); this manifest records
+# where each file came from, its licence and its SHA-256 (tests/unit/fontgen/test_bundled_fonts.py checks them).
+
+["Noto Sans"]
+upstream = "Noto Sans 2.015 (notofonts/latin-greek-cyrillic), Fedora 44 package google-noto-sans-vf-fonts-20251201-2"
+licence = "OFL-1.1"
+licence_file = "Noto Sans/OFL.txt"
+reserved_font_name = false  # modified (static) versions may keep the name
+derived = "static instances of the variable fonts, wght 400 / 700, made by fonts/tools/build_noto_sans.py (reproducible)"
+added = "2026-10-18 (O4 for O1, licence checked: OFL-1.1, no Reserved Font Name)"
+
+["Noto Sans".files]
+Regular = { file = "Noto Sans/NotoSans-Regular.ttf", sha256 = "43b34a53aed71c70d30bde87d2ad300f76658a195634447deba72b41e7e677c6" }
+Bold = { file = "Noto Sans/NotoSans-Bold.ttf", sha256 = "ca024778c6bc8650aa2405743ea3d71558aaab555f44918c2c62fdd740288003" }
+Italic = { file = "Noto Sans/NotoSans-Italic.ttf", sha256 = "5d474190b7e5b889af176946a73a9231c302e29070b030e67f1017a373bf2ca6" }
+BoldItalic = { file = "Noto Sans/NotoSans-BoldItalic.ttf", sha256 = "6d2a1abab5ffc2a5e458aa25a123b0f71d329dd8ef0689cd42ca64731d944e86" }
+
+# Not bundled yet:
+# - Carlito: OFL-1.1 WITH Reserved Font Name "Carlito" — bundle only with the M1.4 name-record fix in place (generated
+#   fonts must not carry the reserved name; patcher drops records 16/17/21/22/25 since 2026-10-18).
+# - Atkinson Hyperlegible, Lexend: not available offline; add the official static files + licence when fetched.

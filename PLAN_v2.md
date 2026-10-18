@@ -959,3 +959,16 @@ date. Kept above as written; the current state:
   M3.5 VM scenarios, M3.6 graphical sections, M3.8 byte-identical VM test; O4 — VM checks (Hyprland Lua / reload,
   `hyprctl binds -j`, qt6ct format, Chrome Preferences, Flatpak); repo owner — make `integration` a required check.
 
+## Decisions (2026-10-18, O4 with the user's go-ahead) — fonts and two sign-offs
+
+- **Base fonts bundled:** Noto Sans 2.015, static Regular/Bold/Italic/BoldItalic made from Fedora's variable fonts
+  (`fonts/tools/build_noto_sans.py`, reproducible), OFL-1.1 without a Reserved Font Name; `fonts/manifest.toml` + checksum
+  test. This unblocks Apply: all three built-ins build and validate with the real tools. Carlito / Atkinson / Lexend later.
+- **M1.4 / M1.6 review notes done** (O3's notes): name records 21/22/25 dropped and checked, typo-metrics bit only on OS/2 ≥ 4,
+  explicit invariant check, stale docstring, tolerances re-checked on the real fonts.
+- **K1 `NOT_A_NUMBER` — signed off** (proposed by O1 in M1.1; O4 second owner). The "sign-off pending" wording in the
+  docstring of `contracts/config.py` is updated by a human (agents may not edit contracts).
+- **ErrorCode `GENERATOR_ERROR` — added** to the Fonts row (proposed by O1 in M1.8; O4 second owner). The enum line in
+  `contracts/errors.py` is added by a human.
+- Still needing a second owner (O4's own proposals): K3 rule 10b, K8, K4 rule 5 `subscribe_style` — O1, O2 or O3.
+

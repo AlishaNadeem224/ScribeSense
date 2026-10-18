@@ -275,3 +275,52 @@ def test_build_rounds_its_input(family_files, renderer, tools) -> None:  # type:
     assert round_to_steps(raw) == CFG
     assert generator.build(raw, files=family_files, renderer=renderer, tools=tools).fonts.key == \
         variants.plan(CFG, files=family_files).key
+
+
+# ---- O3's M1.4 / M1.6 review notes (2026-10-18) ------------------------------------------------------
+
+LEAKY = {21: "Fixture Sans", 22: "Regular", 25: "FixtureSans"}
+
+
+def test_patcher_drops_every_record_that_could_name_the_source_family(make_font, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    src = make_font("leaky.ttf", extra_names=LEAKY)
+    out = tmp_path / "out.ttf"
+    patcher.patch(src, CFG, 1.5, out, family_name="AccessSans-000000000000")
+    with TTFont(out) as font:
+        ids = {r.nameID for r in font["name"].names}
+        assert not ids & {16, 17, 21, 22, 25}
+        assert not [r for r in font["name"].names if r.nameID in (1, 3, 4, 6) and "Fixture" in r.toUnicode()]
+
+
+@pytest.mark.parametrize("version,bumped,bit", [(4, 4, True), (3, 4, True), (2, 4, True), (1, 1, False)])
+def test_typo_metrics_bit_only_where_os2_defines_it(make_font, tmp_path: Path, version: int, bumped: int, bit: bool) -> None:  # type: ignore[no-untyped-def]
+    src = make_font(f"v{version}.ttf", os2_version=version)
+    out = tmp_path / f"out{version}.ttf"
+    patcher.patch(src, CFG, 1.8, out, family_name="AccessSans-000000000000")
+    with TTFont(out) as font:
+        assert font["OS/2"].version == bumped
+        assert bool(font["OS/2"].fsSelection & patcher.USE_TYPO_METRICS) is bit
+
+
+def test_validation_refuses_a_source_family_left_in_any_identifying_record(make_font, tmp_path: Path, renderer) -> None:  # type: ignore[no-untyped-def]
+    files = {"Regular": make_font("FixtureSans-Regular.ttf")}
+    vs = built(tmp_path, files)
+    regular = next(p for p in vs.files_for("reading") if p.name.endswith("-Regular.ttf"))
+    with TTFont(regular) as font:
+        font["name"].setName("Fixture Sans", 21, 3, 1, 0x409)  # what an unfixed patcher used to leave
+        font.save(regular)
+    result = validate.validate_font(vs.files, CFG, sources=files, renderer=renderer)
+    assert not result.ok and result.reason_code == "VALIDATION_FAMILY_COLLISION"
+
+
+def test_validation_refuses_the_typo_bit_on_an_os2_table_that_does_not_define_it(make_font, tmp_path: Path, renderer) -> None:  # type: ignore[no-untyped-def]
+    files = {"Regular": make_font("FixtureSans-Regular.ttf", os2_version=1)}
+    vs = built(tmp_path, files)
+    assert validate.validate_font(vs.files, CFG, sources=files, renderer=renderer).ok  # patched correctly
+    regular = next(p for p in vs.files_for("reading") if p.name.endswith("-Regular.ttf"))
+    with TTFont(regular) as font:
+        font["OS/2"].fsSelection |= patcher.USE_TYPO_METRICS
+        font.save(regular)
+    result = validate.validate_font(vs.files, CFG, sources=files, renderer=renderer)
+    assert not result.ok and result.reason_code == "VALIDATION_LINE_METRIC_MISMATCH"
+
