@@ -12,8 +12,9 @@
 // - Page text leaves the page only on an explicit "Open in ScribeSense" click, and only to the
 //   local app. More than 200 000 characters is rejected locally (A17), never truncated.
 //
-// Not yet available (TODO, O2 service M2.4): the service does not push "style_changed" yet. The
-// handler below is ready for it; until then, styling updates on (re)connect and on retries.
+// Push: the native host forwards the service's "style_changed" (an ipc.subscribe_style subscription, M4.9) as
+// soon as a Keep / Original is confirmed; this file then asks get_style. A push is only a hint: the get_style
+// reply is what counts, and every (re)connect still fetches the full confirmed state.
 
 export const HOST_NAME = "com.scribesense.host";
 export const PROTOCOL_VERSION = 1;

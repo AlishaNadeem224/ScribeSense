@@ -12,6 +12,8 @@ what K4 gives the journal itself:
   Durability (rule 2) every `record_*` is committed by the store before it returns (WAL, synchronous=FULL).
   Keep (rule 3)      `keep()` is one database transaction (JournalTables.keep).
   K5                 illegal transitions are refused by JournalTables (`IllegalTransition`, a ValueError).
+  Push (K11)         `on_style_changed(revision)` runs after `keep()` / `set_original()` commit — the only two
+                     changes of the confirmed style. The service passes `IpcServer.publish_style_changed`.
 
 "Cannot persist → apply refused before any write" (M4.10 card): a store error in `begin()` releases the lock and
 propagates as `ScribeSenseError(STORE_*)`, before the controller has snapshotted or written anything.
@@ -42,6 +44,7 @@ from scribesense.contracts.journal import (
 )
 from scribesense.contracts.states import TERMINAL, TxState
 from scribesense.safety.lock import ApplyLock
+from scribesense.safety.memory_journal import notify_style_changed
 from scribesense.store import JournalTables, Store
 
 
@@ -59,8 +62,10 @@ class SqliteJournal:
         *,
         role: LockRole = "service",
         clock: Callable[[], datetime] | None = None,
+        on_style_changed: Callable[[int], None] | None = None,
     ) -> None:
         self._t = JournalTables(store, clock)
+        self._on_style_changed = on_style_changed
         self._lock = lock
         self._role: LockRole = role
         self._active_tx: TxId | None = None  # the tx this process opened and that still holds the lock
@@ -109,6 +114,7 @@ class SqliteJournal:
     def keep(self, tx: TxId, active: ActiveConfig) -> int:
         revision = self._t.keep(tx, active)
         self._ended(tx, TxState.COMPLETED)
+        notify_style_changed(self._on_style_changed, revision)
         return revision
 
     def prune_history(self, before: datetime, keep_last: int) -> int:
@@ -146,7 +152,9 @@ class SqliteJournal:
         self._t.set_unresolved(location, code)
 
     def set_original(self) -> int:
-        return self._t.set_original()
+        revision = self._t.set_original()
+        notify_style_changed(self._on_style_changed, revision)
+        return revision
 
     # ------------------------------------------------------------- reads
 

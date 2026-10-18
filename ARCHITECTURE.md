@@ -1909,6 +1909,17 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > the ID (README there has the openssl steps); no key is in the repo. **Note for O2 (decision 2026-10-12):** there
 > is no service push yet — after Apply/Revert/Original the extension only updates when it reconnects; the service
 > (M2.4) must push `style_changed` to the native host for A16's "refreshes after Apply" to hold.
+> **Push implemented 2026-10-18 (O4; K4 rule 5 addition — one other owner's sign-off pending):** the service socket
+> accepts `{"v":1,"type":"subscribe_style"}`, answered by `IpcServer` itself (never the handler): the connection
+> stays open, the first line is `style_changed` with the current revision, then one line per change
+> (`IpcServer.publish_style_changed`; ≤ `MAX_SUBSCRIBERS` = 32, a gone or non-reading subscriber is dropped). The
+> native host runs a watcher thread on `ipc.subscribe_style` (re-subscribes with 1→30 s backoff) and forwards each
+> as the K11 push; one lock serialises all frames to the browser. Both journals take `on_style_changed(revision)`,
+> called after `keep()` / `set_original()` commit (a failing hook is logged, never undoes them). **Wiring for O2
+> (service, M2.4):** `server = IpcServer(handler, style_revision=journal.style_revision)` and
+> `SqliteJournal(store, lock, role="service", on_style_changed=lambda rev: server.publish_style_changed(rev))` —
+> nothing else; the extension already handles the push. Tests: `test_ipc.py`, `test_native_host.py` (incl. a real
+> journal `keep()` → socket → host → browser frame), `test_sqlite_journal.py`.
 > **Packaging (O3):** exclude `extension/test/`, `extension/tools/` and any `__pycache__` from the packed extension.
 
 #### M4.10 Journal

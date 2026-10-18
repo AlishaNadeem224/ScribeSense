@@ -165,3 +165,36 @@ def test_store_and_lock_files_live_in_the_data_dir() -> None:
     journal().begin("apply", None)
     assert default_path().parent == paths.data_dir() and paths.lock_path().exists()
     assert os.stat(default_path()).st_mode & 0o077 == 0
+
+
+@pytest.mark.parametrize("kind", ["memory", "sqlite"])
+def test_style_changed_hook_runs_after_keep_and_original_and_never_breaks_them(kind: str) -> None:
+    from scribesense.safety.memory_journal import InMemoryJournal
+
+    seen: list[int] = []
+    make = (lambda cb: InMemoryJournal(on_style_changed=cb)) if kind == "memory" else \
+        (lambda cb: SqliteJournal(Store(default_path()), ApplyLock(), on_style_changed=cb))
+    j = make(seen.append)
+    tx = to_awaiting(j)
+    assert seen == []  # nothing confirmed yet
+    rev = j.keep(tx, ActiveConfig(CFG, "abc123abc123", "default", 0))
+    assert seen == [rev] and j.style_revision() == rev
+    assert j.set_original() == rev + 1 and seen == [rev, rev + 1]
+
+    def failing(_rev: int) -> None:
+        raise OSError("no subscriber")
+
+    k = make(failing)  # sqlite: same database, so the revision continues; memory: a fresh journal
+    tx2 = to_awaiting(k)
+    rev2 = k.keep(tx2, ActiveConfig(CFG, "abc123abc123", "default", 0))  # the hook raises ...
+    assert rev2 == k.style_revision() and k.active() is not None and not k.lock_held  # ... Keep stands
+    if kind == "sqlite":
+        probe = ApplyLock()
+        assert probe.try_acquire("service")  # the apply lock was released despite the failing hook
+        probe.release()
+    before = k.style_revision()
+    assert k.set_original() == before + 1 and k.style_revision() == before + 1  # committed anyway
+    assert k.active() is None
+    from scribesense.log import log_path
+
+    assert '"step": "style_changed"' in log_path().read_text() or "style_changed" in log_path().read_text()
