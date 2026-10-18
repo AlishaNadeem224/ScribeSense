@@ -662,7 +662,7 @@ owner + one other; existing codes are never renamed or reused. K1 validation cod
 | Reader / capture (O2) | `NOTHING_SELECTED` · `CLIPBOARD_EMPTY` · `SELECTION_UNAVAILABLE` · `TOO_LARGE` |
 | Extension / IPC (O4 + O2) | `APP_NOT_RUNNING` · `HOST_MISSING` · `BAD_MESSAGE` |
 
-### K9 — Store repositories (owner O3) — DRAFT 2026-10-09 · **SIGNED OFF by O3 2026-10-15** (journal part accepted by O4 the same day; D3 for O1 to confirm)
+### K9 — Store repositories (owner O3) — DRAFT 2026-10-09 · **SIGNED OFF by O3 2026-10-15** (journal part accepted by O4 the same day; D3 confirmed by O1 2026-10-18)
 
 Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9). Nothing else.
 
@@ -671,7 +671,7 @@ Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9).
 > `recommendation_samples`, `font_registry`, and the DB-wide rules below. Decisions taken (the draft's recommendations):
 > - **D3** built-ins are not stored (they come from `config.BUILTINS`); `custom` is one persisted row with the reserved id `custom`,
 >   written only when the user has values, never seeded with defaults; `original` is never stored; user ids are `uuid4`.
->   Reserved ids: `default`, `reading`, `high-separation`, `custom`, `original`. *(Taken from O1's handoff — O1 to confirm.)*
+>   Reserved ids: `default`, `reading`, `high-separation`, `custom`, `original`. *(Confirmed by O1, 2026-10-18: `custom` is stored as one row and `PresetRepo.list()` does not return it — "stored ≠ listed". `list_all()` returns every stored preset.)*
 > - **D6** the database file is `data_dir()/scribesense.db` (`store.default_path()`); no K8 change.
 > - **D8** `FontRegistryRepo.create()` raises `FONT_IDENTITY_CONFLICT` only when the font key's numeric inputs (`letter_em`, `word_scale`, `reading_line`,
 >   `ui_line`) or the generated families / styles / files / hashes differ — **never because of `text_scale` or the `base_family` label** (M1.5: both are outside the key;
@@ -690,9 +690,12 @@ Blocks: M3.1 store, M4.10 journal, M4.11 revert, the 7 recovery scenarios (§9).
 > **O1's reply to D3 / D8 (received 2026-10-18, via O3): O1 states both as "confirmed" — D3 "with one addition", D8 "but drop base_family".**
 > - **D8: adopted and built (2026-10-18).** `base_family` is out of the registry identity as well (O1's `UNKEYED_FIELDS = ("text_scale", "base_family")`). A changed label with the
 >   same bytes is not a conflict; it is only noted in the log.
-> - **D3: O1 says "confirmed", but the substance differs from the signed-off D3.** The reply describes `custom` as unsaved (`ValueError` on save, only `user` persisted); O1's code
->   stores it (`STORABLE_KINDS = {"user","custom"}`, "K9 D3, confirmed 2026-10-16") and expects `PresetRepo.list()` NOT to return it, while M3.1 returns it. To close D3, O1 needs
->   one clear line: is `custom` stored as one row (id `custom`), and does `list()` include it?
+> - **D3: confirmed by O1 (2026-10-18), after a clarifying question.** `custom` is stored as ONE row (id `custom`; `config/presets.py`: `CUSTOM_ID`, `STORABLE_KINDS = {"user","custom"}`, `to_record()` refuses any other id);
+>   `PresetRepo.list()` must NOT return it (editing state, not a catalogue entry — "stored ≠ listed", which is also what K9's "built-ins first, then user presets by name" says). **O1's trap:** whatever decides which fonts are still in use
+>   (K7 rule 3: "a saved preset" includes Custom) must see the custom row, or the clean-up deletes the font of the user's own current configuration. M3.1 therefore adds `PresetRepo.list_all()` (built-ins, custom, user presets; not in the frozen K9
+>   protocol) and its own `FontRegistryRepo.in_use` uses it (regression test). **Two-step change, step 2 pending:** `list()` still returns the custom row today, because `controller/service.py:117` (O2) passes `store.presets.list` into
+>   O4's `FontReferenceSource`; the moment `list()` stops returning it, that clean-up would miss the custom row's font. **Step 1 (done):** `list_all()`. **Step 2 (after O2 / O4 change that call to `store.presets.list_all` — please do it
+>   first):** O3 makes `list()` return built-ins and user presets only. The UI is unaffected (`known_presets` already filters `custom`). O1 also notes a stale line in their own `config/presets.py:156` (`"""ID of the transient Custom entry."""`).
 > - Also from O1: uninstall removes fonts only through `fontgen.cache`; `ReferenceSource` is not an O1 task (O4 has built it); real bundled fonts will change every content key once.
 > - The K1 amendment `NOT_A_NUMBER` (added by O4, "sign-off by one other owner pending") is a contract change that O3 may sign as that other owner — not part of K9.
 

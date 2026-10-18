@@ -126,6 +126,27 @@ def test_the_custom_row_is_stored_once_with_the_reserved_id(store: Store) -> Non
     assert store.presets.delete("custom") is True and store.presets.get("custom") is None
 
 
+def test_list_all_returns_every_preset_including_the_custom_row(store: Store) -> None:
+    store.presets.save(Preset("custom", "Custom", values(), "custom"))
+    store.presets.save(user_preset(name="Mine"))
+    assert [p.id for p in store.presets.list_all()][:4] == ["default", "reading", "high-separation", "custom"]
+    assert [p.kind for p in store.presets.list_all()].count("custom") == 1
+    assert {p.name for p in store.presets.list_all()} >= {"Custom", "Mine"}
+
+
+def test_a_font_only_the_custom_row_needs_is_never_removed(store: Store) -> None:  # O1's trap: stored, but not "listed"
+    cfg = resolve(values(letter_em=0.14, word=WordSpacing("multiplier", 2.0)))
+    _font_for(store, "custom1", cfg=cfg)
+    store.fonts.mark_removed("custom1")  # nothing refers to it yet: removable
+    _font_for(store, "custom2", cfg=cfg, reading_family="AccessSans-custom2")
+    store.presets.save(Preset("custom", "Custom", values(letter_em=0.14, word=WordSpacing("multiplier", 2.0)), "custom"))
+    with pytest.raises(ScribeSenseError) as err:
+        store.fonts.mark_removed("custom2")  # the user's own current configuration uses it
+    assert err.value.code is ErrorCode.FONT_IN_USE
+    store.presets.delete("custom")  # cleared by the user: the font may go
+    store.fonts.mark_removed("custom2")
+
+
 def test_builtins_cannot_be_saved_or_deleted(store: Store) -> None:
     for preset in (BUILTINS[0], replace(BUILTINS[0], kind="user"), Preset("reading", "x", values(), "user")):
         with pytest.raises(ScribeSenseError) as err:

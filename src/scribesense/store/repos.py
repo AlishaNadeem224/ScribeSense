@@ -55,7 +55,22 @@ class PresetRepo:
         return tuple(BUILTINS)
 
     def list(self) -> list[Preset]:
-        """Built-ins first, then the `custom` row if it exists, then user presets by name."""
+        """Built-ins first, then the `custom` row if it exists, then user presets by name.
+
+        NOTE (O1's answer of 2026-10-18, D3): the target behaviour is that `list()` does NOT return `custom` — it is editing
+        state, not a catalogue entry (K9: "built-ins first, then user presets by name"). It still does, until the callers
+        that need EVERY stored preset (the font clean-up in `controller/service.py`) have moved to `list_all()`; then this
+        returns built-ins and user presets only. The UI already filters `custom` out.
+        """
+        return self.list_all()
+
+    def list_all(self) -> list[Preset]:
+        """EVERY preset the store knows: built-ins, the `custom` row if it exists, then user presets by name.
+
+        This is what anything that decides whether a font is still in use must read (K7 rule 3: "a saved preset" includes
+        Custom): a caller that used `list()` and missed the custom row would let the clean-up delete the font of the
+        user's own current configuration. Not in the frozen K9 protocol — an addition of M3.1.
+        """
         rows = self._s.fetchall(
             "SELECT id, name, kind, data FROM presets "
             "ORDER BY CASE kind WHEN 'custom' THEN 0 ELSE 1 END, name COLLATE NOCASE, name, id"
@@ -218,7 +233,7 @@ class FontRegistryRepo:
         from scribesense.config.presets import resolve  # O1: preset intent -> concrete Configuration
 
         wanted = ser.preset_font_match(config)
-        for preset in self._s.presets.list():  # built-ins and saved presets, incl. the custom row
+        for preset in self._s.presets.list_all():  # built-ins and EVERY saved preset, incl. the custom row
             try:
                 if ser.preset_font_match(resolve(preset.values)) == wanted:
                     return True
