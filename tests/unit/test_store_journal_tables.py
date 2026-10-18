@@ -273,6 +273,16 @@ def test_coverage_for_a_tx_and_reverts_are_stored(table: TableJournal) -> None:
     assert table.t.coverage(first)[0].detail_code is ErrorCode.ADAPTER_TIMEOUT
 
 
+def test_two_adapters_can_reuse_a_target_id_without_overwriting_each_other(table: TableJournal) -> None:
+    tx = table.begin("apply", None)
+    one = Target("gtk", "desktop", "GTK apps", False)
+    two = Target("qt", "desktop", "Qt apps", False)  # the same target_id on another adapter
+    table.record_coverage(tx, CoverageEntry(one, CoverageStatus.COVERED, "OK"))
+    table.record_coverage(tx, CoverageEntry(two, CoverageStatus.NOT_COVERED, ErrorCode.ADAPTER_TIMEOUT))
+    assert sorted((e.target.adapter, e.status) for e in table.t.coverage(tx)) == [
+        ("gtk", CoverageStatus.COVERED), ("qt", CoverageStatus.NOT_COVERED)]
+
+
 def test_bad_input_is_refused(table: TableJournal) -> None:
     with pytest.raises(ValueError):
         table.begin("explode", None)

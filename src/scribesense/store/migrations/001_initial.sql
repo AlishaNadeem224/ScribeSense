@@ -122,6 +122,6 @@ CREATE TABLE coverage (
   target_display_name TEXT NOT NULL,
   status              TEXT NOT NULL,                -- CoverageStatus value
   detail_code         TEXT NOT NULL,                -- ErrorCode value or str (K6)
-  PRIMARY KEY (tx_id, target_id)
+  PRIMARY KEY (tx_id, target_adapter, target_id)   -- two adapters may reuse a target id
 );
 
