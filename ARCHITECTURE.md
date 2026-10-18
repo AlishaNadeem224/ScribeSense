@@ -1602,9 +1602,12 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > - 21 unit tests (fake desktop, fonts, keybinds; both outcomes of every failure rule) + 2 sandbox tests with the real font cache.
 > **O3 review of O4's changes to `uninstall.py` (2026-10-18): accepted.** The lock is taken once and held for the whole run; fonts named by unfinished
 > transactions' planned writes are kept; the keybinds and login check stay (`kept_for_recovery`) while a revert failed or a transaction is unfinished.
-> All three fix real gaps of the first version, each with a test. Open question from O4's review, not decided: should `--delete-data` first stop a running
-> service (`quit`), because deleting the database while the service has it open leaves the service writing to a deleted file? Proposal: the service must be
-> stopped (or refuse `--delete-data` while the service socket answers) — O2/O4 to say how the CLI asks the service to quit.
+> All three fix real gaps of the first version, each with a test. O4's question "should `--delete-data` stop a running service first?" — **decided by O3 2026-10-18 (option C), built:** after the user confirms
+> the deletion, `uninstall` asks the service to quit and waits (bounded, default 5 s); if it cannot be confirmed stopped — still running, the check or the
+> quit failed, or `cli.py` supplied no check — **all data is kept** (outcome `service_running`, exit 1, message "run `scribesense quit`, then uninstall
+> --delete-data again"). A service is never touched unless the user confirmed, and never when no deletion was asked for. New: `uninstall.ServiceControl(running,
+> stop, wait_s, interval_s)` and `uninstall.quit_via_cli()` (`run_cmd(["scribesense","quit"], 10)` — a child process, so no GTK here, A2). **For O2:** pass
+> `service=ServiceControl(running=<single-instance check>, stop=quit_via_cli)` to `run_uninstall`; without it `--delete-data` refuses. 12 new tests.
 
 > **Reviewed by O4 (2026-10-16): changes needed** (each verified with a probe):
 > (1) **the lock covers only the reset step** — `recovery.reset(policy=…)` releases it in its `finally`, so font removal, keybind removal

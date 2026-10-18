@@ -53,7 +53,8 @@ In this order:
    `--remove-fonts-anyway` removes them regardless.
 3. **Keybinds and the login check are removed.** A keybind block you edited by hand is left in place and reported.
 4. **Your data is kept.** With `--delete-data` it asks you to type `delete` first (without a terminal the answer is
-   no). If something is still unrestored, only presets, settings and samples are deleted and the recovery records stay.
+   no). If the ScribeSense service is running it is then asked to quit; if it cannot be confirmed stopped, **nothing is
+   deleted** and you are told to run `scribesense quit` and try again (exit code 1). If something is still unrestored, only presets, settings and samples are deleted and the recovery records stay.
    Deleting removes ScribeSense's records; it is not secure erasure, and afterwards ScribeSense can no longer restore
    the originals.
 

@@ -893,7 +893,9 @@ graphical session) · M3.6 graphical checklist sections · M3.8 byte-identical V
   keeps the newest COMPLETED apply; O4 fixed three gaps in `uninstall.py` (lock for the whole run, fonts of unfinished txs kept, login check kept while
   recovery is pending), accepted by O3.
 - **Done by O3:** the five notes from O4's M3.1 review (see the M3.1 note in `ARCHITECTURE.md`). 1657 unit tests, 21 sandbox tests, CI green.
-- **Still open for others:** O2 — wire `cli.py` (`uninstall`, `reset`, `recover`), start-up calls `recover_interrupted_builds()` and `prune()`, review
-  `docs/manual-checklist.md`; O1 — confirm D3 / D8, bundled fonts, `ReferenceSource` owner; O4 — the K1 `NOT_A_NUMBER` second sign-off, and answer how
-  `--delete-data` should stop a running service; repo owner — required check.
+- **Still open for others:** O2 — wire `cli.py` (`uninstall` with `service=ServiceControl(running=…, stop=quit_via_cli)`, `reset`, `recover`), start-up calls `recover_interrupted_builds()` and `prune()`, review
+  `docs/manual-checklist.md`; O1 — confirm D3 / D8, bundled fonts, `ReferenceSource` owner; O4 — the K1 `NOT_A_NUMBER` second sign-off; repo owner — required check.
 - **Still open for O3:** M3.4 Firefox / Chromium engines, M3.5 VM + scenarios, M3.6 graphical sections, M3.8 byte-identical VM test.
+
+**2026-10-18 (O3):** `--delete-data` vs a running service decided (option C) and built in `uninstall.py` — the service is asked to quit after the user confirms;
+if it cannot be confirmed stopped, all data is kept (exit 1). O2 must supply the "is the service running" check; without it `--delete-data` refuses.
