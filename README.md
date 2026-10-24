@@ -245,6 +245,6 @@ assistant — see `ScribeSense_Architecture.html` "After the MVP".
 Graphic Era (Deemed to be University), Dehradun
 
 **Repository:** github.com/AlishaNadeem224/ScrbeSense
-oursework produced for the PBL programme. Bundled base fonts are
+Coursework produced for the PBL programme. Bundled base fonts are
 redistributed under their own open licences (SIL OFL or equivalent); each family's
 licence file lives next to it under `fonts/`.
