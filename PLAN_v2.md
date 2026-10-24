@@ -995,3 +995,160 @@ from google/fonts (pinned commit, git blobs verified), with licences, manifest S
 Tests: 2190 passed (unit) · 14 passed (real-tool fontgen integration in bubblewrap). **For O1 (Sukhmani) to review.**
 Still open: the font dropdown should list only families that are actually bundled (guard in O2's `ui/preset_editor.py`),
 so a missing folder can never reach the user again.
+
+## Phase III plan (decided with the user, 2026-10-24)
+
+Phase II was evaluated; the app works end to end (2190 unit tests pass; real-tool font builds pass in bubblewrap;
+demo: Apply → Keep → Original / `scribesense reset`). This entry is the full list of what remains, the decisions taken
+for Phase III and what is deliberately left for later. Owners in brackets. Matching notes are on the ARCHITECTURE.md
+cards (§1 Scope, K1, K2, K9, M1.2, M1.3, M2.3, M2.5, M2.11, M3.5, M3.8, M4.9, M4.14).
+
+### Decisions (Phase III)
+
+| # | Decision | Notes |
+|---|---|---|
+| P3-1 | **Target stays Hyprland only** (Wayland). | GNOME (and other desktops) after Phase III. The Hyprland-specific code is keybinds + login hook (`safety/keybinds.py`), part of `doctor.py` and the settings page. |
+| P3-2 | **Packaging: Fedora first** — an RPM, published through Fedora COPR. **Owner O3**; O4 supplies the keybind / login-hook install step. | Releases = version tags + GitHub releases, **made by humans** (agents never tag or release). Arch (AUR `PKGBUILD`) is the next distro, as a Phase III stretch goal. |
+| P3-3 | **User font import** is in Phase III. Imported fonts are **copied** into ScribeSense's data folder; sources: a **file / folder picker** and **fonts already installed on the system** (fontconfig list); **folders, no zip archives**. | Needs the K1 / K2 contract change below (O1 + a second owner). **No licence policy for user-chosen fonts** (user's decision): the user picks the font, the generated copy stays user-local and is never shared or redistributed. Fonts we **bundle in the package** are redistribution and keep the existing rule: licence file + manifest entry per font (as done for Carlito, Atkinson, Lexend). |
+| P3-4 | **In Phase III:** browser extension end to end, VM full-system tests, user validation study. | |
+| P3-5 | **Future work (after Phase III):** GNOME / other desktops, ML / AI (preset recommender), **phonetics** (below), AT-SPI system-wide text access. | Recorded only; no work in Phase III. |
+
+### W1 — User font import [O1 lead · O2 UI · O3 store · O4 references/uninstall]
+
+User flow: (1) the user selects a font file, a folder with a family's styles, or an installed font; (2) ScribeSense checks
+it can parse the files safely; (3) it copies them in and applies the user's spacing exactly like a bundled font;
+(4) every change stays journaled and reversible as today.
+
+Design (to agree before coding):
+1. **Contract change (O1 + one other owner, decision entry here first):**
+   - K1: `base_family` may name a bundled family (today's `SHORTLIST`) **or** an imported family. Proposal: keep
+     `SHORTLIST` as the bundled set and add a lookup of imported families from the store, so validation still refuses
+     unknown names.
+   - K2: rule 2 ("bundled only, never from the system") becomes "bundled **or imported** (copied into the data
+     folder); never read in place from the system". `base_font_files(family)` resolves both.
+   - New error codes (add-only, need approval), e.g. `IMPORT_FAILED`, `IMPORT_NOT_ELIGIBLE`, `IMPORTED_FONT_IN_USE`.
+2. **Storage (O3, K9 addition):** files copied to `data_dir()/user-fonts/<sha256>/` (dir 0700, files 0600); a
+   `user_fonts` table: family name, style, file name, sha256, size, imported_at, source kind (file / folder / installed).
+   Same file imported twice → one copy (content-addressed). Deleting an imported font that a kept apply still uses →
+   refused (like `FONT_IN_USE`).
+3. **Validation (O1):** reuse `config/rules.py` (32 MB cap, required tables, not icon / monospace, Latin coverage) and
+   the existing variable-font flattening in the patcher. **Parse imported files in a separate process with a timeout**:
+   the generated font is later read by every app's font engine, so a malformed file must be stopped here.
+   Must have a Regular style; other styles optional (as today). **OTF/CFF fonts are untested** — add tests.
+4. **Naming:** an imported family whose name equals a bundled one gets a distinct display name; the generated font is
+   still `AccessSans-<key>` (the key hashes the source bytes, so caching and revert work unchanged).
+5. **UI (O2):** "Import font…" (file / folder) and "Choose an installed font" (from the fontconfig list) in the preset
+   editor; the base-font dropdown lists **only fonts that are actually available** (bundled + imported) — this also
+   closes the open "only bundled families" guard.
+6. **References / uninstall (O4 / O3):** `safety/font_references.py` counts imported sources too; `scribesense
+   uninstall` removes imported copies only with `--delete-data` (they are user data).
+7. Tests: import file / folder / installed font; refuse monospace, icon, broken, oversized and parse-timeout files;
+   OTF/CFF and variable sources; duplicate import; delete-in-use refused; full Apply → Keep → reset with an imported font.
+
+### W2 — Packaging, Fedora first [O3 · O4 for keybinds / login hook]
+
+1. **Blocker — bundled fonts outside the package:** `config/bundled.py:45` finds fonts as
+   `Path(__file__).parents[3] / "fonts"` (the repo root). An installed package has no repo root, so every Apply would
+   fail with `BUNDLED_FONT_MISSING`. Fix (O1 + O3): install fonts to a data location (e.g. `/usr/share/scribesense/fonts`)
+   and resolve it through K8 paths with the repo path as the development fallback; same question for `extension/`
+   files the native-host installer needs. Check that `store/migrations/*.sql` are included in the built package.
+2. **RPM spec** (`scribesense.spec`): `BuildArch: noarch`, Python ≥ 3.11 (Fedora 44 ships 3.14).
+   Requires: `python3-gobject`, `gtk4`, `libadwaita`, `python3-fonttools`, `fontconfig`, the package that provides
+   `pango-view`, `glib2` (gsettings), `wl-clipboard`. Recommends / Suggests: `qt6ct`, `flatpak`, `hyprland`.
+   **Verify every package name on Fedora**; `doctor.py`'s check list is the source for the dependency list.
+3. Files: `/usr/bin/scribesense`, the Python package, fonts + `manifest.toml`, a `.desktop` file with a
+   **"Restore original" desktop action** (`scribesense reset`), an icon, AppStream metainfo, and every bundled font's
+   `OFL.txt` under `/usr/share/licenses/scribesense/`. Check Fedora's font packaging guidelines for bundled fonts.
+4. Per-user setup stays in the app (keybinds, login-recovery hook: Settings → keybinds, O4). The package installs no
+   per-user files.
+5. **Removal rule:** `dnf remove` runs as root and cannot undo per-user settings. README, the app and the package
+   description must say: run **Restore original** or `scribesense uninstall` **before** removing the package.
+   Residual risk to document: if the package is removed first, the login hook can no longer run (`pcall` keeps
+   Hyprland's config loading), and the fontconfig rule points at fonts that still exist in the user's font folder
+   until uninstall — harmless but not reverted.
+6. COPR project + build from tagged releases; install-test the RPM in the VM (W4 doubles as the package test).
+7. Stretch: AUR `PKGBUILD` from the same tagged release.
+
+### W3 — Browser extension end to end [O4 · O2 for the service side]
+
+1. Generate the extension key **outside the repo**; `extension/tools/set_key.py` puts only the public key in
+   `manifest.json` and prints the extension ID.
+2. **Native-messaging host installer** (missing today): write the host manifest
+   (`safety/native_host.render_host_manifest`) for each installed Chromium-family browser (per-user
+   `NativeMessagingHosts/` folders, e.g. Brave's under `~/.config/BraveSoftware/Brave-Browser/`), pointing at the
+   installed host executable; journaled and removed by uninstall. Packaging (W2) decides the host executable path.
+3. Load the extension unpacked (developer mode) in Brave; check YouTube / Twitch text restyles; check revert.
+4. Unskip recovery scenarios 5 and 6 (`tests/recovery/test_recovery_scenarios.py`).
+
+### W4 — VM full-system tests [O3 · O4]
+
+M3.5 scenarios; M3.8 byte-identical uninstall; M3.4 browser engines (Brave needs a short `TMPDIR`; clean stale
+`Singleton*` links); a live `hyprctl reload` with our keybinds; on-screen checks that GTK, Qt and Firefox/Zen actually
+draw the font. Run them on the **installed RPM**, not the repo.
+
+### W5 — Safety and UI completions [O2 · O4]
+
+1. **Confirm window (M2.3) — not built yet** (stated in `ui/confirm.py`): startup deadline, readiness signal, heartbeat,
+   and the check that the sample really renders in the new font. O4 adds the service-side API. Until then only the
+   30 s timeout + watchdog protect the user. Remove the "heartbeat" claim from `docs/OS_DBMS_Concepts.html` until built.
+2. **Visible "Restore original" button** (O2) — today it is the "Original (revert all)" entry in the preset dropdown.
+3. Show `RevertReport.failed_codes` in the reset / Original result (O2, CLI + app).
+4. Decide: the reader's `text_scale` handling; whether `apply` exits 4 when the service cannot start (O2).
+5. Accessibility audit of our own UI: keyboard-only use, screen-reader labels, contrast (O2).
+6. Firefox/Zen: `toolkit.legacyUserProfileCustomizations.stylesheets` stays in `prefs.js` after revert — make it a
+   key-level location so revert is byte-identical (O4).
+
+### W6 — User validation study [whole team; O2 coordinates]
+
+1. Consent and ethics through the university; collect only what the study needs; no reading text is stored (A17).
+2. Participants: readers with dyslexia, plus non-dyslexic readers as a comparison if possible.
+3. Protocol: the same texts with default fonts vs each preset (order varied between participants).
+4. Metrics: reading speed (words per minute), comprehension questions, errors, a comfort / preference score, and a
+   standard usability score (e.g. SUS) for the app.
+5. **WCAG 2.1 SC 1.4.12 check of the presets** (letter ≥ 0.12 em, word ≥ 0.16 em, line ≥ 1.5×) as an automated test
+   (O1). **Open question to settle first — how to compare word spacing.** Measured 2026-10-24: Default's target
+   +0.16 em is rounded on the 0.25 word_scale grid, so the space glyph grows by +0.130 em (Noto Sans), +0.140 em
+   (Atkinson, Lexend) or +0.170 em (Carlito, word_scale 1.75); Reading gives +0.113 to +0.140 em; High Separation
+   +0.339 to +0.420 em. Every word gap **also** gains the +0.12 em letter spacing of the letter before it, so the total
+   gap grows more than the space alone. O1 to define the comparison against WCAG (space-glyph growth only, or the
+   whole gap as CSS letter- + word-spacing would produce) and, if needed, round target_em up instead of to the nearest
+   step.
+6. Report coverage per app type and the known limits (browsers without the extension; apps needing a restart).
+
+### W7 — Housekeeping and sign-offs
+
+- Second-owner sign-offs (any of O1/O2/O3 + an entry here): K3 rule 10b (Brave key-level locations), K8 (socket in
+  `XDG_RUNTIME_DIR`), K4 rule 5 `subscribe_style`, `list_all` in `contracts/store.py`.
+- O3: `list()` drops the Custom row; add `gir1.2-gtk-4.0 gir1.2-adw-1` to CI; make `integration` a required check
+  (with O2, repo settings).
+- O1: review the three newly bundled fonts (M1.2); stale comments (`config/presets.py:156` and `:256`, the
+  `fontgen/generator.py` docstring that says reference sources do not exist — `safety/font_references.py` does);
+  `to_record` / `from_record` in `presets.py` have no tests and no users: test or remove.
+- Repo: decide on the untracked `docs/*.pptx` / `*.tex`; keep `diagrams/` and `diagrams.zip` (≈35 MB of images) out
+  of git.
+
+### Suggested order
+
+1. W7 + the W2 font-location blocker (small; unblocks packaging and import).
+2. W1 contract change agreed → W1 import; in parallel W3 extension and W5.1 confirm window.
+3. W2 RPM + COPR → W4 VM tests on the installed package.
+4. W5 UI polish + accessibility audit.
+5. W6 user study runs in parallel once a stable build exists (recruiting takes time — start the paperwork early).
+
+### Future work (after Phase III — recorded, not planned)
+
+- **GNOME and other desktops:** keybinds per desktop (GNOME custom shortcuts via gsettings, KDE, Sway); login
+  recovery through XDG autostart or a systemd user service; KDE needs its own Qt font adapter (KDE apps do not use
+  qt6ct).
+- **ML / AI:** preset recommender from opt-in samples (the `recommendation_samples` table and the off-by-default
+  "Help improve recommendations" switch exist). Needs consented data, a baseline (Default preset) and a metric from
+  W6; start with simple per-user learning before any global model. Present it as recommendation, not detection
+  ("dyslexia subtype detection" would need clinical evidence).
+- **Phonetics (in the reader, where ScribeSense owns the text):** (1) read aloud with word highlighting — offline TTS
+  (espeak-ng or Piper) through speech-dispatcher; (2) syllable view (`re·mem·ber` / alternating colours) from the CMU
+  Pronouncing Dictionary with hyphenation rules as fallback; (3) pronunciation on click (IPA via `espeak-ng --ipa`);
+  (4) letter-sound highlighting (silent letters, b/d/p/q). Adds `reader/speech.py`, `reader/phonetics.py`, a speech
+  contract, error codes (e.g. `TTS_UNAVAILABLE`, `VOICE_MISSING`), settings (voice, rate, syllables on/off) and an
+  optional per-user pronunciation-corrections table; text stays in memory and goes only to a local speech process.
+- **AT-SPI system-wide text access** (phonetics or reading help inside other apps): large step with privacy impact.
+- **Other distros:** AUR (if not done as the W2 stretch), openSUSE Build Service for `.deb` / openSUSE.

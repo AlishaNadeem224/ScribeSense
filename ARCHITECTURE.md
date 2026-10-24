@@ -44,6 +44,7 @@ for K3/K4, and the contract owner + one other owner for the rest.
   recovery keybind; uninstall reverts everything. [D]
 - **Later (not in MVP):** shadow mode, drift detection, Electron, GNOME, recommender, voice. [D]
 - Deadline 20 October; mentor to be consulted on the pivot. [D]
+- **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan"):** still Hyprland only; packaging (Fedora RPM via COPR first); user font import (copied, user-local); browser extension end to end; VM full-system tests; user validation study. **Later:** GNOME / other desktops, ML / AI recommender, phonetics (read aloud, syllables), AT-SPI. [D]
 
 ---
 
@@ -215,6 +216,9 @@ def validate(c: Configuration) -> list[Issue]
 
 5. The UI may tell the user a value was rounded; that is UI feedback, not an `Issue`.
 
+
+> **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" P3-3, W1):** **Proposed change, not yet agreed (O1 + one other owner):** `base_family` may also name a user-**imported** family, looked up from the store; `SHORTLIST` stays the bundled set so unknown names are still refused. Until the change is signed off and recorded in PLAN_v2, K1 is unchanged.
+
 ### K2 — Preset (owner O1) — FROZEN 2026-10-09
 
 A preset stores the user's **intent**; `resolve()` turns it into one concrete `Configuration` (K1).
@@ -282,6 +286,9 @@ def base_font_files(family: str) -> dict[str, Path]   # style → bundled file; 
      a new key automatically.
    - **Before bundling, O1 verifies each licence permits redistribution and modification**
      (SIL OFL expected for all four). A font that fails is removed from `SHORTLIST`.
+
+
+> **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" P3-3, W1):** **Proposed change, not yet agreed:** rule 2 becomes "bundled **or imported** (copied into `data_dir()/user-fonts/<sha256>/`); never read in place from the system"; `base_font_files` resolves both. No licence policy for user-chosen fonts (user-local, never redistributed); fonts bundled in the package keep the licence file + manifest rule.
 
 ### K3 — Adapter (owner O4, O4-only) — FROZEN 2026-10-09 · amended R2 2026-10-09
 
@@ -814,6 +821,9 @@ class SampleRepo:
 **O3 sign-off checklist:** column types · matches the planned implementation · the 12 tests above
 accepted · journal tables return everything in `JournalItem` / `LocationRecord`.
 
+
+> **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" W1):** **Proposed K9 addition (O3):** a `user_fonts` table (family, style, file name, sha256, size, imported_at, source kind file/folder/installed) for imported fonts; content-addressed copies; deleting an imported font that a kept apply still uses is refused.
+
 ### K10 — CLI commands (owner O2) [D A7] — FROZEN 2026-10-09
 
 | Command | Used by |
@@ -967,6 +977,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > every family builds, no primary name keeps the source name) and `test_fontgen_integration.py` (all three built-ins × the three new
 > families with the real pango-view / fc-cache / fc-match in bubblewrap). Checked in the real app (headless): every family previews.
 
+
+> **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" W1, W2):** (1) **Packaging blocker:** `FONTS_ROOT` is `Path(__file__).parents[3] / "fonts"` (the repo root); an installed package has none, so fonts must move to a data location (e.g. `/usr/share/scribesense/fonts`) resolved via K8 with the repo path as development fallback. (2) Imported fonts (W1) need `base_font_files` to resolve imported families too. (3) Bundled fonts: three new families still to be reviewed by O1. (4) The docstring at `config/presets.py:256` ("undetermined until the bundled fonts are measured") is stale; `to_record`/`from_record` have no tests and no users.
+
 #### M1.3 Font eligibility rules
 | Field | Spec |
 |---|---|
@@ -993,6 +1006,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > built-ins patch and validate with the real tools in the bubblewrap runner. Carlito / Atkinson / Lexend were bundled later
 > the same day and pass the same real-tool builds (see M1.2). CFF remains untested.
 > Tests in `tests/unit/fontgen/test_fontgen.py` (each fails without its fix).
+
+> **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" W1):** Imported fonts reuse these rules; parse them in a **separate process with a timeout** (the generated font is later read by every app's font engine). `E_LICENCE` stays unimplemented for user fonts (user's decision). OTF/CFF sources are untested — add tests.
+
 #### M1.4 Font patcher
 | Field | Spec |
 |---|---|
@@ -1245,6 +1261,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Acceptance tests | Keep → `keep()` commits, then ack; crash before commit → reverted at recovery; crash after → COMPLETED and active config match; timeout → REVERTED; startup failure, crash, freeze, rejection, late confirmation each → correct outcome; killed mid-countdown → recovered at next login (VM) |
 | Done when | Tests pass · manual checklist item passes · reviewed by O4 |
 
+
+> **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" W5.1):** **Status: the startup deadline, readiness signal, heartbeat and sample-family check are NOT built yet** (`ui/confirm.py` says so). Today only the 30 s timeout and the service watchdog protect the user. O4 adds the service-side API.
+
 #### M2.4 UI shell
 | Field | Spec |
 |---|---|
@@ -1291,6 +1310,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Must never | Apply anything without the user pressing Apply |
 | Acceptance tests | Controls match RANGES; warning shown above 1.3×; preview shows sample in the new font [V A5] |
 | Done when | Tests + accessibility checklist pass · reviewed |
+
+
+> **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" W1, W5):** (1) "Import font…" (file / folder, no zip) and "Choose an installed font" (fontconfig list). (2) The base-font dropdown lists only fonts that are actually available (bundled + imported). (3) A visible **"Restore original"** button; today it is the "Original (revert all)" dropdown entry. (4) Accessibility audit of the UI.
 
 #### M2.6 Coverage report
 | Field | Spec |
@@ -1462,6 +1484,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > (window + editor + service; close hides, Quit exits 0). **Known limits:** apply needs the bundled base fonts (O1) — until
 > they land, Apply stops with `BUNDLED_FONT_MISSING`; a first `scribesense apply X` that starts the app does not exit with
 > the apply result (Gio does not report back to its own launch).
+
+
+> **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" W5):** Show `RevertReport.failed_codes` in the reset / Original output (CLI + app). Decide whether `apply` exits 4 when the service cannot start, and the reader's `text_scale` handling.
 
 ### O3 — Data & Platform
 
@@ -1636,6 +1661,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Acceptance tests | Each scenario above |
 | Done when | Scenarios pass · reviewed |
 
+
+> **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" W4):** Run the scenarios on the **installed RPM**, together with M3.8's byte-identical uninstall, M3.4 browser engines, a live `hyprctl reload` and on-screen checks (GTK, Qt, Firefox/Zen).
+
 #### M3.6 Manual checklist
 | Field | Spec |
 |---|---|
@@ -1755,6 +1783,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > font keys named in planned writes of unfinished transactions. (3) new keybind outcome `kept_for_recovery`: the keybinds and login
 > check stay while a revert failed or a tx is unfinished (a drift-skipped setting does not block removal — it is final). The existing test
 > that expected removal after a failed revert now expects `kept_for_recovery`. (4) not changed (report wording only).
+
+
+> **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" P3-2, W2):** **Packaging, Fedora first (owner O3; O4 for the keybind / login-hook step):** RPM via COPR from human-made version tags / GitHub releases; dependencies taken from `doctor.py`'s check list (verify Fedora package names); `.desktop` file with a "Restore original" action; font `OFL.txt` files under `/usr/share/licenses/scribesense/`; no per-user files from the package. **Removal rule:** run Restore original or `scribesense uninstall` before `dnf remove` (root cannot undo per-user settings). Uninstall removes imported fonts only with `--delete-data`. Stretch: AUR `PKGBUILD`.
 
 #### M3.9 CI and import rules
 | Field | Spec |
@@ -2084,6 +2115,9 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > journals; `begin("revert")` / `begin("uninstall")` stay allowed. The controller turns it into a stopped report; the app tells the
 > user to run `scribesense reset` (or the recovery keybind) first. A tx left in REVERT_FAILED therefore blocks Apply until a reset
 > succeeds — intended.
+
+> **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" W3):** **Missing: the native-messaging host installer.** Write the host manifest (`render_host_manifest`) per installed Chromium-family browser (per-user `NativeMessagingHosts/`), journaled and removed by uninstall; key made outside the repo, public key via `extension/tools/set_key.py`. Then test YouTube / Twitch in Brave and unskip recovery scenarios 5 and 6.
+
 #### M4.10 Journal
 | Field | Spec |
 |---|---|
@@ -2285,6 +2319,9 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > marked `pcall(dofile, …)` block, our file in `hl.bind(…, hl.dsp.exec_cmd(…))` style + `hl.on("hyprland.start", …)` login check. **`Hyprland
 > --verify-config` → "config ok"**, also with our file loaded WITHOUT pcall (controls: a broken custom.lua / a broken own file are reported).
 > `remove_keybinds()` restores the config byte-identically and removes the empty `scribesense/` dir. Not checked: a live `hyprctl reload` (touches the session).
+
+
+> **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" P3-1):** Phase III stays **Hyprland only**. Other desktops (GNOME custom shortcuts, KDE, Sway; login recovery via XDG autostart or a systemd user service) are future work.
 
 #### M4.15 Logging
 | Field | Spec |
