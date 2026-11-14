@@ -55,6 +55,7 @@ an engineering gate, nothing more.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -67,6 +68,7 @@ __all__ = [
     "BASE_IS_MONOSPACE",
     "CORE_LATIN_CODEPOINTS",
     "Eligibility",
+    "FONT_PARSE_TIMEOUT",
     "FONT_TOO_LARGE",
     "FONT_UNREADABLE",
     "ICON_PUA_SHARE",
@@ -77,6 +79,7 @@ __all__ = [
     "MONOSPACE_MIN_SAMPLE",
     "NO_LATIN_COVERAGE",
     "NO_UPM",
+    "PARSE_TIMEOUT_S",
     "PARTIAL_LATIN_COVERAGE",
     "REQUIRED_TABLES",
     "VARIABLE_FONT",
@@ -85,6 +88,7 @@ __all__ = [
     "is_monospace",
     "latin_glyphs",
     "open_font",
+    "verdict",
 ]
 
 
@@ -103,7 +107,8 @@ __all__ = [
 #   ----------------------    --------------------   ------------------------------
 #   E_FORMAT_UNREADABLE       FONT_UNREADABLE        card-named
 #   E_CORRUPT                 FONT_UNREADABLE        merged; see FONT_UNREADABLE
-#   E_PARSE_TIMEOUT           FONT_TOO_LARGE         partial; see MAX_FONT_BYTES
+#   E_PARSE_TIMEOUT           FONT_TOO_LARGE         size cap, always applied
+#                             FONT_PARSE_TIMEOUT     real deadline, isolate=True only
 #   E_MISSING_TABLE           MISSING_TABLE
 #   E_NO_UPM                  NO_UPM
 #   E_NO_LATIN                NO_LATIN_COVERAGE
@@ -130,8 +135,18 @@ what the card requires -- errors are never swallowed and never reported as eligi
 FONT_TOO_LARGE = "FONT_TOO_LARGE"
 """Refusal: the file exceeds `MAX_FONT_BYTES` and was never parsed.
 
-The portable half of Research2's ``E_PARSE_TIMEOUT``. See `MAX_FONT_BYTES` for what
-this does and does not protect against.
+The cheap half of Research2's ``E_PARSE_TIMEOUT`` -- the half that costs nothing and runs
+whether or not the parse is isolated. `FONT_PARSE_TIMEOUT` is the other half.
+"""
+
+FONT_PARSE_TIMEOUT = "FONT_PARSE_TIMEOUT"
+"""Refusal: an isolated parse did not finish inside `PARSE_TIMEOUT_S` and was killed.
+
+Research2's ``E_PARSE_TIMEOUT``, now reachable for real. Until 2026-11-14 this module
+mapped that condition onto `FONT_TOO_LARGE` and said so in the table below, because a size
+cap was all there was; `is_eligible(path, isolate=True)` makes the distinction honest.
+
+Only ever produced with ``isolate=True``: an in-process parse has nothing to kill.
 """
 
 MISSING_TABLE = "MISSING_TABLE"
@@ -215,12 +230,21 @@ are a documented attack surface (Liang et al. 2017; Endignoux et al. 2016), corr
 and adversarial font files are a known input class (Park et al. 2026; Kim et al.
 2026), and malicious web fonts are demonstrably feasible (Mueller et al. 2019).
 
-**Limitation, stated plainly.** This is a size cap, not the timeout Research2 asks
-for. A small but pathological file -- a decompression bomb, or a table whose declared
-counts force quadratic work -- can still consume unbounded time inside fontTools. A
-real wall-clock budget needs process isolation (parse in a subprocess, kill on
-timeout), which is a deployment decision rather than a rule, so it is deferred rather
-than faked here. 32 MB comfortably exceeds any Latin-only text face.
+A size cap is not a *time* budget: a small but pathological file -- a decompression bomb,
+or declared counts that force quadratic work -- passes this and then consumes unbounded
+time inside fontTools. That is what ``is_eligible(path, isolate=True)`` and
+`scribesense.config.fontprobe` are for (added 2026-11-14). 32 MB comfortably exceeds any
+Latin-only text face, and the cap still earns its place as the cheap check that runs
+first, in or out of process.
+"""
+
+PARSE_TIMEOUT_S = 10.0
+"""Wall-clock budget for one isolated parse (`is_eligible` with ``isolate=True``).
+
+Generous against the work -- the four bundled families parse in well under a second each --
+and short enough that a hung parser cannot stall an import the user is waiting on. It is a
+deadline, not a measurement: `run_cmd` sends SIGTERM then SIGKILL, so the number only has
+to sit above honest work and below the user's patience.
 """
 
 MONOSPACE_MIN_SAMPLE = 8
@@ -555,8 +579,109 @@ def _read(path: Path) -> bytes | str:
 # --------------------------------------------------------------------------- #
 
 
-def is_eligible(path: str | os.PathLike[str]) -> Eligibility:
-    """Decide whether the font at ``path`` may be patched.
+def is_eligible(
+    path: str | os.PathLike[str],
+    *,
+    isolate: bool = False,
+    timeout: float = PARSE_TIMEOUT_S,
+) -> Eligibility:
+    """Decide whether the font at ``path`` may be patched -- the card's interface.
+
+    ``isolate``
+        Parse in a **child process** with a wall-clock deadline instead of in this one.
+        Keyword-only with a default of ``False``, so the card's one-argument call is
+        unchanged and nothing already in the pipeline pays for it.
+
+        Off for the bundled families: they are pinned by SHA-256 in `fonts/manifest.toml`,
+        and a Python interpreter per file is real cost on a path M1.5 walks once per style
+        per build. **On for anything the user supplies** -- PLAN_v2 W1.3, "parse imported
+        files in a separate process with a timeout" -- because the generated font is later
+        loaded by every application's font engine on the machine, and `MAX_FONT_BYTES` is a
+        size cap, not a time budget (see `fontprobe`).
+
+        The verdict is identical either way: the child runs `verdict`, the same function
+        this one calls in process. What differs is only what happens when the parser does
+        not come back.
+
+    ``timeout``
+        The deadline for an isolated parse. Ignored when ``isolate`` is False.
+
+    Isolated failures map as follows, and **a crashed child is a refusal, never an
+    exception**: the deadline passing is `FONT_PARSE_TIMEOUT`; a child that dies, cannot be
+    started, or prints something unreadable is `FONT_UNREADABLE`, which is the same answer
+    an unparseable font gets in process.
+
+    >>> is_eligible("/nonexistent/font.ttf")
+    Eligibility(ok=False, reason_code='FONT_UNREADABLE', warnings=())
+    """
+    if not isolate:
+        return verdict(path)
+    return _isolated_verdict(Path(path), timeout)
+
+
+def _isolated_verdict(path: Path, timeout: float) -> Eligibility:
+    """Run `verdict` in a child process, or turn the child's failure into a refusal.
+
+    The size cap is applied *here*, before anything is spawned: refusing a 2 GB file costs
+    one `stat`, and paying for process start-up first would be the wrong way round.
+    """
+    import json
+
+    from scribesense.contracts.errors import ErrorCode, ScribeSenseError
+    from scribesense.contracts.paths import run_cmd
+
+    data = _read(path)
+    if isinstance(data, str):  # FONT_UNREADABLE / FONT_TOO_LARGE, without spawning
+        return Eligibility(False, data)
+
+    # `-P` (Python >= 3.11): keep the working directory off sys.path, so a stray module there
+    # cannot shadow the probe. Same form as M4.13's Pango probe (`adapters/verify.probe_argv`),
+    # and the same documented assumption: `sys.executable` must be able to import
+    # `scribesense`, which is true for the supported setup (an installed package, or
+    # `uv venv --system-site-packages`, AGENTS.md §8). When it cannot, the child exits
+    # non-zero and this is a refusal -- never a false pass, but also not distinguishable here
+    # from a font that will not parse. W1's import UI should say "could not check this font"
+    # rather than "not eligible" when the probe itself is unavailable (PLAN_v2 2026-11-14).
+    argv = [sys.executable, "-P", "-m", "scribesense.config.fontprobe", str(path)]
+    try:
+        finished = run_cmd(argv, timeout=timeout)
+    except ScribeSenseError as exc:
+        # ADAPTER_TIMEOUT means the deadline passed and run_cmd killed the child; every
+        # other code means it could not be started or exited non-zero. Both are refusals.
+        if exc.code is ErrorCode.ADAPTER_TIMEOUT:
+            return Eligibility(False, FONT_PARSE_TIMEOUT)
+        return Eligibility(False, FONT_UNREADABLE)
+    except OSError:
+        return Eligibility(False, FONT_UNREADABLE)
+
+    try:
+        reply = json.loads(finished.stdout.decode("utf-8", errors="replace"))
+        if reply["v"] != fontprobe_version():
+            return Eligibility(False, FONT_UNREADABLE)
+        ok = bool(reply["ok"])
+        warnings = tuple(str(w) for w in reply["warnings"]) if ok else ()
+        return Eligibility(ok, None if ok else str(reply["reason_code"]), warnings)
+    except Exception:
+        # Deliberately broad: anything the child printed that this cannot read is the same
+        # situation as a font this cannot parse, and the caller's response is identical.
+        return Eligibility(False, FONT_UNREADABLE)
+
+
+def fontprobe_version() -> int:
+    """The probe protocol version this module expects. Imported lazily to keep
+    `fontprobe`'s own import of `rules` from becoming a cycle at module scope."""
+    from scribesense.config.fontprobe import PROTOCOL_VERSION
+
+    return PROTOCOL_VERSION
+
+
+def verdict(path: str | os.PathLike[str]) -> Eligibility:
+    """The eligibility decision itself, parsed **in this process**.
+
+    `is_eligible` is the card's interface and the one callers use; this is its body, named
+    and exported so that `fontprobe` can run exactly the same checks in a child. Two code
+    paths producing two verdicts would be the obvious way to get this wrong, so there is
+    one, and isolation changes only where it runs.
 
     Checks run in this fixed order, and the **first** refusal is the one reported:
 
@@ -584,7 +709,7 @@ def is_eligible(path: str | os.PathLike[str]) -> Eligibility:
     Deterministic for the same bytes (a card postcondition): no clock, no environment,
     no filename inspection, and every set is sorted before it is reduced.
 
-    >>> is_eligible("/nonexistent/font.ttf")
+    >>> verdict("/nonexistent/font.ttf")
     Eligibility(ok=False, reason_code='FONT_UNREADABLE', warnings=())
     """
     data = _read(Path(path))
