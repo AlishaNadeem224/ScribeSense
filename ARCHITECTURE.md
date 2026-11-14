@@ -959,8 +959,11 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > static instances (wght 400 / 700) of Noto Sans 2.015 from Fedora's `google-noto-sans-vf-fonts`, made reproducibly by
 > `fonts/tools/build_noto_sans.py` (record 25 removed); licence OFL-1.1 **without** a Reserved Font Name (`fonts/Noto Sans/OFL.txt`).
 > `fonts/manifest.toml` records upstream, licence and SHA-256 per file; `tests/unit/fontgen/test_bundled_fonts.py` checks it. The
-> Regular space is 260/1000 em, so `resolve()` now MEASURES it: **Default resolves to word_scale 1.5** (it was 1.75 on the 0.25 em
-> fallback). All three built-ins use Noto Sans, so Apply works end to end. Not yet bundled: Carlito (OFL **with** Reserved Font Name
+> Regular space is 260/1000 em, so `resolve()` now MEASURES it. **Default resolves to word_scale 1.75** — corrected 2026-11-14 by
+> W6.5, which made `target_em` round *up* rather than to nearest. The value has moved twice, so the whole history is recorded here to
+> stop the old number reappearing: 1.75 (0.25 em fallback) → 1.5 (measured, rounded to nearest) → **1.75** (measured, rounded up).
+> Only the last clears WCAG 1.4.12's 0.16 em word-spacing floor, which is the floor this preset documents itself as meeting.
+> All three built-ins use Noto Sans, so Apply works end to end. Not yet bundled: Carlito (OFL **with** Reserved Font Name
 > "Carlito" — allowed now that M1.4 drops records 21/22/25, but not added today), Atkinson Hyperlegible and Lexend (not available
 > offline). Bundling real fonts changes every content key once (expected).
 >
@@ -972,8 +975,10 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > wght 400 / 700 instances of `Lexend[wght].ttf` 1.007 made reproducibly by `fonts/tools/build_lexend.py`; upstream has no italic;
 > OFL-1.1 with RFN "RevReading Lexend", which is not used). Generated fonts are `AccessSans-<key>` in name records 1/4/6; the source
 > name stays only in copyright (0, required by OFL), trademark (7), manufacturer (8), description (10) and URLs (11/12) — OFL clause 3
-> applies to the primary name only. Measured space widths: Carlito 0.226 em (Default → word_scale 1.75), Atkinson 0.280 em and
-> Lexend 0.280 em (Default → 1.5). Tests: `test_bundled_fonts.py` (manifest hashes, every SHORTLIST family bundled + eligible + licence,
+> applies to the primary name only. Measured space widths: Carlito 0.226 em, Atkinson 0.280 em, Lexend 0.280 em (with Noto Sans'
+> 0.260 em). Since W6.5 rounded `target_em` up (2026-11-14) **Default resolves to word_scale 1.75 on all four**, adding +0.170 /
+> +0.210 / +0.210 / +0.195 em respectively — every one above WCAG's 0.16 em floor. Before that change Atkinson and Lexend resolved
+> to 1.5 and added 0.140 em, below it. Tests: `test_bundled_fonts.py` (manifest hashes, every SHORTLIST family bundled + eligible + licence,
 > every family builds, no primary name keeps the source name) and `test_fontgen_integration.py` (all three built-ins × the three new
 > families with the real pango-view / fc-cache / fc-match in bubblewrap). Checked in the real app (headless): every family previews.
 
@@ -1146,9 +1151,11 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 >   no paths), with the detail kept on attributes; `variants.error_code_for()` folds the fine-grained codes.
 > - **K2 `base_font_files()`** moved to `scribesense.config.bundled` (re-exported by `config.presets` and
 >   `fontgen.variants`); `resolve()` now measures the bundled Regular face's space width (K2), falling back
->   to 0.25 em while `fonts/` is empty. **Open (O1):** no base fonts are bundled yet and `manifest.toml` is
+>   to 0.25 em while `fonts/` is empty. ~~**Open (O1):** no base fonts are bundled yet and `manifest.toml` is
 >   not read — until then `build(config)` returns `refused / BUNDLED_FONT_MISSING`, and Default resolves to
->   word_scale 1.75 (fallback) instead of 1.5 (real Noto Sans space = 0.26 em).
+>   word_scale 1.75 (fallback) instead of 1.5 (real Noto Sans space = 0.26 em).~~ **Closed:** all four families
+>   were bundled 2026-10-18 (see M1.2), so the fallback is no longer reached. Default resolves to 1.75 again
+>   since W6.5 (2026-11-14) — now because `target_em` rounds up, not because the width was a guess.
 > - **Tests added** (`tests/unit/fontgen/`): card acceptance tests for M1.1–M1.8 with synthetic fonts and fake
 >   pango/fontconfig, plus 2 integration tests (real pango-view/fc-cache/fc-match, bubblewrap runner only).
 > - Behaviour to know: tracking applies to Latin letters only (digits/punctuation are script Common and are
