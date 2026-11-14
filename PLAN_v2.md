@@ -866,7 +866,7 @@ notes in `ARCHITECTURE.md`). K9 is signed off (2026-10-15); the journal part was
   font fields — needs adapter support.
 
 **O1 — Configuration & Fonts**
-- **K9 D3:** confirm `custom` is stored as one row with the reserved id `custom` (the code in `config/presets.py` already matches).
+- **K9 D3:** confirm `custom` is stored as one row with the reserved id `custom` (the code in `config/presets.py` already matches). (done)
 - **K9 D8:** confirm the font key's inputs are `base_family`, `letter_em`, `word_scale`, `reading_line`, `ui_line` (not `text_scale`).
 - **Uninstall:** confirm that using `fontgen.cache.installed_keys()` and `remove()` is the intended way to remove generated fonts.
 - **Open on O1's side:** base fonts are not bundled yet (`build()` refuses with `BUNDLED_FONT_MISSING`); `GENERATOR_ERROR` is proposed for the error codes.
