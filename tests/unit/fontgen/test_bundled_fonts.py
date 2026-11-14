@@ -20,8 +20,8 @@ from scribesense.contracts import fonts as k7
 from scribesense.contracts.config import SHORTLIST
 from scribesense.fontgen import generator, variants
 
-FONTS = bundled.FONTS_ROOT
-MANIFEST = tomllib.loads((FONTS / "manifest.toml").read_text())
+FONTS = bundled.fonts_root()
+MANIFEST = tomllib.loads((FONTS / bundled.MANIFEST_NAME).read_text())
 
 
 @pytest.mark.parametrize("family", sorted(MANIFEST))
@@ -47,8 +47,10 @@ def test_space_width_is_measured_so_default_resolves_as_k2_intends(monkeypatch: 
     monkeypatch.setattr(presets, "MEASURED_SPACE_WIDTH_EM", {})
     assert presets.default_space_width_em("Noto Sans") == pytest.approx(0.26)
     assert presets.space_width_source("Noto Sans") == "measured"
-    # +0.16 em target / 0.26 em space -> 1.615 -> 1.5 on the 0.25 grid (the fallback 0.25 em gave 1.75)
-    assert presets.resolve(presets.builtin("default").values).word_scale == 1.5
+    # +0.16 em target / 0.26 em space -> 1.615 -> 1.75, rounded UP on the 0.25 grid (W6.5,
+    # 2026-11-14): a target_em is a floor, and 1.5 would add only 0.130 em against WCAG's 0.16.
+    assert presets.resolve(presets.builtin("default").values).word_scale == 1.75
+    assert (1.75 - 1.0) * 0.26 >= 0.16  # the floor the preset documents itself as meeting
 
 
 @pytest.mark.parametrize("preset_id", ["default", "reading", "high-separation"])
@@ -74,7 +76,12 @@ EXPECTED_STYLES = {
     "Lexend": {"Regular", "Bold"},
     "Noto Sans": {"Regular", "Bold", "Italic", "BoldItalic"},
 }
-PRIMARY_NAME_IDS = (1, 4, 6, 16, 17)  # the names OFL clause 3 (Reserved Font Name) applies to
+#: Every record that can identify a family — the set M1.6 checks (`_IDENTIFYING_NAME_IDS`), and the
+#: set OFL clause 3 (Reserved Font Name) applies to. Widened 2026-11-14 (O1's M1.2 review): 3, 21, 22
+#: and 25 were missing, and **record 3 is the live one** — all four bundled sources carry their family
+#: name in `uniqueID` ('1.104;tyPL;Carlito-Bold'), which `_rename` rewrites rather than drops. 16/17/
+#: 21/22/25 are absent from every bundled source today, so record 3 was the only real exposure here.
+PRIMARY_NAME_IDS = (1, 3, 4, 6, 16, 17, 21, 22, 25)
 
 
 def test_every_shortlist_family_is_bundled_and_recorded() -> None:
