@@ -117,14 +117,26 @@ class FirefoxHarness:
     config: Configuration = CFG
 
     def fingerprint(self) -> dict[str, str]:
+        """Files by bytes and mode, except prefs.js (K3 rule 10b view): its pref key location plus everything
+        ELSE in it ("#rest", a missing file = empty), so a change to any other line is still caught."""
         out = fingerprint_home(self.home)
         for t in self.adapter.detect():  # every location, absent ones as absent
             profile = self.adapter._profile(t).path
             for loc in (ff.user_js_path(profile), ff.user_content_path(profile)):
                 out.setdefault(str(loc), state_sha256(False, None))
+            prefs = ff.prefs_js_path(profile)
+            out.pop(str(prefs), None)
+            out[ff.pref_location(profile)] = self.adapter.read_state(ff.pref_location(profile)).sha256
+            rest = ff.set_pref(prefs.read_bytes(), None) if prefs.exists() else b""
+            mode = f":{stat.S_IMODE(prefs.stat().st_mode):o}" if rest else ""
+            out[f"{prefs}#rest"] = state_sha256(True, rest) + mode
         return out
 
     def external_edit(self, location: str) -> None:
+        if ff.is_pref_location(location):  # the user flips the pref themselves
+            path, _ = ff.split_pref_location(location)
+            path.write_bytes(ff.set_pref(path.read_bytes() if path.exists() else b"", b"false"))
+            return
         path = Path(location)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"/* changed by someone else */\n")
@@ -305,7 +317,8 @@ def test_xdg_root_profiles_are_discovered(sandbox) -> None:  # type: ignore[no-u
     assert [(t.target_id, t.display_name, t.running) for t in targets] == [
         (tid("firefox-xdg", profile), "Firefox (default-release)", False)]
     items, _ = snap_plan_apply(a, targets[0])
-    assert [i.location for i in items] == [str(profile / "user.js"), str(profile / "chrome" / "userContent.css")]
+    assert [i.location for i in items] == [str(profile / "user.js"), str(profile / "chrome" / "userContent.css"),
+                                           f"{profile / 'prefs.js'}#{ff.STYLESHEET_PREF}"]
     assert a.verify(targets[0], FONTS).chosen_ok is True
 
 
@@ -394,8 +407,9 @@ def test_apply_refuses_while_running_and_writes_nothing(sandbox) -> None:  # typ
 
 
 def test_revert_is_allowed_while_the_browser_runs(sandbox) -> None:  # type: ignore[no-untyped-def]
-    """Decision 2026-10-12: Firefox never rewrites user.js or userContent.css, so reverting while it runs is
-    harmless, and a stale lock left by a crash must never block recovery."""
+    """Decision 2026-10-12: Firefox never rewrites user.js or userContent.css, so reverting them while it runs is
+    harmless, and a stale lock left by a crash must never block their recovery. The prefs.js key (2026-11-19) is
+    the exception: Firefox rewrites prefs.js, so that one item waits for the browser to close (as M4.7)."""
     profile = make_profile("firefox", "abcd.default")
     write(profile / "user.js", USER_JS, 0o600)
     a = FirefoxAdapter()
@@ -403,12 +417,21 @@ def test_revert_is_allowed_while_the_browser_runs(sandbox) -> None:  # type: ign
     items, _ = snap_plan_apply(a, t)
     os.symlink("127.0.1.1:+4242", profile / "lock")
     assert a.detect()[0].running is True
-    for item in items:
+    files = [i for i in items if i.kind == "file"]
+    (pref,) = [i for i in items if i.kind == "key"]
+    for item in files:
         a.revert(item, USER_JS if item.existed else None)
+    with pytest.raises(ScribeSenseError) as exc:
+        a.revert(pref, None)
+    assert exc.value.code is ErrorCode.BROWSER_RUNNING
+    assert ff.pref_value((profile / "prefs.js").read_bytes()) == b"true"  # untouched while it runs
     assert (profile / "user.js").read_bytes() == USER_JS
     assert stat.S_IMODE((profile / "user.js").stat().st_mode) == 0o600
     assert not (profile / "chrome" / "userContent.css").exists()
     assert os.path.lexists(profile / "lock")  # the browser's lock is never touched
+    (profile / "lock").unlink()  # the browser closes; recovery retries the one failed item
+    a.revert(pref, None)
+    assert not (profile / "prefs.js").exists()  # created by apply for a profile that never ran
 
 
 # ---------------------------------------------------------------- what is written
@@ -504,6 +527,9 @@ def test_css_comes_from_browser_css(sandbox, monkeypatch) -> None:  # type: igno
 def test_nothing_written_has_letter_or_word_spacing(sandbox) -> None:  # type: ignore[no-untyped-def]
     a, t, profile = _apply_one(sandbox, USER_JS, USER_CSS)
     for p in a.plan(t, FONTS, CFG):
+        if ff.is_pref_location(p.location):
+            assert p.payload == "true"  # the only value the pref is ever set to
+            continue
         assert isinstance(p.payload, bytes)
         low = p.payload.lower()
         assert b"letter-spacing" not in low and b"word-spacing" not in low
@@ -654,3 +680,111 @@ def test_verify_profile_gone(sandbox) -> None:  # type: ignore[no-untyped-def]
     r = a.verify(t, FONTS)
     assert (r.chosen_ok, r.detail_code) == (False, ErrorCode.PROFILE_NOT_FOUND.value)
 
+
+
+# ---------------------------------------------------------------- prefs.js stylesheet pref (K3 rule 10b, 2026-11-19)
+
+FIREFOX_PREFS = (b"// Mozilla User Preferences\n\n// DO NOT EDIT THIS FILE.\n\n"
+                 b'user_pref("app.normandy.first_run", false);\n'
+                 b'user_pref("browser.startup.page", 3);\n')
+
+
+def _pref_profile(prefs: bytes | None) -> tuple[FirefoxAdapter, Target, Path]:
+    profile = make_profile("firefox", "pref.default")
+    if prefs is not None:
+        write(profile / "prefs.js", prefs, 0o600)
+    a = FirefoxAdapter()
+    return a, a.detect()[0], profile
+
+
+def _revert_all(a: FirefoxAdapter, items) -> None:  # type: ignore[no-untyped-def]
+    for item in reversed(items):
+        a.revert(item, None)
+
+
+def test_pref_is_written_and_removed_after_firefox_rewrote_prefs_js(sandbox) -> None:  # type: ignore[no-untyped-def]
+    """The 2026-10-18 VM gap: after a browser run the pref sits in prefs.js; revert removes exactly that line."""
+    a, t, profile = _pref_profile(FIREFOX_PREFS)
+    items, _ = snap_plan_apply(a, t)
+    assert ff.pref_value((profile / "prefs.js").read_bytes()) == b"true"
+    # Firefox runs and rewrites the whole file (sorted, other prefs changed), keeping our pref.
+    rewritten = (b"// Mozilla User Preferences\n\n" + b'user_pref("browser.startup.page", 1);\n' + PREF + b"\n")
+    (profile / "prefs.js").write_bytes(rewritten)
+    _revert_all(a, items)
+    assert (profile / "prefs.js").read_bytes() == b"// Mozilla User Preferences\n\n" + b'user_pref("browser.startup.page", 1);\n'
+    assert stat.S_IMODE((profile / "prefs.js").stat().st_mode) == 0o600
+
+
+def test_pref_revert_is_byte_identical_without_a_browser_run(sandbox) -> None:  # type: ignore[no-untyped-def]
+    a, t, profile = _pref_profile(FIREFOX_PREFS)
+    items, _ = snap_plan_apply(a, t)
+    _revert_all(a, items)
+    assert (profile / "prefs.js").read_bytes() == FIREFOX_PREFS
+
+
+def test_a_profile_that_never_ran_gets_a_private_prefs_js_that_revert_deletes(sandbox) -> None:  # type: ignore[no-untyped-def]
+    a, t, profile = _pref_profile(None)
+    items, _ = snap_plan_apply(a, t)
+    assert (profile / "prefs.js").read_bytes() == PREF + b"\n"
+    assert stat.S_IMODE((profile / "prefs.js").stat().st_mode) == 0o600
+    _revert_all(a, items)
+    assert not (profile / "prefs.js").exists()
+
+
+def test_the_users_own_true_is_kept_and_never_removed(sandbox) -> None:  # type: ignore[no-untyped-def]
+    a, t, profile = _pref_profile(FIREFOX_PREFS + PREF + b"\n")
+    before = (profile / "prefs.js").read_bytes()
+    items, _ = snap_plan_apply(a, t)
+    (pref,) = [i for i in items if i.kind == "key"]
+    assert pref.existed and pref.old_value == "true"
+    assert (profile / "prefs.js").read_bytes() == before  # already true: nothing to write
+    _revert_all(a, items)
+    assert (profile / "prefs.js").read_bytes() == before
+
+
+def test_the_users_own_false_is_restored(sandbox) -> None:  # type: ignore[no-untyped-def]
+    off = FIREFOX_PREFS + b'user_pref("' + ff.STYLESHEET_PREF.encode() + b'", false);\n'
+    a, t, profile = _pref_profile(off)
+    items, _ = snap_plan_apply(a, t)
+    assert ff.pref_value((profile / "prefs.js").read_bytes()) == b"true"
+    _revert_all(a, items)
+    assert (profile / "prefs.js").read_bytes() == off
+
+
+def test_duplicate_lines_collapse_and_the_last_one_counts(sandbox) -> None:  # type: ignore[no-untyped-def]
+    name = ff.STYLESHEET_PREF.encode()
+    dup = b'user_pref("' + name + b'", false);\nuser_pref("a", 1);\nuser_pref("' + name + b'", 7);\n'
+    assert ff.pref_value(dup) == b"7"
+    assert ff.set_pref(dup, b"true") == PREF + b'\nuser_pref("a", 1);\n'
+    assert ff.set_pref(dup, None) == b'user_pref("a", 1);\n'
+
+
+def test_an_unparsable_pref_line_is_refused_before_anything_is_written(sandbox) -> None:  # type: ignore[no-untyped-def]
+    odd = FIREFOX_PREFS + b'user_pref("' + ff.STYLESHEET_PREF.encode() + b'", maybe);\n'
+    a, t, profile = _pref_profile(odd)
+    before = fingerprint_home(sandbox.home)
+    with pytest.raises(ScribeSenseError) as exc:
+        a.plan(t, FONTS, CFG)
+    assert exc.value.code is ErrorCode.PREFERENCES_UNREADABLE
+    assert fingerprint_home(sandbox.home) == before
+
+
+def test_pref_apply_refuses_while_the_browser_runs(sandbox) -> None:  # type: ignore[no-untyped-def]
+    a, t, profile = _pref_profile(FIREFOX_PREFS)
+    a.snapshot(t)
+    planned = [p for p in a.plan(t, FONTS, CFG) if ff.is_pref_location(p.location)][0]
+    os.symlink("127.0.1.1:+4242", profile / "lock")
+    with pytest.raises(ScribeSenseError) as exc:
+        a.apply(planned)
+    assert exc.value.code is ErrorCode.BROWSER_RUNNING
+    assert (profile / "prefs.js").read_bytes() == FIREFOX_PREFS
+
+
+def test_pref_locations_are_validated() -> None:
+    good = f"/home/u/.mozilla/firefox/x.default/prefs.js#{ff.STYLESHEET_PREF}"
+    assert ff.split_pref_location(good)[1] == Path("/home/u/.mozilla/firefox/x.default")
+    for bad in (f"relative/prefs.js#{ff.STYLESHEET_PREF}", "/home/u/p/prefs.js#browser.startup.page",
+                f"/home/u/p/user.js#{ff.STYLESHEET_PREF}", f"/home/u/../p/prefs.js#{ff.STYLESHEET_PREF}",
+                f"/home/u/p/prefs.js#{ff.STYLESHEET_PREF}#x"):
+        with pytest.raises(ValueError):
+            ff.split_pref_location(bad)

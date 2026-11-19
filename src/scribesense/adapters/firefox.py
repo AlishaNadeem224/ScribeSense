@@ -21,6 +21,16 @@ Locations per profile (K3 rule 10, kind "file", absolute paths):
                                          // <<< ScribeSense <<<
     <profile>/chrome/userContent.css   ONE managed block holding browser_css(fonts, config) (M4.8; this module
                                        never writes CSS of its own, so no letter/word spacing can get in).
+    <profile>/prefs.js#toolkit.legacyUserProfileCustomizations.stylesheets
+                                       ONE key location (K3 rule 10b, kind "key", amended 2026-11-19): Firefox
+                                       copies the user.js pref into prefs.js and rewrites prefs.js itself, so
+                                       deleting the user.js block alone left the pref behind after revert (VM
+                                       check 2026-10-18). The key is the unit: apply writes
+                                       `user_pref("<name>", true);`, revert removes that line again (or puts the
+                                       user's own old value back); every other line is the browser's. State.data
+                                       is the value text (b"true"); value_type "prefs-js". A missing prefs.js (a
+                                       profile that never ran) is created with just that line, and deleted again
+                                       on revert when nothing else was added.
 Every byte outside the managed block is preserved. Re-applying replaces the block in place (duplicates are
 collapsed into one at the first block's position); a first apply appends it at the end, after a newline if
 the file does not end with one. Unbalanced markers (start without end, or the reverse) are treated as a
@@ -30,9 +40,11 @@ on revert (like M4.2's conf.d). Symlinked files are written through to their tar
 Running browser: Firefox keeps a "lock" symlink in the profile while it runs and removes it on a clean exit
 (.parentlock persists, so it is not used). Target.running = os.path.lexists(<profile>/lock).
 must_be_closed=True, requires_restart=True: the controller asks the user to close the browser (PENDING), and
-apply() re-checks the lock and refuses with BROWSER_RUNNING, writing nothing. revert() does not check the
-lock: Firefox never writes either file, so restoring the original cannot race with the browser, and a stale
-lock left by a crash must never block recovery (the restored files take effect on the next start).
+apply() re-checks the lock and refuses with BROWSER_RUNNING, writing nothing. revert() of user.js and
+userContent.css does not check the lock: Firefox never writes either file, so restoring the original cannot
+race with the browser, and a stale lock left by a crash must never block recovery (the restored files take
+effect on the next start). revert() of the prefs.js key DOES refuse with BROWSER_RUNNING while the lock exists
+(as M4.7 does): Firefox rewrites prefs.js and would put the line back; recovery retries later.
 
 Verify (A14): configuration check only — both files contain our current block, the CSS block naming
 fonts.reading_family. drawn_ok=None: the drawn check is the render harness (M3.4).
@@ -75,7 +87,14 @@ LOCK_NAME = "lock"  # symlink present only while the browser runs (".parentlock"
 USER_JS = "user.js"
 CHROME_DIR = "chrome"
 USER_CONTENT = "userContent.css"
+PREFS_JS = "prefs.js"
 NEW_FILE_MODE = 0o644
+NEW_PREFS_MODE = 0o600  # Firefox creates prefs.js private
+
+STYLESHEET_PREF = "toolkit.legacyUserProfileCustomizations.stylesheets"
+PREF_VALUE = b"true"
+VALUE_TYPE = "prefs-js"
+_KEY_SEP = "#"
 
 USERJS_START = b"// >>> ScribeSense (managed) >>>"
 USERJS_END = b"// <<< ScribeSense <<<"
@@ -84,6 +103,12 @@ CSS_START = b"/* >>> ScribeSense (managed) >>> */"
 CSS_END = b"/* <<< ScribeSense <<< */"
 
 _PROFILE_SECTION = re.compile(r"^Profile\d+$")
+#: One prefs.js line setting STYLESHEET_PREF; group 1 = the value (bool, int or a JSON-style string).
+_PREF_LINE = re.compile(
+    rb'^\s*user_pref\(\s*"' + re.escape(STYLESHEET_PREF.encode()) + rb'"\s*,\s*'
+    rb'(true|false|-?[0-9]+|"(?:[^"\\]|\\.)*")\s*\)\s*;\s*$')
+#: Any line naming STYLESHEET_PREF at all (to refuse shapes _PREF_LINE cannot parse).
+_PREF_NAMED = re.compile(rb'user_pref\(\s*"' + re.escape(STYLESHEET_PREF.encode()) + rb'"')
 TARGET_HASH_LEN = 12
 
 
@@ -219,6 +244,75 @@ def user_js_path(profile: Path) -> Path:
 
 def user_content_path(profile: Path) -> Path:
     return profile / CHROME_DIR / USER_CONTENT
+
+
+def prefs_js_path(profile: Path) -> Path:
+    return profile / PREFS_JS
+
+
+def pref_location(profile: Path) -> str:
+    """K3 rule 10b location of the stylesheet pref: '<profile>/prefs.js#<pref name>'."""
+    return f"{prefs_js_path(profile)}{_KEY_SEP}{STYLESHEET_PREF}"
+
+
+def split_pref_location(location: str) -> tuple[Path, Path]:
+    """(prefs.js path, profile dir) for '<abs profile>/prefs.js#<STYLESHEET_PREF>'; ValueError otherwise."""
+    if location.count(_KEY_SEP) != 1:
+        raise ValueError("not a Firefox prefs.js key location this adapter owns")
+    path_text, key = location.split(_KEY_SEP)
+    path = Path(path_text)
+    if (key != STYLESHEET_PREF or not path.is_absolute() or ".." in path.parts or "\0" in location
+            or path.name != PREFS_JS or len(path.parts) < 3):
+        raise ValueError("not a Firefox prefs.js key location this adapter owns")
+    return path, path.parent
+
+
+def is_pref_location(location: str) -> bool:
+    return _KEY_SEP in location
+
+
+def pref_lines(data: bytes) -> list[int]:
+    """Indexes of the lines setting STYLESHEET_PREF. Raises PREFERENCES_UNREADABLE for a line that names the
+    pref in a shape this module cannot parse (never guess, never write over it)."""
+    found = []
+    for i, line in enumerate(data.splitlines(keepends=True)):
+        if _PREF_LINE.match(line):
+            found.append(i)
+        elif _PREF_NAMED.search(line):
+            raise ScribeSenseError(ErrorCode.PREFERENCES_UNREADABLE)
+    return found
+
+
+def pref_value(data: bytes) -> bytes | None:
+    """The value Firefox would use (the last line wins), or None when the pref is not set."""
+    lines = data.splitlines(keepends=True)
+    found = pref_lines(data)
+    if not found:
+        return None
+    match = _PREF_LINE.match(lines[found[-1]])
+    if match is None:  # cannot happen: pref_lines returns matching lines only (explicit, not an assert)
+        raise ScribeSenseError(ErrorCode.PREFERENCES_UNREADABLE)
+    return match.group(1)
+
+
+def set_pref(data: bytes, value: bytes | None) -> bytes:
+    """data with every STYLESHEET_PREF line removed and, unless value is None, one
+    `user_pref("<name>", <value>);` line where the first one was (or appended)."""
+    lines = data.splitlines(keepends=True)
+    found = set(pref_lines(data))
+    new_line = b'user_pref("' + STYLESHEET_PREF.encode() + b'", ' + value + b");\n" if value is not None else None
+    out: list[bytes] = []
+    for i, line in enumerate(lines):
+        if i in found:
+            if new_line is not None and i == min(found):
+                out.append(new_line)
+            continue
+        out.append(line)
+    if new_line is not None and not found:
+        if out and not out[-1].endswith(b"\n"):
+            out[-1] += b"\n"
+        out.append(new_line)
+    return b"".join(out)
 
 
 def _check_location(location: str) -> tuple[Path, Path]:
@@ -368,6 +462,8 @@ class FirefoxAdapter:
         return [self._target(p) for p in self._profiles()]
 
     def read_state(self, location: str) -> State:
+        if is_pref_location(location):
+            return self._read_pref(location)
         path, _ = _check_location(location)
         try:
             data = path.read_bytes()
@@ -377,9 +473,25 @@ class FirefoxAdapter:
             raise ScribeSenseError(ErrorCode.UNEXPECTED_ADAPTER_ERROR) from None
         return State("file", True, data, None, state_sha256(True, data))
 
+    def _read_pref(self, location: str) -> State:
+        path, _ = split_pref_location(location)
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            data = b""
+        except OSError:
+            raise ScribeSenseError(ErrorCode.PREFERENCES_UNREADABLE) from None
+        value = pref_value(data)
+        return State("key", value is not None, value, VALUE_TYPE, state_sha256(value is not None, value))
+
     def snapshot(self, target: Target) -> list[SnapshotItem]:
         profile = self._profile(target)
         items = []
+        pref = pref_location(profile.path)
+        st = self.read_state(pref)
+        self._snapshot_sha[pref] = st.sha256
+        old = st.data.decode("utf-8") if st.data is not None else None
+        pref_item = SnapshotItem(target, "key", pref, st.present, old, st.sha256, None, VALUE_TYPE)
         for location in self._locations(profile.path):
             st = self.read_state(location)
             mode = self._mode(Path(location)) if st.present else None
@@ -387,7 +499,7 @@ class FirefoxAdapter:
                 raise ScribeSenseError(ErrorCode.UNEXPECTED_ADAPTER_ERROR)
             self._snapshot_sha[location] = st.sha256
             items.append(SnapshotItem(target, "file", location, st.present, None, st.sha256, mode, None))
-        return items
+        return [*items, pref_item]
 
     def plan(self, target: Target, fonts: FontSet, config: Configuration) -> list[PlannedWrite]:
         profile = self._profile(target)
@@ -404,9 +516,14 @@ class FirefoxAdapter:
             new_sha = state_sha256(True, payload)
             self._plan_base[(location, new_sha)] = st.sha256
             planned.append(PlannedWrite(target, location, payload, new_sha))
+        self.read_state(pref_location(profile.path))  # an unparsable pref line -> refuse now, before any intent
+        planned.append(PlannedWrite(target, pref_location(profile.path), PREF_VALUE.decode(),
+                                    state_sha256(True, PREF_VALUE)))
         return planned
 
     def apply(self, planned: PlannedWrite) -> AppliedItem:
+        if is_pref_location(planned.location):
+            return self._apply_pref(planned)
         path, profile = _check_location(planned.location)
         expected = self._snapshot_sha.get(planned.location)
         if expected is None:
@@ -425,6 +542,44 @@ class FirefoxAdapter:
         write_durable(destination, planned.payload, NEW_FILE_MODE if mode is None else mode)
         self._read_back(planned.location, planned.new_sha256)
         return AppliedItem(planned.target, planned.location, planned.new_sha256)
+
+    def _apply_pref(self, planned: PlannedWrite) -> AppliedItem:
+        path, profile = split_pref_location(planned.location)
+        expected = self._snapshot_sha.get(planned.location)
+        if expected is None:
+            raise ValueError("apply() for a location that snapshot() did not return (K3 rule 2)")
+        value = planned.payload.encode() if isinstance(planned.payload, str) else planned.payload
+        if value != PREF_VALUE:
+            raise ValueError("the stylesheet pref is only ever set to true")
+        if not profile.is_dir():
+            raise ScribeSenseError(ErrorCode.PROFILE_NOT_FOUND)
+        if is_running(profile):
+            raise ScribeSenseError(ErrorCode.BROWSER_RUNNING)
+        if self.read_state(planned.location).sha256 != expected:
+            raise ScribeSenseError(ErrorCode.CHANGED_DURING_APPLY)  # K3 rule 12, this key only
+        self._write_prefs(path, value)
+        self._read_back(planned.location, planned.new_sha256)
+        return AppliedItem(planned.target, planned.location, planned.new_sha256)
+
+    def _write_prefs(self, path: Path, value: bytes | None) -> None:
+        """Set (or, with None, remove) the pref in prefs.js; only those lines change. A prefs.js left empty by
+        a removal is deleted (it was created by apply for a profile that never ran)."""
+        destination = self._write_target(path)
+        try:
+            data = destination.read_bytes()
+        except FileNotFoundError:
+            data = None
+        except OSError:
+            raise ScribeSenseError(ErrorCode.PREFERENCES_UNREADABLE) from None
+        new = set_pref(data or b"", value)
+        if data is not None and new == data:
+            return
+        if not new:
+            if data is not None:
+                delete_durable(destination)
+            return
+        mode = self._mode(destination)
+        write_durable(destination, new, NEW_PREFS_MODE if mode is None else mode)
 
     def verify(self, target: Target, fonts: FontSet) -> VerifyResult:
         """Configuration check (A14): user.js holds our block exactly; userContent.css holds exactly one
@@ -452,7 +607,24 @@ class FirefoxAdapter:
 
     def revert(self, item: SnapshotItem, backup: bytes | None) -> None:
         """K3 rule 7: restore the ORIGINAL (existed -> backup bytes + mode, through a symlink; else delete).
-        The chrome/ directory is left in place."""
+        The chrome/ directory is left in place. The prefs.js key: the old value back, or the line removed;
+        refused with BROWSER_RUNNING while the browser runs (it rewrites prefs.js)."""
+        if item.kind == "key":
+            path, profile = split_pref_location(item.location)
+            if is_running(profile):
+                raise ScribeSenseError(ErrorCode.BROWSER_RUNNING)
+            if item.existed:
+                if item.old_value is None:
+                    raise ScribeSenseError(ErrorCode.BACKUP_MISSING)
+                old = item.old_value.encode("utf-8")
+                if state_sha256(True, old) != item.old_sha256 or not _PREF_LINE.match(
+                        b'user_pref("' + STYLESHEET_PREF.encode() + b'", ' + old + b");"):
+                    raise ScribeSenseError(ErrorCode.BACKUP_CORRUPT)
+                self._write_prefs(path, old)
+            else:
+                self._write_prefs(path, None)
+            self._read_back(item.location, item.old_sha256)
+            return
         if item.kind != "file":
             raise ValueError("the Firefox adapter owns files only")
         path, _ = _check_location(item.location)

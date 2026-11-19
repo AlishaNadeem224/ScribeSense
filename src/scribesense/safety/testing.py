@@ -5,6 +5,11 @@ TEST SUPPORT ONLY — no production module imports this file.
 `make_recovery_system(world, adapters)` wires the in-memory journal (M4.10 double), revert (M4.11) and
 recovery (M4.12) to FakeAdapters. Its `apply()` runs O2's real apply controller (M2.1) — the §9 scenarios
 are part of that card's acceptance — with K1/K2/K7 stubbed out (fonts are not what these scenarios test).
+
+Extension side (§9 scenarios 5 and 6, added 2026-11-19): the journal's K11 push hook records every
+`style_changed` in `pushes`; `lose_next_push()` makes the next one fail as if the process died right after
+the commit; `style()` returns what `get_style` is built from (`controller/service.py`: the confirmed
+`active()` config and `style_revision()`), i.e. what a reconnecting extension is told.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from scribesense.controller.apply_flow import ApplyController
 from scribesense.safety.journal import SqliteJournal
 from scribesense.safety.lock import ApplyLock
 from scribesense.safety.memory_journal import InMemoryJournal
+from scribesense.safety.recovery import recover_at_login
 from scribesense.safety.recovery import reset as recovery_reset
 from scribesense.safety.revert import Reverter, RevertReport
 
@@ -34,10 +40,12 @@ def fake_fontset(config: Configuration) -> FontSet:
 
 class RecoverySystem:
     def __init__(self, world: FakeWorld, adapters: Sequence[FakeAdapter],
-                 open_journal: Callable[[], InMemoryJournal | SqliteJournal] = InMemoryJournal) -> None:
+                 open_journal: Callable[..., InMemoryJournal | SqliteJournal] = InMemoryJournal) -> None:
         self.world = world
         self._open_journal = open_journal
-        self.journal = open_journal()
+        self.pushes: list[int] = []  # every style_changed revision a listening extension received
+        self._deliver = True
+        self.journal = open_journal(on_style_changed=self._push)
         self._adapter_list: list[Adapter] = list(adapters)
         self.adapters: dict[str, Adapter] = {a.name: a for a in adapters}
         if len(self.adapters) != len(self._adapter_list):
@@ -71,13 +79,33 @@ class RecoverySystem:
         return Reverter(self.journal, self.adapters).revert_tx(tx)
 
     def crash(self) -> None:
+        self._deliver = True  # the next process notifies normally again
         if isinstance(self.journal, InMemoryJournal):
             self.journal.simulate_crash()
             return
         # The process died: the OS drops the flock and the DB connection; a new process opens both again.
         self.journal._lock.release()
         self.journal._t._s.close()
-        self.journal = self._open_journal()
+        self.journal = self._open_journal(on_style_changed=self._push)
+
+    # ---------------------------------------------------------------- extension side (K11)
+
+    def _push(self, revision: int) -> None:
+        if not self._deliver:
+            raise RuntimeError("the process died before the extension was notified")
+        self.pushes.append(revision)
+
+    def lose_next_push(self) -> None:
+        """The process dies right after the next committed Keep / Original, before notifying the extension
+        (or nobody is listening): the change is durable, the push never arrives."""
+        self._deliver = False
+
+    def style(self) -> tuple[ActiveConfig | None, int]:
+        """What `get_style` is built from: the confirmed configuration (None = Original) and the revision."""
+        return self.journal.active(), self.journal.style_revision()
+
+    def recover_login(self) -> RevertReport:
+        return recover_at_login(self.journal, self.adapters)
 
     def reset(self) -> RevertReport:
         return recovery_reset(self.journal, self.adapters)
@@ -90,11 +118,11 @@ class RecoverySystem:
         return record.managed_sha256 if record else None
 
 
-def sqlite_journal() -> SqliteJournal:
+def sqlite_journal(*, on_style_changed: Callable[[int], None] | None = None) -> SqliteJournal:
     """The real M4.10 journal on a store at `default_path()` (inside the test's data dir in the sandbox)."""
     from scribesense.store import Store, default_path
 
-    return SqliteJournal(Store(default_path()), ApplyLock())
+    return SqliteJournal(Store(default_path()), ApplyLock(), on_style_changed=on_style_changed)
 
 
 def make_recovery_system(world: FakeWorld, adapters: Sequence[FakeAdapter], *,

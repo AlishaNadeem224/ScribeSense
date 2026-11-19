@@ -1152,3 +1152,31 @@ draw the font. Run them on the **installed RPM**, not the repo.
   optional per-user pronunciation-corrections table; text stays in memory and goes only to a local speech process.
 - **AT-SPI system-wide text access** (phonetics or reading help inside other apps): large step with privacy impact.
 - **Other distros:** AUR (if not done as the W2 stretch), openSUSE Build Service for `.deb` / openSUSE.
+
+## O4 Phase III work (2026-11-19, with the user's go-ahead)
+
+Done (details on the ARCHITECTURE cards M4.6, M4.9, M3.8, K3/K4 and K9 notes of this date):
+
+| Task (Phase III plan) | Result |
+|---|---|
+| W5.6 Firefox/Zen `prefs.js` revert gap | Closed: the stylesheet pref is a K3 rule 10b key location inside `prefs.js`. Checked with real headless Firefox (throwaway profile): the pref survives Firefox rewriting `prefs.js`, revert removes it, it stays gone after another run. |
+| W3.2 native-messaging host installer | `safety/native_host_install.py` (+ setup CLI `python -m scribesense.safety.native_host_install install\|remove\|status`); owns only its own file, never journaled (holds no user data), never overwrites or deletes a foreign file. |
+| W3 uninstall | Step 3b in O3's `uninstall.py` (cross-owner, user's go-ahead; **for O3 to review**): removes the host manifests, kept while recovery is pending; the report tells the user to remove the extension. |
+| W3.4 §9 recovery scenarios 5 and 6 | Written and passing on both journals (no longer skipped). |
+| W7 `list_all` sign-off | **Signed off by O4** as second owner of O3's `PresetRepo.list_all()`. Human step: add to `contracts/store.py` under `PresetRepo.list`: `def list_all(self) -> list[Preset]: ...  # built-ins, the custom row, then user presets by name (font clean-up, K7 rule 3; added 2026-11-19: O3 + O4)`. O3 may then make `list()` drop the custom row. |
+
+Tests after this work: **2224 passed, 0 failed** (unit; 34 new, 43 skipped — 41 of them sandbox-only) · integration
+in bubblewrap 35 passed, 0 failed · extension JS 35 passed, 0 failed.
+
+Still open for O4:
+- **Human steps:** create the extension key outside the repo + `extension/tools/set_key.py`; run the installer;
+  load the extension unpacked in Brave; check YouTube / Twitch restyle and revert.
+- **Blocked:** W5.1 service-side API for the confirm window (waits for O2's M2.3 message design + a contract change);
+  W1.6 imported fonts in `font_references.py` (waits for W1's contract change + O3's `user_fonts` table); W2 final host
+  path and keybind / login-hook packaging step (waits for O3's packaging and the fonts-location fix); W4 live
+  `hyprctl reload` + on-screen checks (waits for the VM + RPM).
+- **Needs a second owner:** K3 rule 10b (now used by Chromium and Firefox), K8 (socket in `XDG_RUNTIME_DIR`),
+  K4 rule 5 `subscribe_style`.
+- **New finding (proposal):** a stale Firefox `lock` (dead PID) reads as "browser running", so after a crash Apply
+  keeps asking to close the browser. Proposed: treat a native install's lock as stale when its PID no longer exists.
+

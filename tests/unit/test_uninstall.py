@@ -18,6 +18,7 @@ from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 from scribesense.contracts.presets import Preset, PresetValues, WordSpacing
 from scribesense.log import log_path
 from scribesense.safety.memory_journal import InMemoryJournal
+from scribesense.safety.native_host_install import HostReport, HostTarget
 from scribesense.safety.testing import RecoverySystem, fake_fontset
 from scribesense.store import Store
 from scribesense import uninstall as un
@@ -81,6 +82,7 @@ def system(world: FakeWorld) -> RecoverySystem:
 
 def run(system: RecoverySystem, fonts: FakeFonts | None = None, keybinds: FakeKeybinds | None = None,
         **kw: Any) -> un.UninstallReport:
+    kw.setdefault("host_remover", lambda: HostReport())  # no browser installed in the fake world
     return un.uninstall(system.journal, system.adapters, fonts=fonts or FakeFonts(A_FONT, STRAY),
                         keybind_remover=keybinds or FakeKeybinds(), **kw)
 
@@ -459,3 +461,47 @@ def test_a_missing_scribesense_command_surfaces_as_not_stopped(real_store: tuple
     with patch.object(un, "run_cmd", side_effect=ScribeSenseError(ErrorCode.ADAPTER_UNAVAILABLE)):
         control = ServiceControl(lambda: True, un.quit_via_cli, wait_s=0)
         assert delete_with(store, s, control).data == "service_running" and store.path.exists()
+
+
+# ---------------------------------------------------------------- browser helper (native-messaging host), step 3b
+
+BRAVE = HostTarget("brave", "Brave", Path("/fake/home/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts/x.json"))
+
+
+def _hosts(*outcomes: str) -> HostReport:
+    return HostReport([(BRAVE, o) for o in outcomes])  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("outcomes,expected,code,says", [
+    (("removed",), "removed", ExitCode.OK, "Remove the ScribeSense extension"),
+    ((), "absent", ExitCode.OK, None),
+    (("left_foreign",), "left_foreign", ExitCode.OK, "did not write"),
+    (("removed", "failed"), "failed", ExitCode.FAILED, "could not be removed"),
+])
+def test_native_host_removal_outcomes(system: RecoverySystem, outcomes: tuple[str, ...], expected: str,
+                                      code: ExitCode, says: str | None) -> None:
+    calls: list[int] = []
+    report = run(system, host_remover=lambda: (calls.append(1), _hosts(*outcomes))[1])
+    assert calls == [1] and report.native_host == expected and un.exit_code(report) is code
+    text = un.format_report(report)
+    assert (says in text) if says else ("browser helper" not in text)
+
+
+def test_a_crashing_host_remover_is_reported_and_never_stops_the_uninstall(system: RecoverySystem) -> None:
+    def boom() -> HostReport:
+        raise OSError("disk gone")
+    report = run(system, host_remover=boom)
+    assert report.native_host == "failed" and un.exit_code(report) is ExitCode.FAILED
+    assert report.data == "kept" and report.keybinds == "removed"  # the other steps ran
+
+
+def test_the_host_is_kept_while_recovery_is_pending(world: FakeWorld) -> None:
+    s = RecoverySystem(world, [FakeAdapter(world, {"t": [FILE, KEY, OTHER]})])
+    s.apply(A, keep=False)
+    s.crash()
+    failing = FakeAdapter(world, {"t": [FILE, KEY, OTHER]}, fail_on={"revert": ErrorCode.ADAPTER_COMMAND_FAILED})
+    s.adapters = {failing.name: failing}
+    calls: list[int] = []
+    report = run(s, host_remover=lambda: (calls.append(1), _hosts("removed"))[1])
+    assert calls == [] and report.native_host == "kept_for_recovery"
+    assert "told to show the original" in un.format_report(report)

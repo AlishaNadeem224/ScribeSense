@@ -394,6 +394,9 @@ class Adapter(Protocol):
 13. **One owner per location [D R2]:** each location belongs to exactly one target. The controller
     rejects a plan where two targets would write the same location (`PLAN_CONFLICT`).
 
+
+> **Done 2026-11-19 (O4, Phase III W5.6):** **K3 rule 10b now also covers Firefox's `prefs.js`:** location `<profile>/prefs.js#toolkit.legacyUserProfileCustomizations.stylesheets` (kind "key", value_type "prefs-js"). Rule 10b is still O4's proposal and still needs a second owner (O1, O2 or O3) + a PLAN_v2 entry.
+
 ### K4 — Journal (owner O4, O4-only) — FROZEN 2026-10-09 · amended R2 2026-10-09
 
 ```python
@@ -823,6 +826,9 @@ accepted · journal tables return everything in `JournalItem` / `LocationRecord`
 
 
 > **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" W1):** **Proposed K9 addition (O3):** a `user_fonts` table (family, style, file name, sha256, size, imported_at, source kind file/folder/installed) for imported fonts; content-addressed copies; deleting an imported font that a kept apply still uses is refused.
+
+
+> **Done 2026-11-19 (O4, Phase III W7):** **`PresetRepo.list_all()` signed off by O4 as second owner** (O3's M3.1 addition: built-ins, the custom row, then user presets by name — what font clean-up must read, K7 rule 3). Step 2's precondition is met (`controller/service.py:125` already passes `presets.list_all`), so O3 may make `list()` drop the custom row. The line in `contracts/store.py` is added by a human (agents may not edit contracts).
 
 ### K10 — CLI commands (owner O2) [D A7] — FROZEN 2026-10-09
 
@@ -1787,6 +1793,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 
 > **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" P3-2, W2):** **Packaging, Fedora first (owner O3; O4 for the keybind / login-hook step):** RPM via COPR from human-made version tags / GitHub releases; dependencies taken from `doctor.py`'s check list (verify Fedora package names); `.desktop` file with a "Restore original" action; font `OFL.txt` files under `/usr/share/licenses/scribesense/`; no per-user files from the package. **Removal rule:** run Restore original or `scribesense uninstall` before `dnf remove` (root cannot undo per-user settings). Uninstall removes imported fonts only with `--delete-data`. Stretch: AUR `PKGBUILD`.
 
+
+> **Done 2026-11-19 (O4, Phase III W3, cross-owner with the user's go-ahead):** `uninstall.py` (O3) gained step 3b: `safety.native_host_install.remove` through an injected `host_remover` (like `keybind_remover`); `UninstallReport.native_host` = removed / absent / left_foreign / failed / kept_for_recovery (kept, like the keybinds, while recovery is pending, so the extension can still be told "Original"); `failed` → exit 1; the report tells the user to remove the extension from the browser (it keeps its last styling while disconnected). Tests in `tests/unit/test_uninstall.py`. **For O3 to review.**
+
 #### M3.9 CI and import rules
 | Field | Spec |
 |---|---|
@@ -2002,6 +2011,9 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > the stylesheet pref into `prefs.js`, and deleting `user.js` does not undo that — harmless (no stylesheet left), but uninstall is then not byte-identical
 > for that profile (M3.8 goal). Proposed fix: track that one pref as a key-level location inside `prefs.js` (as K3 rule 10b does for Chromium).
 
+
+> **Done 2026-11-19 (O4, Phase III W5.6):** **The `prefs.js` revert gap is closed.** The stylesheet pref is now a key location inside `prefs.js` (K3 rule 10b): apply writes `user_pref("…stylesheets", true);` while the browser is closed; revert removes exactly that line, or restores the user's own old value; a value the user set to `true` themselves is never removed; a `prefs.js` created for a profile that never ran is deleted again. Revert of this one item refuses with `BROWSER_RUNNING` while the browser runs (Firefox rewrites `prefs.js`, as M4.7) — the file reverts still never wait. An unparsable line naming the pref → `PREFERENCES_UNREADABLE` at plan, nothing written. Tests: `tests/unit/test_firefox_adapter.py` (conformance harness views `prefs.js` as its key + "#rest"). **Checked with real headless Firefox** (throwaway profile in a scratch HOME): apply → Firefox rewrote prefs.js (47 lines) keeping the pref → revert removed it → after another run it stayed gone. **Finding:** Firefox's `--screenshot` exit leaves its `lock` symlink (dead PID), and `is_running` treats any lock as running — after a crash, Apply keeps asking to close the browser (safe, but confusing). Proposed: a stale-lock check (native installs: the lock's PID no longer exists).
+
 #### M4.7 Chromium preferences adapter
 | Field | Spec |
 |---|---|
@@ -2117,6 +2129,9 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > succeeds — intended.
 
 > **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" W3):** **Missing: the native-messaging host installer.** Write the host manifest (`render_host_manifest`) per installed Chromium-family browser (per-user `NativeMessagingHosts/`), journaled and removed by uninstall; key made outside the repo, public key via `extension/tools/set_key.py`. Then test YouTube / Twitch in Brave and unskip recovery scenarios 5 and 6.
+
+
+> **Done 2026-11-19 (O4, Phase III W3):** **Installer built:** `safety/native_host_install.py` — writes `<user-data dir>/NativeMessagingHosts/com.scribesense.host.json` (`render_host_manifest`) for every installed native Brave / Chrome / Chromium (Flatpak browsers: `unsupported`). Ownership like M4.14's own file: written only when absent or ours (name + description), removed only when ours; a foreign file is never touched — so it is **not journaled** (it holds nothing of the user's; removal restores "absent" exactly). Extension ID from the public key in `extension/manifest.json` (same rule as `set_key.py`, tested against it). Host path: a parameter; for development `write_launcher()` writes `data_dir()/native-host/scribesense-native-host` (0700); packaging (W2) supplies the installed path. Setup tool, not a K10 command: `python -m scribesense.safety.native_host_install install|remove|status`. Removed by uninstall step 3b (M3.8). §9 scenarios 5 and 6 now run (app side: after a lost push / a standalone reset, `active()` + `style_revision()` give the reconnecting extension the right answer; the extension side was already covered by `extension/test/background.test.mjs`). **Still for a human:** create the key outside the repo + `set_key.py`, run the installer, load the extension in Brave, check YouTube / Twitch.
 
 #### M4.10 Journal
 | Field | Spec |

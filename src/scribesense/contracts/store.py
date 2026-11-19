@@ -69,6 +69,8 @@ SETTING_RANGES: dict[str, tuple[int, int]] = {"lock_wait_seconds": (10, 600)}
 class PresetRepo(Protocol):
     def list(self) -> list[Preset]: ...  # built-ins first, then user presets by name
 
+    def list_all(self) -> list[Preset]: ...  # built-ins, the custom row, then user presets by name (font clean-up, K7 rule 3; added 2026-11-19: O3 + O4)
+
     def get(self, id: str) -> Preset | None: ...
 
     def save(self, p: Preset) -> None: ...  # built-in -> PRESET_READ_ONLY

@@ -1,6 +1,8 @@
 """§9 recovery slice: one fake adapter world, the real journal/revert/recovery.
 
-Scenarios 1–4 and 7 are written; 5 and 6 need the extension (M4.9) and stay skipped.
+Scenarios 1–7 are written. 5 and 6 check the app side of the extension contract (K11): what a reconnecting
+extension is told after a lost push. The extension side (refetch on every reconnect, an inactive reply removes
+the styling, local Disable) is covered by extension/test/background.test.mjs.
 All of them skip with a BLOCKED reason until O4 provides make_recovery_system (see conftest.py).
 """
 
@@ -85,14 +87,40 @@ def test_s4_prune_history_keeps_baselines_restorable(make_system, world: FakeWor
     assert world.snapshot_all() == original
 
 
-@pytest.mark.skip(reason="needs the browser extension (M4.9) — §9 scenario 5")
-def test_s5_crash_after_keep_before_extension_notified() -> None:
-    raise AssertionError("not implemented")
+def test_s5_crash_after_keep_before_extension_notified(make_system, world: FakeWorld) -> None:  # type: ignore[no-untyped-def]
+    """§9 scenario 5: Keep commits, the process dies before the push. The kept style is durable, login recovery
+    leaves it alone (A3: confirmed), and a reconnecting extension is told the new style with a newer revision."""
+    system = make_system(world, [FakeAdapter(world, {"t": [FILE, KEY, OTHER]})])
+    seen_active, seen_revision = system.style()  # what the extension showed before
+    assert seen_active is None
+    system.lose_next_push()
+    system.apply(A, keep=True)
+    assert system.pushes == []  # the notification never arrived
+    applied = world.snapshot_all()
+    system.crash()
+    _assert_clean(system.recover_login())
+    assert world.snapshot_all() == applied  # a confirmed configuration is never undone at login
+    active, revision = system.style()  # the extension reconnects and asks get_style
+    assert active is not None and active.config == A
+    assert revision > seen_revision  # newer than anything it showed: it restyles
 
 
-@pytest.mark.skip(reason="needs the browser extension (M4.9) — §9 scenario 6")
-def test_s6_standalone_reset_extension_shows_original() -> None:
-    raise AssertionError("not implemented")
+def test_s6_standalone_reset_extension_shows_original(make_system, world: FakeWorld) -> None:  # type: ignore[no-untyped-def]
+    """§9 scenario 6: the service is stopped, `scribesense reset` runs on its own (nobody to notify). The next
+    get_style says Original with a newer revision, so the extension removes its styling."""
+    original = world.snapshot_all()
+    system = make_system(world, [FakeAdapter(world, {"t": [FILE, KEY, OTHER]})])
+    system.apply(A, keep=True)
+    shown_active, shown_revision = system.style()
+    assert shown_active is not None and system.pushes == [shown_revision]  # the extension is styled
+    system.crash()  # the service stops
+    system.lose_next_push()  # standalone reset: no service, no listening extension
+    _assert_clean(system.reset())
+    assert system.pushes == [shown_revision]  # nothing was delivered
+    assert world.snapshot_all() == original
+    active, revision = system.style()  # the extension reconnects later
+    assert active is None  # Original: an inactive reply removes the styling
+    assert revision > shown_revision
 
 
 def test_s7_user_edit_is_skipped_and_reported(make_system, world: FakeWorld) -> None:  # type: ignore[no-untyped-def]
