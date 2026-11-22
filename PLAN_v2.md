@@ -2110,3 +2110,27 @@ integration 35 passed.
     - The Default preset now builds a different font with Noto Sans (word_scale 1.75 instead of 1.5): expected; users
       get it at their next Apply.
 
+## Decision (2026-11-22, O3) — W2 font-location fix, all four sub-points closed
+
+    O3 (K8 owner) signs off O1's `config/bundled.py` fix (2026-11-14 entry above) on all four points W2.1 left open:
+
+    1. **Placement: stays in `config/bundled.py`, not moved into `contracts/paths.py`.** `fonts_root()` /
+       `candidate_roots()` are not part of K8 — no contract change, so nothing for a human to apply to
+       `contracts/paths.py`.
+    2. **`SCRIBESENSE_BUNDLED_FONTS` approved as a `config/bundled.py`-local env var.** Because it is not a K8
+       function (point 1), it does **not** join K8's documented override list (`HOME`, `XDG_CONFIG_HOME`,
+       `SCRIBESENSE_DATA_DIR`, `SCRIBESENSE_FONTS_DIR`) — that list stays unchanged.
+    3. **Search order confirmed as implemented:** override → `$XDG_DATA_DIRS` (installed) → repo tree (dev
+       fallback). Installed wins over a checkout when both exist on a dev machine; moot for the test suite
+       itself, since `tests/conftest.py` and `harness/sandbox.py` already pin the override to the repo
+       (2026-11-22 O4 fix, same entry above).
+    4. **Packaging path confirmed: `/usr/share/scribesense/fonts`.** Already on the code's own `$XDG_DATA_DIRS`
+       search (default `/usr/local/share:/usr/share`) — no new behaviour needed, just committing to it for the
+       RPM `.spec` (W2.2/W2.3), alongside each family's `OFL.txt` under `/usr/share/licenses/scribesense/`.
+
+    **Closes:** W2.1's O3 tasks 1–3 and the packaging-path half of task 5. **Still open from that task list:**
+    task 5's other half (`extension/` files for the native-messaging host installer — O4's module, same bug
+    shape) and task 6 (moot — O4's 2026-11-22 fix already relocated O1's tests out of the shipped package).
+    The duplicate ask in the 2026-11-22 entry above ("O1 + O3: agree the name and search order of
+    `SCRIBESENSE_BUNDLED_FONTS`") is answered by points 2–3.
+
