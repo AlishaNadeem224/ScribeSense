@@ -116,6 +116,19 @@ def check_lua() -> CheckResult:
     hint = "sudo dnf install lua" if not present else None
     return CheckResult("lua", "optional", present, details, hint)
 
+def check_polkit_agent() -> CheckResult:
+    """Added 2026-11-22 by O4 (user's go-ahead): ScribeSense's one-time password prompt for the browser extension
+    (safety/setup.py) needs a polkit authentication agent; Hyprland sessions often run none."""
+    from scribesense.safety.setup import polkit_agent_running  # no GUI import (A2)
+
+    present = polkit_agent_running()
+    details = ("polkit agent running (password prompts can be shown)" if present else
+               "no polkit agent running (ScribeSense cannot ask for the password to add its browser extension)")
+    hint = None if present else ("install a polkit agent, e.g. hyprpolkitagent (the package name may differ), "
+                                 "and start it from your Hyprland config with exec-once")
+    return CheckResult("polkit agent", "optional", present, details, hint)
+
+
 def run_checks() -> list[CheckResult]:
     return [
         check_python_version(),
@@ -129,6 +142,7 @@ def run_checks() -> list[CheckResult]:
         check_flatpak(),
         check_hyprctl(),
         check_lua(),
+        check_polkit_agent(),
     ]
 
 def run_doctor() -> ExitCode:

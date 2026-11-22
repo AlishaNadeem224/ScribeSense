@@ -234,6 +234,43 @@ def repair_root(report: SetupReport) -> bool:
     return True
 
 
+def extension_preinstalled() -> bool:
+    """Is any of OUR pre-install files on this system (the .crx or a pointer naming it)?"""
+    if root_helper.CRX_TARGET.exists():
+        return True
+    for _, folders in root_helper.BROWSER_FOLDERS.values():
+        for folder in folders:
+            try:
+                names = os.listdir(folder)
+            except OSError:
+                continue
+            for name in names:
+                if not re.fullmatch(r"[a-p]{32}\.json", name):
+                    continue
+                try:
+                    pointer = json.loads((Path(folder) / name).read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if isinstance(pointer, dict) and pointer.get("external_crx") == str(root_helper.CRX_TARGET):
+                    return True
+    return False
+
+
+def remove_extension() -> Literal["removed", "absent", "failed"]:
+    """Uninstall: remove the pre-installed extension from every browser (one password prompt, root_helper remove).
+    Each browser then drops the extension at its next start. Nothing installed -> no prompt."""
+    if not extension_preinstalled():
+        return "absent"
+    argv = ["pkexec", SYSTEM_PYTHON, "-I", str(ROOT_HELPER), "remove"]
+    try:
+        run_cmd(argv, timeout=PKEXEC_TIMEOUT_S)
+    except (ScribeSenseError, OSError) as exc:  # cancelled, not authorised, no agent / terminal, timeout
+        code = exc.code if isinstance(exc, ScribeSenseError) else ErrorCode.ADAPTER_COMMAND_FAILED
+        log(code, "setup", step="remove")
+        return "failed"
+    return "removed" if not extension_preinstalled() else "failed"
+
+
 def ensure(*, ask_root: bool = True, background: bool = True) -> SetupReport:
     """Check, repair per-user items, and (in a background thread by default) ask once for the root item.
     Never raises: setup problems are logged and reported, they never break the app."""

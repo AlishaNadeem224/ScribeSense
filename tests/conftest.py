@@ -81,6 +81,7 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fix
         runtime = Path(os.environ["XDG_RUNTIME_DIR"])
         _clear_dir(home, runtime)  # one HOME per session: start (and end) every test empty (M3.3 postcondition)
         request.addfinalizer(lambda: _clear_dir(home, runtime))
+        _redirect_system_folders(monkeypatch, home / ".system")
         return Sandbox(root=home, home=home, config_home=Path(os.environ["XDG_CONFIG_HOME"]),
                        data_dir=Path(os.environ["SCRIBESENSE_DATA_DIR"]),
                        fonts_dir=Path(os.environ["SCRIBESENSE_FONTS_DIR"]),
@@ -120,7 +121,21 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fix
 
     _block_processes(monkeypatch, allow=bool(request.node.get_closest_marker("real_subprocess")), root=tmp_path)
     _block_foreign_unix_sockets(monkeypatch, roots=(tmp_path, short))
+    _redirect_system_folders(monkeypatch, root / "system")
     return sb
+
+
+def _redirect_system_folders(monkeypatch: pytest.MonkeyPatch, system: Path) -> None:
+    """The root helper's system folders (/usr/share/scribesense, each browser's extensions folder) point into the
+    sandbox, so no test reads or prompts for the developer's real system state (added 2026-11-22 by O4 with the
+    user's go-ahead: the uninstall tests otherwise saw a real pre-installed .crx and tried pkexec)."""
+    from scribesense.safety import root_helper
+
+    monkeypatch.setattr(root_helper, "CRX_TARGET", system / "usr/share/scribesense/scribesense.crx")
+    monkeypatch.setattr(root_helper, "BROWSER_FOLDERS", {
+        key: (tuple(str(system / m.lstrip("/")) for m in markers), tuple(str(system / f.lstrip("/")) for f in folders))
+        for key, (markers, folders) in root_helper.BROWSER_FOLDERS.items()
+    })
 
 
 def _clear_dir(*dirs: Path) -> None:

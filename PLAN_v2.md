@@ -1266,3 +1266,11 @@ at install time (O3, W2); keybinds / login hook / service start at login as sile
 starting the service at login). Rust for the root helper and the native host is a team option after Phase III (the
 full app stays Python: the slow parts are external font tools, and the security comes from the design).
 
+### Done (2026-11-22, O4): uninstall removes the extension · doctor checks the polkit agent
+
+`scribesense uninstall` step 3c removes the pre-installed extension (one password prompt; only when our files exist).
+`scribesense doctor` reports a missing polkit agent with a fix hint. Unit tests can no longer see real system folders
+(sandbox redirect in `tests/conftest.py` + guard test). Cross-owner (O3's `uninstall.py`, `doctor.py`,
+`tests/conftest.py`) with the user's go-ahead — for O3 to review. Tests: **2294 passed, 0 failed** (unit) ·
+integration 35 passed.
+

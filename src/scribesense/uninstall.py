@@ -17,6 +17,9 @@ Order (card M3.8):
      recovery is pending, so the extension can still be told "Original". The extension itself is the user's to
      remove from the browser; the report says so. (Added 2026-11-19 by O4 with the user's go-ahead, Phase III W3;
      recorded in ARCHITECTURE.md M3.8.)
+  3c. remove the pre-installed browser extension (`safety.setup.remove_extension`: one password prompt through
+     pkexec, only when our files are on the system; each browser drops the extension at its next start, so it no
+     longer keeps its last styling) — same rule as step 3. (Added 2026-11-22 by O4 with the user's go-ahead.)
   4. keep the data — unless "delete all" was asked for AND confirmed, AND the ScribeSense service is confirmed stopped
      (it is asked to quit after the confirmation; if it cannot be confirmed stopped the data is kept — decision C).
      Never delete user data without confirmation.
@@ -49,6 +52,7 @@ from scribesense.log import log, log_path
 from scribesense.safety.keybinds import remove_keybinds
 from scribesense.safety.native_host_install import HostReport
 from scribesense.safety.native_host_install import remove as remove_native_host
+from scribesense.safety.setup import remove_extension as remove_browser_extension
 from scribesense.safety.recovery import LockPolicy, acquire_for_recovery
 from scribesense.safety.recovery import reset as recovery_reset
 from scribesense.safety.revert import RevertReport
@@ -61,6 +65,7 @@ CONFIRM_WORD = "delete"
 KeybindOutcome = Literal["removed", "absent", "left_edited", "failed", "kept_for_recovery"]
 DataOutcome = Literal["kept", "deleted", "preferences_only", "not_confirmed", "service_running"]
 HostOutcome = Literal["removed", "absent", "left_foreign", "failed", "kept_for_recovery"]
+ExtensionOutcome = Literal["removed", "absent", "failed", "kept_for_recovery"]
 
 
 QUIT_TIMEOUT_S = 10.0
@@ -142,6 +147,7 @@ class UninstallReport:
     fonts_failed: list[str] = field(default_factory=list)
     keybinds: KeybindOutcome = "absent"
     native_host: HostOutcome = "absent"
+    extension: ExtensionOutcome = "absent"
     data: DataOutcome = "kept"
     error: ErrorCode | None = None  # the uninstall stopped before changing anything else
 
@@ -244,6 +250,16 @@ def _remove_native_host(report: UninstallReport, remover: Callable[[], HostRepor
         report.native_host = "removed" if hosts.count("removed") else "absent"
 
 
+def _remove_extension(report: UninstallReport, remover: Callable[[], str]) -> None:
+    try:
+        outcome = remover()
+    except Exception as exc:  # noqa: BLE001 — never stops the uninstall
+        code = exc.code if isinstance(exc, ScribeSenseError) else ErrorCode.ADAPTER_COMMAND_FAILED
+        log(code, "uninstall", step="extension")
+        outcome = "failed"
+    report.extension = outcome if outcome in ("removed", "absent") else "failed"  # type: ignore[assignment]
+
+
 def _delete_data(report: UninstallReport, journal: Journal, store: Store, confirm: Callable[[str], bool],
                  service: ServiceControl | None) -> None:
     question = ("Delete all ScribeSense data (history, presets, settings, backups)? This removes ScribeSense's "
@@ -290,6 +306,7 @@ def uninstall(
     fonts: FontOps | None = None,
     keybind_remover: Callable[[], bool] = remove_keybinds,
     host_remover: Callable[[], HostReport] = remove_native_host,
+    extension_remover: Callable[[], str] = remove_browser_extension,
 ) -> UninstallReport:
     """Run the uninstall. Never raises for a problem with one item; a problem that stops everything is `.error`."""
     if delete_data and store is None:
@@ -305,7 +322,7 @@ def uninstall(
     try:
         _run(report, journal, adapters, store=store, delete_data=delete_data,
              remove_fonts_anyway=remove_fonts_anyway, confirm=confirm, service=service, fonts=fonts,
-             keybind_remover=keybind_remover, host_remover=host_remover)
+             keybind_remover=keybind_remover, host_remover=host_remover, extension_remover=extension_remover)
     finally:
         if policy is not None:
             policy.lock.release()
@@ -315,7 +332,7 @@ def uninstall(
 def _run(report: UninstallReport, journal: Journal, adapters: Mapping[str, Adapter], *, store: Store | None,
          delete_data: bool, remove_fonts_anyway: bool, confirm: Callable[[str], bool] | None,
          service: ServiceControl | None, fonts: FontOps | None, keybind_remover: Callable[[], bool],
-         host_remover: Callable[[], HostReport]) -> None:
+         host_remover: Callable[[], HostReport], extension_remover: Callable[[], str]) -> None:
     try:
         report.reset = recovery_reset(journal, adapters)  # the lock is already held (or there is no policy)
     except ScribeSenseError as exc:  # the journal itself failed: change nothing else
@@ -326,10 +343,12 @@ def _run(report: UninstallReport, journal: Journal, adapters: Mapping[str, Adapt
     if _recovery_pending(journal, report):
         report.keybinds = "kept_for_recovery"  # the login check and recovery keybind must stay to retry
         report.native_host = "kept_for_recovery"  # so the extension can still be told "Original"
+        report.extension = "kept_for_recovery"
         log(ErrorCode.RECOVERY_OBLIGATIONS_REMAIN, "uninstall", step="keybinds")
     else:
         _remove_keybinds(report, keybind_remover)
         _remove_native_host(report, host_remover)
+        _remove_extension(report, extension_remover)
     if delete_data and store is not None:
         try:
             _delete_data(report, journal, store, confirm or _terminal_confirm, service)
@@ -343,7 +362,7 @@ def exit_code(report: UninstallReport) -> ExitCode:
     if report.error in (ErrorCode.LOCK_TIMEOUT, ErrorCode.APPLY_IN_PROGRESS):
         return ExitCode.BUSY
     if (report.error is not None or report.reset.failed or report.fonts_failed or report.keybinds == "failed"
-            or report.native_host == "failed" or report.data == "service_running"):  # the deletion that was asked for and confirmed could not be done
+            or report.native_host == "failed" or report.extension == "failed" or report.data == "service_running"):  # the deletion that was asked for and confirmed could not be done
         return ExitCode.FAILED
     return ExitCode.OK
 
@@ -393,6 +412,16 @@ def format_report(report: UninstallReport) -> str:
     }[report.native_host]
     if host_line:
         lines.append(host_line)
+    extension_line = {
+        "removed": "The browser extension was removed; each browser drops it at its next start.",
+        "absent": None,
+        "failed": "The browser extension could not be removed (the password prompt was cancelled or failed). Run "
+                  "`scribesense uninstall` again, or remove ScribeSense from the browser's extensions page.",
+        "kept_for_recovery": "The browser extension was kept so it can still be told to show the original pages "
+                             "after `scribesense reset`.",
+    }[report.extension]
+    if extension_line:
+        lines.append(extension_line)
     lines.append({
         "kept": "Your ScribeSense data was kept. Use --delete-data to remove it.",
         "not_confirmed": "Deleting your data was not confirmed, so it was kept.",

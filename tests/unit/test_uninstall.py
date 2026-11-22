@@ -83,6 +83,7 @@ def system(world: FakeWorld) -> RecoverySystem:
 def run(system: RecoverySystem, fonts: FakeFonts | None = None, keybinds: FakeKeybinds | None = None,
         **kw: Any) -> un.UninstallReport:
     kw.setdefault("host_remover", lambda: HostReport())  # no browser installed in the fake world
+    kw.setdefault("extension_remover", lambda: "absent")  # no pre-installed extension in the fake world
     return un.uninstall(system.journal, system.adapters, fonts=fonts or FakeFonts(A_FONT, STRAY),
                         keybind_remover=keybinds or FakeKeybinds(), **kw)
 
@@ -505,3 +506,36 @@ def test_the_host_is_kept_while_recovery_is_pending(world: FakeWorld) -> None:
     report = run(s, host_remover=lambda: (calls.append(1), _hosts("removed"))[1])
     assert calls == [] and report.native_host == "kept_for_recovery"
     assert "told to show the original" in un.format_report(report)
+
+
+
+# ---------------------------------------------------------------- pre-installed browser extension, step 3c
+
+@pytest.mark.parametrize("outcome,expected,code,says", [
+    ("removed", "removed", ExitCode.OK, "drops it at its next start"),
+    ("absent", "absent", ExitCode.OK, None),
+    ("failed", "failed", ExitCode.FAILED, "could not be removed"),
+])
+def test_extension_removal_outcomes(system: RecoverySystem, outcome: str, expected: str, code: ExitCode,
+                                    says: str | None) -> None:
+    report = run(system, extension_remover=lambda: outcome)
+    assert report.extension == expected and un.exit_code(report) is code
+    text = un.format_report(report)
+    assert (says in text) if says else ("browser extension" not in text)
+
+
+def test_a_crashing_extension_remover_is_reported_and_never_stops_the_uninstall(system: RecoverySystem) -> None:
+    def boom() -> str:
+        raise RuntimeError("pkexec vanished")
+    report = run(system, extension_remover=boom)
+    assert report.extension == "failed" and report.keybinds == "removed" and report.data == "kept"
+
+
+def test_the_extension_is_kept_while_recovery_is_pending(world: FakeWorld) -> None:
+    s = RecoverySystem(world, [FakeAdapter(world, {"t": [FILE, KEY, OTHER]})])
+    s.apply(A, keep=False)
+    s.crash()
+    failing = FakeAdapter(world, {"t": [FILE, KEY, OTHER]}, fail_on={"revert": ErrorCode.ADAPTER_COMMAND_FAILED})
+    s.adapters = {failing.name: failing}
+    report = run(s, extension_remover=lambda: pytest.fail("must not prompt while recovery is pending"))
+    assert report.extension == "kept_for_recovery"

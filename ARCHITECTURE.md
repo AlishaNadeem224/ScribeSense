@@ -1719,6 +1719,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Acceptance tests | Each missing dependency reported in the sandbox |
 | Done when | Tests pass · reviewed |
 
+
+> **Cross-owner change 2026-11-22 (O4, user's go-ahead; for O3 to review):** `doctor.py` gains the optional check "polkit agent" (needed for ScribeSense's one password prompt; Hyprland sessions often run none — the dev machine has none; hint: install e.g. hyprpolkitagent and start it with exec-once).
+
 #### M3.8 Install and uninstall
 | Field | Spec |
 |---|---|
@@ -1804,6 +1807,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 
 
 > **Done 2026-11-19 (O4, Phase III W3, cross-owner with the user's go-ahead):** `uninstall.py` (O3) gained step 3b: `safety.native_host_install.remove` through an injected `host_remover` (like `keybind_remover`); `UninstallReport.native_host` = removed / absent / left_foreign / failed / kept_for_recovery (kept, like the keybinds, while recovery is pending, so the extension can still be told "Original"); `failed` → exit 1; the report tells the user to remove the extension from the browser (it keeps its last styling while disconnected). Tests in `tests/unit/test_uninstall.py`. **For O3 to review.**
+
+
+> **Cross-owner change 2026-11-22 (O4, user's go-ahead; for O3 to review):** `uninstall.py` step **3c** removes the pre-installed browser extension (`safety.setup.remove_extension`: one pkexec prompt, only when our files exist; each browser drops the extension at its next start, so it no longer keeps its last styling); kept while recovery is pending; `failed` → exit 1. `tests/conftest.py`'s sandbox now also redirects the root helper's system folders into the sandbox (the uninstall tests had seen a REAL pre-installed `.crx` on the dev machine and tried pkexec); guard test in `tests/unit/test_setup.py`.
 
 #### M3.9 CI and import rules
 | Field | Spec |

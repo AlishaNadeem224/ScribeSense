@@ -280,3 +280,43 @@ def test_after_a_successful_prompt_it_never_asks_again_for_that_version(sandbox,
     assert setup.repair_root(setup.check()) is True
     assert setup.repair_root(setup.check()) is False  # still "missing" (here), but this version was asked: no loop
     assert len(calls) == 1
+
+
+
+# ---------------------------------------------------------------- uninstall: remove the extension (one prompt)
+
+def test_remove_extension_prompts_only_when_our_files_exist(sandbox, system: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    calls: list[list[str]] = []
+    monkeypatch.setattr(setup, "run_cmd", lambda argv, timeout: calls.append(argv))
+    assert setup.remove_extension() == "absent" and calls == []  # nothing installed: no prompt
+    src = tmp_path / "x.crx"
+    src.write_bytes(crx_bytes())
+    rh.install(src)
+    assert setup.extension_preinstalled()
+
+    def removes(argv: list[str], timeout: float) -> None:  # stands in for pkexec + root_helper remove
+        calls.append(argv)
+        rh.remove()
+    monkeypatch.setattr(setup, "run_cmd", removes)
+    assert setup.remove_extension() == "removed"
+    assert calls[-1] == ["pkexec", "/usr/bin/python3", "-I", str(setup.ROOT_HELPER), "remove"]
+    assert not setup.extension_preinstalled()
+
+
+def test_remove_extension_cancelled_is_failed(sandbox, system: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    src = tmp_path / "x.crx"
+    src.write_bytes(crx_bytes())
+    rh.install(src)
+
+    def cancelled(argv: list[str], timeout: float) -> None:
+        raise ScribeSenseError(ErrorCode.ADAPTER_COMMAND_FAILED)
+    monkeypatch.setattr(setup, "run_cmd", cancelled)
+    assert setup.remove_extension() == "failed"
+    assert setup.extension_preinstalled()
+
+
+def test_every_test_sees_only_sandboxed_system_folders(sandbox) -> None:  # type: ignore[no-untyped-def]
+    """Guard (tests/conftest.py): the root helper's /usr/share and browser folders never point at the real system."""
+    assert str(rh.CRX_TARGET).startswith(str(sandbox.root))
+    for markers, folders in rh.BROWSER_FOLDERS.values():
+        assert all(p.startswith(str(sandbox.root)) for p in (*markers, *folders))
