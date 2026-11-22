@@ -35,6 +35,7 @@ from scribesense.store.repos import (
     PresetRepo,
     SampleRepo,
     SettingsRepo,
+    UserFontsRepo,
     utcnow,
 )
 
@@ -171,6 +172,7 @@ class Store:
         self.coverage = CoverageRepo(self)
         self.settings = SettingsRepo(self)
         self.samples = SampleRepo(self)
+        self.user_fonts = UserFontsRepo(self)  # W1 import, K9 addition 2026-11-22; not yet in contracts.store.Store
 
     # ---- opening
 

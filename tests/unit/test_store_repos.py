@@ -388,6 +388,83 @@ def test_font_in_use_by_an_unfinished_transaction(store: Store) -> None:
     store.fonts.mark_removed("abc123")
 
 
+# ---------------------------------------------------------------- user fonts (W1 import, K9 addition)
+
+def test_add_and_get_a_user_font(store: Store) -> None:
+    store.user_fonts.add("sha-a", "MyFont", "Regular", "myfont.ttf", 1024, "file")
+    f = store.user_fonts.get("sha-a")
+    assert f is not None and (f.family, f.style, f.file_name, f.size, f.source_kind) == (
+        "MyFont", "Regular", "myfont.ttf", 1024, "file")
+    assert store.user_fonts.get("missing") is None
+
+
+def test_add_rejects_unknown_style_or_source_kind(store: Store) -> None:
+    with pytest.raises(ValueError):
+        store.user_fonts.add("sha-a", "MyFont", "Black", "myfont.ttf", 1024, "file")
+    with pytest.raises(ValueError):
+        store.user_fonts.add("sha-a", "MyFont", "Regular", "myfont.ttf", 1024, "network")  # type: ignore[arg-type]
+
+
+def test_importing_identical_bytes_twice_is_a_dedup_noop(store: Store) -> None:
+    store.user_fonts.add("sha-a", "MyFont", "Regular", "myfont.ttf", 1024, "file")
+    store.user_fonts.add("sha-a", "MyFont", "Regular", "myfont.ttf", 1024, "file")
+    assert store.fetchone("SELECT COUNT(*) FROM user_fonts")[0] == 1
+
+
+def test_reimporting_a_family_style_with_different_bytes_replaces_it(store: Store) -> None:
+    store.user_fonts.add("sha-a", "MyFont", "Regular", "old.ttf", 1024, "file")
+    store.user_fonts.add("sha-b", "MyFont", "Regular", "new.ttf", 2048, "folder")
+    assert store.user_fonts.get("sha-a") is None
+    new = store.user_fonts.get("sha-b")
+    assert new is not None and (new.file_name, new.size, new.source_kind) == ("new.ttf", 2048, "folder")
+    assert store.fetchone("SELECT COUNT(*) FROM user_fonts")[0] == 1
+
+
+def test_reimport_is_blocked_while_the_family_is_in_use(store: Store) -> None:
+    store.user_fonts.add("sha-a", "MyFont", "Regular", "old.ttf", 1024, "file")
+    store.execute("UPDATE active_config SET config = ?, font_key = 'k'",
+                  (ser.config_to_json(config(base_family="MyFont")),))
+    with pytest.raises(ScribeSenseError) as err:
+        store.user_fonts.add("sha-b", "MyFont", "Regular", "new.ttf", 2048, "file")
+    assert err.value.code is ErrorCode.FONT_IN_USE
+    assert store.user_fonts.get("sha-a") is not None  # the old row survives the refused replace
+
+
+def test_by_family_and_families(store: Store) -> None:
+    store.user_fonts.add("sha-a", "MyFont", "Regular", "r.ttf", 1, "file")
+    store.user_fonts.add("sha-b", "MyFont", "Bold", "b.ttf", 1, "file")
+    store.user_fonts.add("sha-c", "Other", "Regular", "o.ttf", 1, "installed")
+    assert [f.style for f in store.user_fonts.by_family("MyFont")] == ["Bold", "Regular"]
+    assert store.user_fonts.by_family("Nothing") == []
+    assert store.user_fonts.families() == ["MyFont", "Other"]
+
+
+def test_delete_family_removes_every_style_and_returns_their_sha256(store: Store) -> None:
+    store.user_fonts.add("sha-a", "MyFont", "Regular", "r.ttf", 1, "file")
+    store.user_fonts.add("sha-b", "MyFont", "Bold", "b.ttf", 1, "file")
+    assert sorted(store.user_fonts.delete_family("MyFont")) == ["sha-a", "sha-b"]
+    assert store.user_fonts.by_family("MyFont") == []
+    assert store.user_fonts.delete_family("MyFont") == []  # nothing left: harmless no-op
+
+
+def test_delete_family_blocked_by_the_active_configuration(store: Store) -> None:
+    store.user_fonts.add("sha-a", "MyFont", "Regular", "r.ttf", 1, "file")
+    store.execute("UPDATE active_config SET config = ?, font_key = 'k'",
+                  (ser.config_to_json(config(base_family="MyFont")),))
+    with pytest.raises(ScribeSenseError) as err:
+        store.user_fonts.delete_family("MyFont")
+    assert err.value.code is ErrorCode.FONT_IN_USE
+    assert store.user_fonts.get("sha-a") is not None
+
+
+def test_delete_family_blocked_by_a_saved_preset(store: Store) -> None:
+    store.user_fonts.add("sha-a", "MyFont", "Regular", "r.ttf", 1, "file")
+    store.presets.save(user_preset(base_family="MyFont"))
+    with pytest.raises(ScribeSenseError) as err:
+        store.user_fonts.delete_family("MyFont")
+    assert err.value.code is ErrorCode.FONT_IN_USE
+
+
 # ---------------------------------------------------------------- coverage is read-only
 
 def test_coverage_repo_has_no_write_methods_and_reads_the_newest_completed_apply(store: Store) -> None:

@@ -2134,3 +2134,57 @@ integration 35 passed.
     The duplicate ask in the 2026-11-22 entry above ("O1 + O3: agree the name and search order of
     `SCRIBESENSE_BUNDLED_FONTS`") is answered by points 2–3.
 
+## Build (2026-11-22, O3) — W1's `user_fonts` table (K9 addition)
+
+    O3's piece of W1 (user font import), item 6 of the W1 Part A task list: the `user_fonts` table and its
+    K8 accessor question. Built now, independent of whether Part A's K1/K2 wording or lookup approach gets a
+    second owner — nothing here depends on that half of the proposal.
+
+    **Schema** (`store/migrations/002_user_fonts.sql`): `user_fonts(sha256 PK, family, style, file_name, size,
+    source_kind, imported_at)`, `UNIQUE(family, style)`, indexed on `family`. One row per unique file content
+    (sha256); `family`/`style` are attributes, not the key. Mirrors `font_registry`'s style (TEXT timestamps,
+    CHECK-constrained enums).
+
+    **Repo** (`store/repos.py`, `UserFontsRepo`, wired into `Store.__init__` as `self.user_fonts`):
+    `get`, `by_family`, `families`, `add`, `delete_family`. Metadata only — the repo never touches the
+    filesystem; the caller copies bytes to `user_fonts_dir()/<sha256>/<file_name>` before `add()`, and
+    deletes that directory for each sha256 `delete_family()` returns.
+
+    **Decisions taken while building, per the earlier conversation:**
+    1. **Re-import collision: upsert-replace, blocked by the in-use check.** `add()` on an existing
+       `(family, style)` with different bytes deletes the old row and inserts the new one, unless
+       `_in_use_by_family()` says the family is referenced — then `FONT_IN_USE`, old row untouched.
+       Identical bytes (same sha256) are a no-op (dedup), checked first.
+    2. **`IMPORTED_FONT_IN_USE` not used — reused the existing `FONT_IN_USE` instead.** The dedicated code
+       is part of W1 Part A's error-code proposal (task 4), which has no second-owner sign-off yet; using it
+       would make this code fail at import (`contracts/errors.py` doesn't have it). **Replacement work, once
+       Part A's error codes are signed off and a human adds the enum line:** change the two raise sites in
+       `UserFontsRepo.add()` and `delete_family()` from `ErrorCode.FONT_IN_USE` to `ErrorCode.IMPORTED_FONT_IN_USE`,
+       and update the three tests in `test_store_repos.py` that assert `FONT_IN_USE` for a `user_fonts` refusal
+       (`test_reimport_is_blocked_...`, `test_delete_family_blocked_by_the_active_configuration`,
+       `test_delete_family_blocked_by_a_saved_preset`). Until then `FONT_IN_USE` conflates "a generated font is
+       in use" with "an imported source font is in use" — no functional bug, just a less specific error code.
+    3. **`user_fonts_dir()` proposed as a K8 accessor** (`data_dir() / "user-fonts"`) but implemented as a
+       plain function in `store/repos.py` for now, same reasoning as `fonts_root()` staying local: it isn't
+       in `contracts/paths.py` yet. Unlike `fonts_root()` (settled to stay local, previous entry), this one
+       is a genuine proposal awaiting a second owner (any of O1/O2/O4). **Replacement work, once a human adds
+       it to `contracts/paths.py`:** delete the local `user_fonts_dir()` definition in `store/repos.py` and
+       import it from `scribesense.contracts.paths` instead (same shape — `data_dir() / "user-fonts"` — so no
+       caller or test needs to change, only where the one function lives).
+    4. **"In use" for an imported family** checks `active_config`'s `base_family` and every preset from
+       `presets.list_all()` — simpler than `FontRegistryRepo.in_use()` because `base_family` is stored
+       directly on `Configuration`/`PresetValues`, with no `resolve()` step and no unfinished-transaction
+       scan needed (planned adapter writes carry generated family names, never the imported source's).
+
+    `contracts/store.py`'s `Store` Protocol does not list `user_fonts` yet (agents may not edit `contracts/`);
+    the attribute exists and works by duck typing until a human adds it alongside the K8 accessor.
+
+    Tests: 9 added to `tests/unit/test_store_repos.py` (round trip, dedup, replace, replace-blocked, by_family/
+    families, delete, delete-blocked by active config, delete-blocked by a preset, bad style/source_kind).
+    Two pre-existing tests in `test_store_core.py` had the migration count hardcoded to 1 — updated to 2.
+    Full suite after: **2302 passed, 0 failed, 138 skipped** (same skip count as before — no new GUI tests).
+
+    **Still open:** the second-owner sign-off on `user_fonts_dir()` (point 3) and on W1 Part A proper
+    (K1/K2 wording, lookup approach, the three error codes — still open to any of O2/O3/O4); `base_font_files()`
+    resolving imported families stays blocked on Part A, same as before.
+
