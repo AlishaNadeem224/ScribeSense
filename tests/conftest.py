@@ -114,6 +114,9 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fix
     monkeypatch.setenv("SCRIBESENSE_DATA_DIR", str(sb.data_dir))
     monkeypatch.setenv("SCRIBESENSE_FONTS_DIR", str(sb.fonts_dir))
     monkeypatch.setenv("FONTCONFIG_FILE", str(root / "fonts.conf"))
+    # The repo's bundled fonts, never an installed /usr/share/scribesense/fonts (O1's override in config/bundled.py;
+    # added 2026-11-22 by O4 with the user's go-ahead). Tests of the search itself delenv it (test_fonts_root.py).
+    monkeypatch.setenv("SCRIBESENSE_BUNDLED_FONTS", str(Path(__file__).resolve().parents[1] / "fonts"))
     monkeypatch.setenv("GSETTINGS_BACKEND", "memory")
     for var in _SESSION_VARS:
         monkeypatch.delenv(var, raising=False)

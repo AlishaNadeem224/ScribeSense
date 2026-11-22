@@ -1956,3 +1956,37 @@ reading-outcome question is W6's user study, not this test.
 - Standing findings not yet acted on: `ui_line` over-keying (§9.3), digits and punctuation
   untracked (§9.4), the per-face `ITALIC_ONLY` warning (§9.6), the kerning count-not-diff (§9.8),
   and the unwritten font-registry row (W7 entry above).
+
+## Review of O1's 2026-11-14 work and fixes (2026-11-22, O4 for O1, user's go-ahead)
+
+**Reviewed and good:** the bundled-fonts search (`config/bundled.py`: override → installed data dirs → repo; the
+packaging blocker W2.1), `settings.snap_up` so `target_em` rounds UP (W6.5: Noto's Default +0.130 → +0.195 em; all
+four families now meet 0.16 em), the isolated font parse (`rules.is_eligible(isolate=True)` + `config/fontprobe.py`,
+W1.3), the removal of the unused `to_record` / `from_record` (W7), CFF/OTF support and the corrected docstrings. No
+contract or other owner's file was touched. Merge with O4: only `PLAN_v2.md` conflicts; the merged code passed every
+suite (checked on an exported copy).
+
+**Fixed here (cross-owner, recorded on the M1.2 card):**
+1. O1's 148 tests moved from `src/scribesense/config_and_fontgen_tests/` (kept beside the code at O1's request; costs
+   she documented herself: shipped in the package, not collected by pytest, so not in CI) to
+   `tests/unit/config_and_fontgen/`. Under `src/` they also ran WITHOUT the M3.3 sandbox, against the real HOME (no
+   damage found). The O3 task "add the directory to testpaths" is therefore no longer needed.
+2. `test_isolated_parse.py`: `SRC_ROOT` follows the new depth; the module is marked `real_subprocess`.
+3. Temp files: `test_wcag_text_spacing.py` / `test_integration_review.py` route `tempfile` into `tmp_path`, and a
+   leaked file handle is closed.
+4. `SCRIBESENSE_BUNDLED_FONTS` is pinned to the repo's `fonts/` in `tests/conftest.py` and `harness/sandbox.py`.
+
+Tests on the O1 branch after the fixes: **2338 passed, 0 failed** (unit, now including O1's 148) · integration
+**35 passed, 0 failed**.
+
+**Still open:**
+- **O1:** commit `docs/research2-conformance-O1.md` — cited by the code (findings §9.1–§9.4) and five times in
+  PLAN_v2, but not in the repository.
+- **O1 + O3:** agree the name and search order of `SCRIBESENSE_BUNDLED_FONTS` (O1 marked it pending a K8 decision);
+  bridge `FontRegistry` and `store.repos.FontRegistryRepo` (O1 documented the mismatch).
+- **O3:** `.gitignore` ignores `*.crx` and `dist/`, so the signed extension that automatic setup looks for
+  (`extension/dist/scribesense.crx`) would be silently left out of git — add an exception
+  (`!extension/dist/scribesense.crx`) or choose another release location.
+- The Default preset now builds a different font with Noto Sans (word_scale 1.75 instead of 1.5): expected; users
+  get it at their next Apply.
+

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import os
 import tempfile
 from pathlib import Path
 
@@ -36,6 +37,14 @@ from scribesense.contracts import fonts as k7
 from scribesense.contracts import presets as k2
 from scribesense.contracts.errors import ScribeSenseError
 from scribesense.fontgen import cache, generator, naming, patcher, validate, variants
+
+
+@pytest.fixture(autouse=True)
+def _temp_files_in_tmp_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Every tempfile.mkstemp / mkdtemp in this module lands in pytest's tmp_path, which pytest removes
+    (added 2026-11-22: these calls used to leave files in the system /tmp)."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
 
 FAMILY = "AccessSans-000000000000"
 
@@ -90,6 +99,7 @@ def _raise_bundled_font_missing() -> None:
 
 def _raise_patch_unsupported() -> None:
     handle, name = tempfile.mkstemp(suffix=".ttf")
+    os.close(handle)
     Path(name).write_bytes(b"not a font")
     patcher.patch(name, _default(), 1.5, Path(tempfile.mkdtemp()) / "out.ttf")
 

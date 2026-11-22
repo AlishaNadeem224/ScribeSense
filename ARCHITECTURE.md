@@ -985,6 +985,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 
 > **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" W1, W2):** (1) **Packaging blocker:** `FONTS_ROOT` is `Path(__file__).parents[3] / "fonts"` (the repo root); an installed package has none, so fonts must move to a data location (e.g. `/usr/share/scribesense/fonts`) resolved via K8 with the repo path as development fallback. (2) Imported fonts (W1) need `base_font_files` to resolve imported families too. (3) Bundled fonts: three new families still to be reviewed by O1. (4) The docstring at `config/presets.py:256` ("undetermined until the bundled fonts are measured") is stale; `to_record`/`from_record` have no tests and no users.
 
+
+> **Review fixes 2026-11-22 (O4 for O1, user's go-ahead; recorded in PLAN_v2):** O1's 148 tests moved from `src/scribesense/config_and_fontgen_tests/` to `tests/unit/config_and_fontgen/` — they now run in CI and under the M3.3 sandbox and no longer ship in the package (they had run unsandboxed, against the real HOME). `test_isolated_parse.py` is marked `real_subprocess` (it starts `sys.executable -m scribesense.config.fontprobe`); temp files go to `tmp_path`. Both sandboxes (`tests/conftest.py`, `harness/sandbox.py`) pin `SCRIBESENSE_BUNDLED_FONTS` to the repo's `fonts/`, so no test reads an installed copy. **Still for O1:** commit `docs/research2-conformance-O1.md` (cited by the code and PLAN_v2, not in the repository).
+
 #### M1.3 Font eligibility rules
 | Field | Spec |
 |---|---|

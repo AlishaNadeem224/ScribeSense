@@ -55,6 +55,14 @@ from scribesense.config import bundled, presets, settings
 from scribesense.contracts.config import RANGES, SHORTLIST
 from scribesense.fontgen import patcher
 
+
+@pytest.fixture(autouse=True)
+def _temp_files_in_tmp_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Every tempfile.mkstemp / mkdtemp in this module lands in pytest's tmp_path, which pytest removes
+    (added 2026-11-22: these calls used to leave files in the system /tmp)."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+
 #: SC 1.4.12, as multiples of the font size. Paragraph spacing (>= 2x) is a layout property no
 #: font can carry, so it is the rendering layer's and is deliberately absent here.
 LETTER_FLOOR = 0.12

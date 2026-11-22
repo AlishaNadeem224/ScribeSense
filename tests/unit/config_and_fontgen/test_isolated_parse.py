@@ -41,11 +41,16 @@ from scribesense.config import bundled, presets, rules
 from scribesense.config.fontprobe import EXIT_BAD_ARGS, EXIT_OK, PROTOCOL_VERSION, main
 from scribesense.fontgen import patcher, variants
 
+#: The isolated parse starts `sys.executable -P -m scribesense.config.fontprobe` through run_cmd. The unit sandbox
+#: blocks every process except, under this marker, sys.executable itself (tests/conftest.py, M3.3).
+pytestmark = pytest.mark.real_subprocess
+
 UPM = 1000
 SPACE_ADVANCE = 260
 
 #: The `src` directory, i.e. what an installed package would put on the child's path anyway.
-SRC_ROOT = Path(__file__).resolve().parents[2]
+#: (tests/unit/config_and_fontgen/ -> repo root is parents[3]; moved from src/ on 2026-11-22.)
+SRC_ROOT = Path(__file__).resolve().parents[3] / "src"
 
 
 @pytest.fixture(autouse=True)
