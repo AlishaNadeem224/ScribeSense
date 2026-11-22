@@ -26,6 +26,7 @@ export function createFakeChrome({ tabs = [], restricted = [], storage = {}, sel
     store: storage,
     selections: { ...selections }, // tabId -> selected text in the page
     styles: new Map(), // tabId -> list of injected css strings (stacking is visible)
+    fonts: new Map(), // tabId -> list of FontFace registrations [{family, style}] (main world)
     ports: [],
     connectAttempts: [],
     menus: [],
@@ -68,6 +69,9 @@ export function createFakeChrome({ tabs = [], restricted = [], storage = {}, sel
     runtime: {
       lastError: undefined,
       onInstalled: fakeEvent(),
+      onUpdateAvailable: fakeEvent(),
+      reloads: 0,
+      reload() { chromeApi.runtime.reloads += 1; },
       connectNative(name) {
         fake.connectAttempts.push(name);
         const port = makePort(name);
@@ -92,9 +96,16 @@ export function createFakeChrome({ tabs = [], restricted = [], storage = {}, sel
         const i = list.lastIndexOf(css);
         if (i >= 0) list.splice(i, 1); // like Chrome: one matching sheet per call
       },
-      async executeScript({ target, func, args = [] }) {
+      async executeScript({ target, func, args = [], world }) {
         if (fake.executeScriptFails || fake.restricted.has(target.tabId)) {
           throw new Error("Cannot access contents of the page");
+        }
+        if (func.name === "registerFontsInPage") {
+          assert.equal(world, "MAIN"); // FontFaces must belong to the page's own document
+          assert.equal(target.allFrames, true);
+          if (!fake.fonts.has(target.tabId)) fake.fonts.set(target.tabId, []);
+          for (const f of args[0]) fake.fonts.get(target.tabId).push({ family: f.family, style: f.style });
+          return [{ frameId: 0, result: true }];
         }
         if (func.name === "selectedTextInPage") {
           return [{ frameId: 0, result: fake.selections[target.tabId] ?? "" }];

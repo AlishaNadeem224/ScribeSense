@@ -30,7 +30,7 @@ characters escaped as \\uXXXX (uppercase hex), no trailing newline. A key we hav
 its sorted (UTF-8 byte order) position when the dict it goes into is sorted — as Chrome writes them —
 otherwise appended.
 
-Running: the user-data dir has a "SingletonLock" (a symlink, possibly dangling: os.path.lexists).
+Running: the user-data dir has a live "SingletonLock" (a symlink, dangling by design; stale locks: browser_lock.py).
 must_be_closed=True; apply() and revert() re-check and refuse with BROWSER_RUNNING, writing nothing
 (decision 2026-10-12: Chromium would overwrite a revert made while it runs; recovery retries later and the
 user is told). A stale lock after a crash therefore reads as running.
@@ -47,10 +47,12 @@ import json
 import os
 import re
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from scribesense.adapters.browser_lock import lock_is_live
 from scribesense.adapters.fontconfig import write_durable
 from scribesense.contracts.adapter import (
     AppliedItem,
@@ -65,9 +67,12 @@ from scribesense.contracts.config import Configuration
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 from scribesense.contracts.fonts import READING_FAMILY_PREFIX, FontSet
 from scribesense.contracts.paths import config_home, home
+from scribesense.adapters.extension_host import HOST_NAME, extension_id_from_manifest, is_ours
 
 ADAPTER_NAME = "chromium"
 PREFERENCES = "Preferences"
+SECURE_PREFERENCES = "Secure Preferences"
+HOSTS_DIR = "NativeMessagingHosts"
 SINGLETON_LOCK = "SingletonLock"
 DEFAULT_PROFILE = "Default"
 PROFILE_PREFIX = "Profile "
@@ -117,8 +122,46 @@ def profile_id(dir_name: str) -> str | None:
 
 
 def is_running(data_dir: Path) -> bool:
-    """Chromium holds a SingletonLock symlink (often 'host-pid', dangling by design) while running."""
-    return os.path.lexists(data_dir / SINGLETON_LOCK)
+    """Chromium holds a SingletonLock symlink ('<host>-<pid>', dangling by design) while running. A lock of this
+    host whose pid is gone, or a Flatpak browser not in `flatpak ps`, is stale (adapters/browser_lock.py, 2026-11-22)."""
+    return lock_is_live(data_dir / SINGLETON_LOCK, "chromium")
+
+
+def _default_extension_id() -> str | None:
+    """The pinned ScribeSense extension ID (public key in extension/manifest.json), or None without a key."""
+    try:
+        return extension_id_from_manifest()
+    except (OSError, ValueError):
+        return None
+
+
+def _host_installed(browser: Browser) -> bool:
+    """Our native-messaging host manifest is installed for this browser (so the extension can reach the app)."""
+    try:
+        return is_ours((user_data_dir(browser) / HOSTS_DIR / f"{HOST_NAME}.json").read_bytes())
+    except OSError:
+        return False
+
+
+def extension_active(browser: Browser, profile_dir: Path, extension_id: str | None) -> bool:
+    """True when the ScribeSense extension styles this profile's pages: it is installed and enabled in the profile
+    (the browser's own Preferences / Secure Preferences) AND our host is installed for the browser. Then the default
+    font keys add nothing and would only make the user close the browser — the profile is skipped (2026-11-22).
+    Anything unreadable or unclear -> False (the Preferences route stays, as before)."""
+    if extension_id is None or browser.flatpak_app is not None or not _host_installed(browser):
+        return False
+    for name in (PREFERENCES, SECURE_PREFERENCES):
+        try:
+            prefs = parse_preferences((profile_dir / name).read_bytes())
+        except (OSError, ScribeSenseError):
+            continue
+        settings = prefs.get("extensions", {})
+        settings = settings.get("settings", {}) if isinstance(settings, dict) else {}
+        entry = settings.get(extension_id) if isinstance(settings, dict) else None
+        if isinstance(entry, dict):
+            disabled = entry.get("disable_reasons") not in (None, 0, []) or entry.get("state", 1) == 0
+            return not disabled
+    return False
 
 
 def _check_location(location: str) -> Path:
@@ -319,7 +362,8 @@ class ChromiumAdapter:
     requires_restart = True
     must_be_closed = True
 
-    def __init__(self) -> None:
+    def __init__(self, *, extension_id: Callable[[], str | None] = _default_extension_id) -> None:
+        self._extension_id = extension_id
         self._snapshot_sha: dict[str, str] = {}
 
     # ---- helpers
@@ -369,9 +413,12 @@ class ChromiumAdapter:
 
     def detect(self) -> list[Target]:
         targets = []
+        extension_id = self._extension_id()
         for browser in BROWSERS:
             running = is_running(user_data_dir(browser))
             for pid, name in self._profiles(browser):
+                if extension_active(browser, user_data_dir(browser) / name, extension_id):
+                    continue  # the extension styles this profile: never ask the user to close the browser
                 targets.append(Target(self.name, f"{browser.key}:{pid}", f"{browser.display} ({name})", running))
         return targets
 

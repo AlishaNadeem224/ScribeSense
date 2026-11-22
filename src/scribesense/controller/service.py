@@ -13,6 +13,9 @@ piece plugs into:
 Socket requests the service answers (one JSON object per line, same user only):
 
     get_style       K11: the CONFIRMED style for the browser extension (M4.8 CSS), or inactive
+    get_font        K11 (amendment 2026-11-22, added by O4 with the user's go-ahead): one style's Latin web-font
+                    copy of the ACTIVE font set (adapters/webfont.py), so a browser that hides installed fonts
+                    from websites can still draw the style. Any other key / style -> FONT_UNAVAILABLE.
     open_in_reader  K11: text from the extension -> the app's reader (A17 checked by the native host and here)
     keep / revert   M2.3: from the fresh `scribesense confirm <tx>` process (A15); only the pending tx
     reset           K4 rule 6: `scribesense reset` asks a running service to reset
@@ -237,6 +240,8 @@ class Service:
         kind = message.get("type")
         if kind == "get_style":
             return self._get_style()
+        if kind == "get_font":
+            return self._get_font(message.get("key"), message.get("style"))
         if kind == "open_in_reader":
             text = message.get("text")
             if not isinstance(text, str):
@@ -267,14 +272,36 @@ class Service:
         from scribesense.adapters.browser_css import browser_css
         from scribesense.fontgen import generator
 
+        from scribesense.adapters.webfont import served_styles
+
         revision = self.journal.style_revision()
         active = self.journal.active()
         if active is not None:
             fonts = next((f for f in generator.installed_sets() if f.key == active.font_key), None)
             if fonts is not None:
                 return {"v": PROTOCOL_VERSION, "ok": True, "active": True, "revision": revision,
-                        "css": browser_css(fonts, active.config)}
+                        "css": browser_css(fonts, active.config), "font_key": fonts.key,
+                        "styles": served_styles(fonts)}
         return {"v": PROTOCOL_VERSION, "ok": True, "active": False, "revision": revision}
+
+    def _get_font(self, key: object, style: object) -> Message:
+        """K11 get_font: the web-font copy of one style of the ACTIVE font set only (never an arbitrary key)."""
+        import base64
+
+        from scribesense.adapters.webfont import web_font
+        from scribesense.fontgen import generator
+
+        if not isinstance(key, str) or not isinstance(style, str):
+            raise ScribeSenseError(ErrorCode.BAD_MESSAGE)
+        active = self.journal.active()
+        if active is None or active.font_key != key:
+            raise ScribeSenseError(ErrorCode.FONT_UNAVAILABLE)  # only the confirmed style is served
+        fonts = next((f for f in generator.installed_sets() if f.key == key), None)
+        if fonts is None:
+            raise ScribeSenseError(ErrorCode.FONT_UNAVAILABLE)
+        data = web_font(fonts, style)
+        return {"v": PROTOCOL_VERSION, "ok": True, "key": key, "style": style, "family": fonts.reading_family,
+                "data": base64.b64encode(data).decode("ascii")}
 
 
 def delete_store_data(store: Any, journal: Any) -> bool:

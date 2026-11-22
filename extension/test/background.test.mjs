@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 
 import {
   BACKOFF_MAX_MS, BACKOFF_MIN_MS, HOST_NAME, MAX_READER_CHARS, MENU_ID, USER_MESSAGES,
-  codePointLength, createBackground, knownCode, parseStyleReply,
+  codePointLength, createBackground, knownCode, parseFontReply, parseStyleReply,
 } from "../background.js";
 import { createFakeChrome, createFakeTimers, settle } from "./fake_chrome.test.mjs";
 
@@ -65,8 +65,9 @@ test("an active reply styles every eligible tab with origin USER and reports res
   assert.equal(bg.state.restricted, 1);
   assert.equal(bg.state.status, "connected");
   assert.equal(fake.badge, "");
-  assert.deepEqual(fake.store.state, { status: "connected", lastError: null, restricted: 1 });
-  assert.deepEqual(fake.store.style, { revision: 7, active: true, css: CSS_A });
+  assert.deepEqual(fake.store.state, { status: "connected", lastError: null, restricted: 1,
+    restrictedReason: "Cannot access contents of the page" });
+  assert.deepEqual(fake.store.style, { revision: 7, active: true, css: CSS_A, fontKey: null, styles: [] });
 });
 
 test("a newer style replaces the previous css instead of stacking", async () => {
@@ -96,7 +97,7 @@ test("an inactive reply (Original) removes the styling", async () => {
   await settle(bg);
   assert.deepEqual(stylesOf(fake, 1), []);
   assert.deepEqual(stylesOf(fake, 2), []);
-  assert.deepEqual(fake.store.style, { revision: 8, active: false, css: null });
+  assert.deepEqual(fake.store.style, { revision: 8, active: false, css: null, fontKey: null, styles: [] });
 });
 
 test("a pushed style_changed makes the extension fetch get_style", async () => {
@@ -402,11 +403,126 @@ test("malformed or unknown replies are BAD_MESSAGE and change no styling", async
 });
 
 test("helpers: parseStyleReply, knownCode, codePointLength", () => {
-  assert.deepEqual(parseStyleReply(active(1, "x")), { revision: 1, active: true, css: "x" });
-  assert.deepEqual(parseStyleReply(inactive(2)), { revision: 2, active: false, css: null });
+  assert.deepEqual(parseStyleReply(active(1, "x")), { revision: 1, active: true, css: "x", fontKey: null, styles: [] });
+  assert.deepEqual(parseStyleReply(inactive(2)), { revision: 2, active: false, css: null, fontKey: null, styles: [] });
   assert.equal(parseStyleReply({ v: 1, ok: false, error: "APP_NOT_RUNNING" }), null);
   assert.equal(knownCode("TOO_LARGE"), "TOO_LARGE");
   assert.equal(knownCode("whatever"), "BAD_MESSAGE");
   assert.equal(codePointLength("a\u{1F600}b"), 3);
   assert.equal(codePointLength("abcdef", 2), 3, "stops just past the limit");
+});
+
+
+// --- web fonts (K11 amendment 2026-11-22) ---------------------------------------------------------
+
+const KEY = "0123456789ab";
+const CSS_K = `:root :not(code) { font-family: "AccessSans-${KEY}", sans-serif !important; }`;
+const activeWithFonts = (revision, styles = ["Regular", "Bold"]) => ({ ...active(revision, CSS_K), font_key: KEY, styles });
+const fontReply = (style, data = "AAEAAA==") => ({ v: 1, ok: true, key: KEY, style, family: `AccessSans-${KEY}`, data });
+
+function fontRequests(fake) {
+  return fake.allSent().filter((m) => m.type === "get_font");
+}
+
+test("an active style with fonts asks get_font once per style, with the exact K11 shape", async () => {
+  const { fake } = await connectedWith(activeWithFonts(7));
+  assert.deepEqual(fontRequests(fake), [
+    { v: 1, type: "get_font", key: KEY, style: "Regular" },
+    { v: 1, type: "get_font", key: KEY, style: "Bold" },
+  ]);
+});
+
+test("arriving web fonts are registered in every styled page, in the page's own world, and stored", async () => {
+  const { fake, bg } = await connectedWith(activeWithFonts(7));
+  fake.port().reply(fontReply("Regular"));
+  fake.port().reply(fontReply("Bold"));
+  await settle(bg);
+  const families = (tabId) => (fake.fonts.get(tabId) ?? []).map((f) => f.style);
+  assert.ok(families(1).includes("Regular") && families(1).includes("Bold"));
+  assert.ok(families(2).includes("Bold"));
+  assert.equal(fake.fonts.get(3), undefined); // chrome:// never
+  assert.deepEqual(Object.keys(fake.store.fonts.faces).sort(), ["Bold", "Regular"]);
+  assert.equal(fake.store.fonts.key, KEY);
+});
+
+test("fonts are registered before the CSS when a page loads, and nothing is fetched twice", async () => {
+  const { fake, bg } = await connectedWith(activeWithFonts(7, ["Regular"]));
+  fake.port().reply(fontReply("Regular"));
+  await settle(bg);
+  fake.addTab({ id: 9, url: "https://new.example.test/" });
+  fake.chrome.tabs.onUpdated.emit(9, { status: "loading" }, { id: 9, url: "https://new.example.test/" });
+  await settle(bg);
+  assert.deepEqual(fake.fonts.get(9), [{ family: `AccessSans-${KEY}`, style: "Regular" }]);
+  assert.deepEqual(stylesOf(fake, 9), [CSS_K]);
+  fake.port().reply({ v: 1, type: "style_changed", revision: 7 }); // same style again
+  await settle(bg);
+  fake.port().reply(activeWithFonts(7, ["Regular"]));
+  await settle(bg);
+  assert.equal(fontRequests(fake).length, 1);
+});
+
+test("stored fonts survive a worker restart and are used without asking again", async () => {
+  const storage = {};
+  const first = await connectedWith(activeWithFonts(7, ["Regular"]), { storage });
+  first.fake.port().reply(fontReply("Regular"));
+  await settle(first.bg);
+  const again = await setup({ storage });
+  again.fake.port().reply(activeWithFonts(7, ["Regular"]));
+  await settle(again.bg);
+  assert.equal(fontRequests(again.fake).length, 0);
+  assert.ok((again.fake.fonts.get(1) ?? []).some((f) => f.style === "Regular"));
+});
+
+test("a missing web font is silent: no user error, the CSS stays", async () => {
+  const { fake, bg } = await connectedWith(activeWithFonts(7, ["Regular"]));
+  fake.port().reply({ v: 1, ok: false, error: "FONT_UNAVAILABLE" });
+  await settle(bg);
+  assert.equal(fake.store.state.lastError, null);
+  assert.equal(fake.store.state.status, "connected");
+  assert.deepEqual(stylesOf(fake, 1), [CSS_K]);
+  assert.equal(fake.fonts.get(1), undefined);
+});
+
+test("a font reply for another key, a foreign family or bad data is ignored", async () => {
+  const { fake, bg } = await connectedWith(activeWithFonts(7, ["Regular", "Bold", "Italic"]));
+  fake.port().reply({ ...fontReply("Regular"), key: "ffffffffffff" });
+  fake.port().reply({ ...fontReply("Bold"), family: "Arial" });
+  fake.port().reply(fontReply("Italic", "not base64 !!"));
+  await settle(bg);
+  assert.equal(fake.fonts.get(1), undefined);
+  assert.equal(fake.store.fonts, undefined);
+});
+
+test("a new style with a new key drops the old fonts and fetches the new ones", async () => {
+  const { fake, bg } = await connectedWith(activeWithFonts(7, ["Regular"]));
+  fake.port().reply(fontReply("Regular"));
+  await settle(bg);
+  const other = "fedcba987654";
+  fake.port().reply({ ...active(8, CSS_K), font_key: other, styles: ["Regular"] });
+  await settle(bg);
+  assert.deepEqual(fontRequests(fake).at(-1), { v: 1, type: "get_font", key: other, style: "Regular" });
+  assert.equal(bg.state.fonts.key, other);
+});
+
+test("unloaded and discarded tabs are skipped, not reported as refused", async () => {
+  const tabs = [{ id: 1, url: "https://a.test/" }, { id: 5, url: "https://b.test/", discarded: true },
+    { id: 6, url: "https://c.test/", status: "unloaded" }];
+  const { fake } = await connectedWith(active(7, CSS_A), { tabs, restricted: [5, 6] });
+  assert.equal(fake.store.state.restricted, 0);
+  assert.deepEqual(stylesOf(fake, 1), [CSS_A]);
+});
+
+test("helpers: parseStyleReply with fonts and parseFontReply", () => {
+  assert.deepEqual(parseStyleReply(activeWithFonts(3)), { revision: 3, active: true, css: CSS_K, fontKey: KEY, styles: ["Regular", "Bold"] });
+  assert.deepEqual(parseStyleReply({ ...activeWithFonts(3), styles: ["Regular", "Black"] }).styles, []); // unknown style: no fonts
+  assert.deepEqual(parseFontReply(fontReply("Bold"), { key: KEY, style: "Bold" }), { style: "Bold", family: `AccessSans-${KEY}`, data: "AAEAAA==" });
+  assert.equal(parseFontReply(fontReply("Bold"), { key: KEY, style: "Regular" }), null);
+});
+
+
+test("a new extension version is applied at once instead of waiting for a browser restart", async () => {
+  const { fake } = await connectedWith(active(7, CSS_A));
+  assert.equal(fake.chrome.runtime.reloads, 0);
+  fake.chrome.runtime.onUpdateAvailable.emit({ version: "0.1.2" });
+  assert.equal(fake.chrome.runtime.reloads, 1);
 });

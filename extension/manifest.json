@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ScribeSense",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Applies your ScribeSense reading style to web pages and opens selected text in the ScribeSense reader.",
   "permissions": [
     "nativeMessaging",
@@ -20,5 +20,6 @@
   "action": {
     "default_title": "ScribeSense",
     "default_popup": "popup.html"
-  }
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyDp6lp2Fk/PNoFthVJsr738lUc9Oiq4ouQvwV4TIe+7IiN1MWp2lYJnY4qCPRcqEub7vfbPbiGO5Peka+lMuo4iKalxmWXWsvGK/GLCnY1XjhZbn0nJwu0T3XdKiL75SSp6U8rZ55LmoJw8fIsPgPlFlRfbHtsC9AkxaaTl9WGN5IJQTaZSeSv3cC8DBp85YLrUXWpqahYOO1ulbYsvqF94b4ht9KkgU6iQ5xWUDyTAFujYDUPQhtyQSFGEfrc0+vGKwyIDTGThZ9TVdzlufszgOv1XftBISc+E8K9daa8N8xUWOkgZWvCny0ldhz2irQqG5VKnttwaX9R/ZDvdAgwIDAQAB"
 }

@@ -11,7 +11,8 @@ Rules:
 - MAX_MESSAGE_BYTES (K11) applies to the complete encoded JSON message, both ways. A larger request
   from the browser is skipped (the stream stays in sync) and answered with BAD_MESSAGE; a reply that
   would be larger is replaced by BAD_MESSAGE (Chrome's own host->browser limit is 1 MiB too).
-- Only the two K11 request types are forwarded: `get_style` and `open_in_reader`. Anything else is
+- Only the K11 request types are forwarded: `get_style`, `open_in_reader` and (amendment 2026-11-22)
+  `get_font` {key: 12 hex digits, style: one of WEBFONT_STYLES}. Anything else is
   BAD_MESSAGE and never reaches the service socket (the socket also accepts confirm/reset commands
   that the browser must not be able to send). Only the K11 fields are forwarded; extra keys are dropped.
 - `open_in_reader` text longer than MAX_READER_CHARS (A17) -> TOO_LARGE, never truncated.
@@ -44,14 +45,13 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from scribesense.adapters.extension_host import HOST_DESCRIPTION, HOST_NAME  # shared with adapters (R5)
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
-from scribesense.contracts.messages import MAX_MESSAGE_BYTES, MAX_READER_CHARS, PROTOCOL_VERSION
+from scribesense.contracts.messages import MAX_MESSAGE_BYTES, MAX_READER_CHARS, PROTOCOL_VERSION, WEBFONT_STYLES
 from scribesense.log import log
 from scribesense.safety import ipc
 
-HOST_NAME = "com.scribesense.host"
-HOST_DESCRIPTION = "ScribeSense native messaging host"
-FORWARDED_TYPES = frozenset({"get_style", "open_in_reader"})
+FORWARDED_TYPES = frozenset({"get_style", "open_in_reader", "get_font"})
 REQUEST_TIMEOUT_S = 5.0
 WATCH_BACKOFF_MIN_S = 1.0
 WATCH_BACKOFF_MAX_S = 30.0
@@ -63,6 +63,7 @@ Subscriber = Callable[..., Iterable[int]]  # ipc.subscribe_style(*, timeout=...)
 _LENGTH = struct.Struct("=I")  # native byte order, 4 bytes, no padding
 _CHUNK = 65536
 _EXTENSION_ID = re.compile(r"[a-p]{32}")
+_FONT_KEY = re.compile(r"[0-9a-f]{12}")
 
 
 # --- Chrome framing --------------------------------------------------------------------------------
@@ -150,6 +151,11 @@ def decode_request(payload: bytes) -> Message:
         raise ScribeSenseError(ErrorCode.BAD_MESSAGE)
     if kind == "get_style":
         return {"type": "get_style"}
+    if kind == "get_font":
+        key, style = message.get("key"), message.get("style")
+        if not isinstance(key, str) or not _FONT_KEY.fullmatch(key) or style not in WEBFONT_STYLES:
+            raise ScribeSenseError(ErrorCode.BAD_MESSAGE)
+        return {"type": "get_font", "key": key, "style": style}
     text = message.get("text")
     if not isinstance(text, str):
         raise ScribeSenseError(ErrorCode.BAD_MESSAGE)

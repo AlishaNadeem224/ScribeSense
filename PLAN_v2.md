@@ -1180,3 +1180,74 @@ Still open for O4:
 - **New finding (proposal):** a stale Firefox `lock` (dead PID) reads as "browser running", so after a crash Apply
   keeps asking to close the browser. Proposed: treat a native install's lock as stale when its PID no longer exists.
 
+## K11 amendment: web fonts for the extension (2026-11-22, O4; O2 sign-off pending)
+
+**Finding:** in Brave the extension's CSS reached YouTube / Twitch, but the pages drew their own font. Measured in the
+page: our installed font fell back on websites (same width as the fallback) but drew on a local `file://` page; with
+Brave Shields off it drew on every site. Brave documents its font protection as not applied on Linux, but Brave 158
+on Fedora applies it. A font handed to the page as data (FontFace) drew with Shields on.
+
+**Decision (O4; needs O2 as second owner):** K11 gains `font_key` / `styles` in the active `get_style` reply, a
+`get_font` request (Latin web-font copy of the active set, one style per message, at most 256 KiB before base64)
+and the error `FONT_UNAVAILABLE`. The contract lines were added by a human (patch applied 2026-11-22). The CSS rule of
+M4.8 (no link to or embedding of a font file) stays; fonts reach the page as FontFace data. Zen / Firefox are
+unaffected (`userContent.css` already works there).
+
+**Built:** `adapters/webfont.py` (O4) · `get_font` route in `controller/service.py` (O2's file, cross-owner with the
+user's go-ahead — **for O2 to review**) · native host forwarding · extension 0.1.1 (fetch, store, register before CSS;
+also skips unloaded tabs and records why a tab was refused). Tests: **2244 passed, 0 failed** (unit) · extension JS
+**44 passed, 0 failed**.
+
+**Next:** automatic setup for browsers and apps on any machine (discovery, per-user setup on first run, Chromium
+extension pre-installed by the package) — design to be agreed before building.
+
+## Open browsers no longer block ScribeSense (2026-11-22, O4, user's go-ahead)
+
+Problem seen in daily use: an open browser made Apply say "pending — close the browser", a restore with the browser
+open left one item unresolved and then blocked every new apply (A3), and leftover locks made closed browsers look
+open. Done now (O4 only):
+1. **Stale locks** — `adapters/browser_lock.py`: Flatpak browsers by `flatpak ps`, native ones by the lock's pid;
+   anything unclear stays "running". Fixed the Zen and Firefox cases seen today.
+2. **Brave / Chrome / Chromium** — a profile styled by the ScribeSense extension (installed + enabled + our host
+   installed) is no longer a target, so it never needs closing.
+3. **Firefox / Zen** — `must_be_closed` is False: apply writes while the browser runs ("restart needed"); only the
+   revert of the `prefs.js` line waits for it to close.
+
+Still open (needs O2): a "finish when closed" watcher in the service (pending applies of the confirmed style and
+unresolved reverts finish by themselves when a browser closes), relaxing A3 for items that only wait for an app to
+close, and clearer messages ("Zen is open: this finishes when you close it"). An app showing the change only after a
+restart is how apps work and is not treated as a problem (user, 2026-11-22).
+
+Tests: **2263 passed, 0 failed** (unit).
+
+## Automatic setup and repair — direction decided by the user (2026-11-22); design to be built (O4 + O2 + O3)
+
+**Confirmed working 2026-11-22:** Brave with Shields on (extension 0.1.1 with web fonts); Zen everywhere (stylesheet).
+Extension 0.1.2 also applies its own updates at once (see M4.9).
+
+**Decision (user):** the user must never open a terminal. ScribeSense sets itself up on first start and after every
+update, and re-checks before each Apply: what is missing is added by itself; anything that needs root is done in ONE
+permission prompt at that moment (graphical, no terminal), covering every browser present — not only Brave.
+
+**Proposed design (for review):**
+1. `safety/setup.py` (O4) — a read-only CHECK that lists what is missing on THIS machine, discovered, never hard-coded
+   to the dev machine: browsers present (Chromium family: Brave, Chrome, Chromium, Vivaldi, Edge…; Firefox family;
+   Flatpak variants), our host manifest per Chromium browser, the extension pre-install file per browser, the
+   launcher path still valid (e.g. after a venv rebuild), keybinds + login hook, the service start at login.
+2. **User-level repairs run silently** (no prompt): host manifests, launcher, keybinds / login hook, service autostart.
+3. **Root-level repairs in one prompt** via `pkexec` (polkit's graphical password dialog; the session needs a polkit
+   agent — check it in `doctor`): copy the signed `scribesense.crx` to `/usr/share/scribesense/` and write
+   `<extension-id>.json` (`external_crx` + `external_version`) into each present browser's system extensions folder.
+   The root step is a small fixed helper with NO free arguments (install / remove only), so root never runs arbitrary
+   input. Declined → remember until the next update; the app shows "browser extension not installed" with a button.
+4. **The signed `.crx` is a release artifact:** built by the maintainer with the private key (never in the repo) and
+   shipped with ScribeSense (it holds only the public key and a signature, so it is safe to distribute).
+5. **Packaging (W2) does step 3 at install time** (RPM scriptlets run as root), so a packaged install never prompts;
+   the in-app prompt covers repo / development installs and repairs.
+6. Uninstall removes the pre-install files too (root, same helper).
+
+**Facts to verify first:** which of the two Brave folders Brave reads (`/usr/share/brave/extensions/`,
+`/opt/brave.com/brave/extensions/`); Chrome's (`/opt/google/chrome/extensions/`, `/usr/share/google-chrome/extensions/`
+— documented by Google) and Chromium's / Vivaldi's / Edge's folders on Fedora and Arch; whether a polkit agent runs
+under Hyprland (ML4W). Flatpak browsers cannot use a host outside their sandbox: reported as unsupported.
+

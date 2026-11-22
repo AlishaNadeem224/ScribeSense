@@ -63,10 +63,14 @@ def test_manifest_is_mv3_with_exactly_the_agreed_permissions() -> None:
         assert (EXT / name).is_file(), name
 
 
-def test_manifest_has_no_key_yet_and_nothing_that_widens_access() -> None:
+def test_manifest_key_is_public_only_and_nothing_widens_access() -> None:
     manifest = json.loads(MANIFEST.read_text())
-    # O4 inserts the PUBLIC key with extension/tools/set_key.py (decision 2026-10-12); until then: none.
-    assert "key" not in manifest
+    # O4 inserts the PUBLIC key with extension/tools/set_key.py (decision 2026-10-12; done 2026-11-19). If present,
+    # it must be a SubjectPublicKeyInfo that set_key.py itself accepts — never a private key.
+    if "key" in manifest:
+        der = base64.b64decode(manifest["key"], validate=True)
+        _load_set_key().check_public_key_der(der)
+        assert re.fullmatch(r"[a-p]{32}", _expected_id(der))
     for field in ("content_scripts", "web_accessible_resources", "externally_connectable",
                   "content_security_policy", "update_url", "optional_permissions", "optional_host_permissions"):
         assert field not in manifest, field
@@ -157,7 +161,8 @@ def test_set_key_writes_public_key_and_prints_the_id(tmp_path: Path, capsys: pyt
     set_key = _load_set_key()
     manifest = tmp_path / "manifest.json"
     original = json.loads(MANIFEST.read_text())
-    manifest.write_text(MANIFEST.read_text())
+    original.pop("key", None)  # the repo's manifest may already carry the real public key
+    manifest.write_text(json.dumps(original, indent=2) + "\n")
     manifest.chmod(0o644)
     pub = tmp_path / "pub.pem"
     pub.write_bytes(_pem("PUBLIC KEY", SPKI))

@@ -897,6 +897,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 
 ---
 
+
+> **K11 amendment 2026-11-22 (O4; O2 sign-off pending; contract lines added by a human):** **Web fonts.** Brave Shields hides INSTALLED fonts from websites, even on Linux (verified 2026-11-22: our CSS reached YouTube/Twitch but the page fell back; with Shields off the font drew; a font handed to the page as a FontFace drew with Shields on). So: `get_style` (active) also returns `font_key` and `styles`; new request `{"v":1,"type":"get_font","key":"<font_key>","style":"Regular"}` → `{"v":1,"ok":true,"key","style","family","data":"<base64>"}` — the Latin web-font copy of the ACTIVE set only, one style per message, ≤ `MAX_WEBFONT_BYTES` (256 KiB) before base64 (real copies: 80–82 KB). New error `FONT_UNAVAILABLE` (in `EXTENSION_ERRORS`). The extension registers the copies as FontFaces in the page's own world before inserting the CSS; the CSS is unchanged (still no link to or embedding of a font file, M4.8). Privacy: the font data holds no user text; a page could notice the registered family name — as it can already notice the injected CSS.
+
 ## 6. Integration seams (how modules link)
 
 | From → To | Contract | Handshake rule |
@@ -1296,6 +1299,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > error shows a banner with the message and the recovery info instead of a blank window; A2 — the app is imported lazily, only for GUI commands (the import-rule test passes); icon-only window buttons carry accessible labels. Notes:
 > (1) **the UI tests do not run in CI or on the O3 machine** — they skip when the GTK / Adw typelibs are missing; add `gir1.2-gtk-4.0` and `gir1.2-adw-1` to the CI job. (2) "Done when: accessibility checklist passes" is unmet — it needs a graphical
 > session (manual checklist A–E, M3.5 VM).
+
+
+> **Cross-owner change 2026-11-22 (O4, user's go-ahead; for O2 to review):** `controller/service.py` — `get_style` adds `font_key` / `styles`; new `get_font` route serving only the active set's web-font copy through `adapters/webfont.py`. Tests: `tests/unit/test_webfont.py`.
 
 #### M2.5 Presets, adjust and preview screens
 | Field | Spec |
@@ -2014,6 +2020,9 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 
 > **Done 2026-11-19 (O4, Phase III W5.6):** **The `prefs.js` revert gap is closed.** The stylesheet pref is now a key location inside `prefs.js` (K3 rule 10b): apply writes `user_pref("…stylesheets", true);` while the browser is closed; revert removes exactly that line, or restores the user's own old value; a value the user set to `true` themselves is never removed; a `prefs.js` created for a profile that never ran is deleted again. Revert of this one item refuses with `BROWSER_RUNNING` while the browser runs (Firefox rewrites `prefs.js`, as M4.7) — the file reverts still never wait. An unparsable line naming the pref → `PREFERENCES_UNREADABLE` at plan, nothing written. Tests: `tests/unit/test_firefox_adapter.py` (conformance harness views `prefs.js` as its key + "#rest"). **Checked with real headless Firefox** (throwaway profile in a scratch HOME): apply → Firefox rewrote prefs.js (47 lines) keeping the pref → revert removed it → after another run it stayed gone. **Finding:** Firefox's `--screenshot` exit leaves its `lock` symlink (dead PID), and `is_running` treats any lock as running — after a crash, Apply keeps asking to close the browser (safe, but confusing). Proposed: a stale-lock check (native installs: the lock's PID no longer exists).
 
+
+> **Changed 2026-11-22 (O4, user's go-ahead) — an open browser no longer blocks:** `must_be_closed` is now **False** (decision of 2026-10-12 replaced). Firefox never rewrites `user.js` or `userContent.css` and reads them only at start, so apply writes while it runs and the controller reports RESTART_NEEDED. The `prefs.js` key is written too (if the running browser drops it on exit, `user.js` sets it again at the next start); only its **revert** waits for the browser to close. **Stale locks** (`adapters/browser_lock.py`, shared with M4.7): a Flatpak browser counts as running only while `flatpak ps` lists it; a native `127.x:+pid` lock whose pid is gone is stale; anything unclear stays "running". Seen live: Zen (Flatpak) leaves its lock on every quit; Firefox's `default-release` lock was stale too.
+
 #### M4.7 Chromium preferences adapter
 | Field | Spec |
 |---|---|
@@ -2050,6 +2059,9 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > removed after another run. Notes: Brave aborts on a long socket path (`TMPDIR` must be short — matters for the M3.4 harness); a headless Brave killed by
 > SIGTERM can leave stale `Singleton*` links, which the adapter reads as "running" → PENDING (safe side).
 
+
+> **Changed 2026-11-22 (O4, user's go-ahead):** a profile where the ScribeSense extension is installed and enabled (the browser's `Preferences` / `Secure Preferences`) AND our host manifest is installed is **not a target** any more: the extension styles its pages and the browser UI follows GTK, so the two font keys only made the user close the browser. Otherwise (no extension, disabled, no host, no pinned key) the Preferences route stays. Stale `SingletonLock`s (this host, pid gone; Flatpak not in `flatpak ps`) no longer read as running (`adapters/browser_lock.py`). Shared extension facts moved to `adapters/extension_host.py` (import rule R5: adapters never import safety). Checked on the dev machine: Brave (Default) → styled by the extension → skipped.
+
 #### M4.8 Browser CSS generator
 | Field | Spec |
 |---|---|
@@ -2079,6 +2091,9 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > `http(s):` are refused with an explicit check. **Not yet checked in a real browser** (headless Brave hung on
 > the dev machine) — needs O3's render harness (M3.4): parsing of the `:not()` list, icons and code keep
 > their fonts.
+
+
+> **Done 2026-11-22 (O4, K11 amendment):** `adapters/webfont.py` — the Latin web-font copy (fontTools subsetter, layout features and names kept, cached per key/style), only from `installed_sets()` files inside `fonts_dir()` (symlinks out are refused), `FONT_UNAVAILABLE` otherwise.
 
 #### M4.9 Browser extension (JavaScript)
 | Field | Spec |
@@ -2132,6 +2147,12 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 
 
 > **Done 2026-11-19 (O4, Phase III W3):** **Installer built:** `safety/native_host_install.py` — writes `<user-data dir>/NativeMessagingHosts/com.scribesense.host.json` (`render_host_manifest`) for every installed native Brave / Chrome / Chromium (Flatpak browsers: `unsupported`). Ownership like M4.14's own file: written only when absent or ours (name + description), removed only when ours; a foreign file is never touched — so it is **not journaled** (it holds nothing of the user's; removal restores "absent" exactly). Extension ID from the public key in `extension/manifest.json` (same rule as `set_key.py`, tested against it). Host path: a parameter; for development `write_launcher()` writes `data_dir()/native-host/scribesense-native-host` (0700); packaging (W2) supplies the installed path. Setup tool, not a K10 command: `python -m scribesense.safety.native_host_install install|remove|status`. Removed by uninstall step 3b (M3.8). §9 scenarios 5 and 6 now run (app side: after a lost push / a standalone reset, `active()` + `style_revision()` give the reconnecting extension the right answer; the extension side was already covered by `extension/test/background.test.mjs`). **Still for a human:** create the key outside the repo + `set_key.py`, run the installer, load the extension in Brave, check YouTube / Twitch.
+
+
+> **Done 2026-11-22 (O4, K11 amendment):** the extension (0.1.1) asks `get_font` once per style of the active key, stores the copies in `chrome.storage.local`, and registers them in every page (world "MAIN", all frames) before inserting the CSS — on a new style, when fonts arrive, and on every page load. A missing web font is silent (the CSS still names the installed font). Also fixed: unloaded / discarded tabs are skipped instead of reported as "could not be styled"; the browser's refusal message is recorded (`restrictedReason`). The native host forwards `get_font` only with a 12-hex key and a known style. Tests: `extension/test/background.test.mjs` (+9), `tests/unit/test_webfont.py`.
+
+
+> **Done 2026-11-22 (O4):** extension 0.1.2 reloads itself on `runtime.onUpdateAvailable` — its permanent native port keeps the worker busy, so the browser otherwise holds a new version back until a restart (seen live: Brave kept running 0.1.0 with 0.1.1 already downloaded). Confirmed working on Brave with Shields on (web fonts, 0.1.1).
 
 #### M4.10 Journal
 | Field | Spec |

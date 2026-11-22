@@ -698,3 +698,55 @@ def test_user_changing_our_font_is_drift_and_is_never_overwritten(sandbox) -> No
     standard_loc = key_locs(path)[0]
     assert report.skipped == [standard_loc]
     assert json.loads(path.read_bytes())["webkit"]["webprefs"]["fonts"]["standard"]["Zyyy"] == "User Choice"
+
+
+# ---------------------------------------------------------------- the extension covers a profile (2026-11-22)
+
+EXT_ID = "gcfhihiflcdififemcinohlaicncpela"
+
+
+def _with_extension(prefs_file: str = "Secure Preferences", entry: dict | None = None, host: bool = True) -> Path:  # type: ignore[type-arg]
+    browser = cr._BY_KEY["brave"]
+    data = cr.user_data_dir(browser)
+    profile = data / "Default"
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "Preferences").write_bytes(cr.serialize_preferences({"profile": {"name": "Person 1"}}))
+    settings = {"extensions": {"settings": {EXT_ID: entry if entry is not None else {"location": 2, "disable_reasons": []}}}}
+    target = profile / prefs_file
+    if prefs_file == "Preferences":
+        settings["profile"] = {"name": "Person 1"}
+    target.write_bytes(cr.serialize_preferences(settings))
+    if host:
+        hosts = data / "NativeMessagingHosts"
+        hosts.mkdir(parents=True, exist_ok=True)
+        (hosts / "com.scribesense.host.json").write_text(
+            '{"name": "com.scribesense.host", "description": "ScribeSense native messaging host"}')
+    return profile
+
+
+def test_a_profile_styled_by_the_extension_is_not_a_target(sandbox) -> None:  # type: ignore[no-untyped-def]
+    _with_extension()
+    assert ChromiumAdapter(extension_id=lambda: EXT_ID).detect() == []  # never "close the browser" for it
+
+
+def test_the_extension_entry_in_preferences_counts_too(sandbox) -> None:  # type: ignore[no-untyped-def]
+    _with_extension(prefs_file="Preferences")
+    assert ChromiumAdapter(extension_id=lambda: EXT_ID).detect() == []
+
+
+@pytest.mark.parametrize("entry,host,ext_id", [
+    ({"location": 2, "disable_reasons": [1]}, True, EXT_ID),  # disabled by the user
+    ({"location": 2, "state": 0}, True, EXT_ID),  # disabled (older format)
+    ({"location": 2, "disable_reasons": []}, False, EXT_ID),  # no host: the extension cannot reach the app
+    ({"location": 2, "disable_reasons": []}, True, None),  # no key in the manifest: no pinned ID
+])
+def test_otherwise_the_preferences_route_stays(sandbox, entry: dict, host: bool, ext_id: str | None) -> None:  # type: ignore[type-arg]
+    _with_extension(entry=entry, host=host)
+    targets = ChromiumAdapter(extension_id=lambda: ext_id).detect()
+    assert [t.target_id for t in targets] == ["brave:Default"]
+
+
+def test_a_foreign_host_file_does_not_count(sandbox) -> None:  # type: ignore[no-untyped-def]
+    profile = _with_extension()
+    (profile.parent / "NativeMessagingHosts" / "com.scribesense.host.json").write_text('{"name": "x"}')
+    assert [t.target_id for t in ChromiumAdapter(extension_id=lambda: EXT_ID).detect()] == ["brave:Default"]

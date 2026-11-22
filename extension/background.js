@@ -12,6 +12,12 @@
 // - Page text leaves the page only on an explicit "Open in ScribeSense" click, and only to the
 //   local app. More than 200 000 characters is rejected locally (A17), never truncated.
 //
+// Web fonts (K11 amendment 2026-11-22): a browser may hide INSTALLED fonts from websites (Brave Shields), so the
+// page silently falls back although our CSS names the font. An active style therefore names its font key and
+// styles; this file fetches each style once with get_font (a Latin web-font copy, ~50 KB), keeps it in
+// chrome.storage.local, and registers it in every page as a FontFace under the same family name BEFORE the CSS
+// goes in. The CSS itself is unchanged: it never links to or embeds a font file.
+//
 // Push: the native host forwards the service's "style_changed" (an ipc.subscribe_style subscription, M4.9) as
 // soon as a Keep / Original is confirmed; this file then asks get_style. A push is only a hint: the get_style
 // reply is what counts, and every (re)connect still fetches the full confirmed state.
@@ -21,7 +27,11 @@ export const PROTOCOL_VERSION = 1;
 export const MAX_READER_CHARS = 200000; // A17
 export const MAX_MESSAGE_BYTES = 1024 * 1024; // K11, complete encoded JSON message
 export const MENU_ID = "scribesense-open-in-reader";
-export const ERROR_CODES = Object.freeze(["APP_NOT_RUNNING", "HOST_MISSING", "TOO_LARGE", "BAD_MESSAGE"]);
+export const ERROR_CODES = Object.freeze(["APP_NOT_RUNNING", "HOST_MISSING", "TOO_LARGE", "BAD_MESSAGE", "FONT_UNAVAILABLE"]);
+export const WEBFONT_STYLES = Object.freeze(["Regular", "Bold", "Italic", "BoldItalic"]);
+const FONT_KEY = /^[0-9a-f]{12}$/;
+const READING_FAMILY = /^AccessSans-[0-9a-f]{12}$/;
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 export const BACKOFF_MIN_MS = 1000;
 export const BACKOFF_MAX_MS = 60000;
 
@@ -37,6 +47,7 @@ export const USER_MESSAGES = Object.freeze({
   HOST_MISSING: "The ScribeSense helper is not installed for this browser.",
   TOO_LARGE: "The selection is too long for ScribeSense (more than 200,000 characters). Select a shorter part.",
   BAD_MESSAGE: "ScribeSense could not handle this request.",
+  FONT_UNAVAILABLE: "ScribeSense could not send its font to this page.",
 });
 
 function isObject(value) {
@@ -59,15 +70,51 @@ export function codePointLength(text, limit = Infinity) {
 }
 
 export function eligible(tab) {
-  return Boolean(tab) && Number.isInteger(tab.id) && typeof tab.url === "string" && ELIGIBLE_URL.test(tab.url);
+  return Boolean(tab) && Number.isInteger(tab.id) && typeof tab.url === "string" && ELIGIBLE_URL.test(tab.url)
+    && tab.discarded !== true && tab.status !== "unloaded"; // unloaded tabs are styled when they load
 }
 
-/** A valid K11 style reply -> {revision, active, css}; anything else -> null. */
+/** A valid K11 style reply -> {revision, active, css, fontKey, styles}; anything else -> null.
+ *  fontKey/styles are null/[] when the reply has none (an older app): the CSS is still applied. */
 export function parseStyleReply(msg) {
   if (!isObject(msg) || msg.v !== PROTOCOL_VERSION || msg.ok !== true) return null;
   if (typeof msg.active !== "boolean" || !Number.isInteger(msg.revision)) return null;
   if (msg.active && typeof msg.css !== "string") return null;
-  return { revision: msg.revision, active: msg.active, css: msg.active ? msg.css : null };
+  const hasFonts = msg.active && typeof msg.font_key === "string" && FONT_KEY.test(msg.font_key)
+    && Array.isArray(msg.styles) && msg.styles.every((s) => WEBFONT_STYLES.includes(s));
+  return {
+    revision: msg.revision, active: msg.active, css: msg.active ? msg.css : null,
+    fontKey: hasFonts ? msg.font_key : null, styles: hasFonts ? [...new Set(msg.styles)] : [],
+  };
+}
+
+/** A valid K11 get_font reply for the request {key, style} -> {style, family, data}; anything else -> null. */
+export function parseFontReply(msg, request) {
+  if (!isObject(msg) || msg.v !== PROTOCOL_VERSION || msg.ok !== true) return null;
+  if (msg.key !== request.key || msg.style !== request.style) return null;
+  if (typeof msg.family !== "string" || !READING_FAMILY.test(msg.family) || !msg.family.endsWith(request.key)) return null;
+  if (typeof msg.data !== "string" || msg.data.length === 0 || !BASE64.test(msg.data)) return null;
+  return { style: msg.style, family: msg.family, data: msg.data };
+}
+
+// Runs inside the page, in the PAGE's own world (chrome.scripting.executeScript world "MAIN"): registers the
+// web-font copies as FontFaces of the document, once per document. Fonts a page brings itself are always allowed.
+function registerFontsInPage(faces) {
+  const done = (globalThis.__scribesenseFonts ||= new Set());
+  for (const f of faces) {
+    const id = `${f.family}|${f.style}`;
+    if (done.has(id)) continue;
+    const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
+    const descriptors = {
+      weight: f.style.startsWith("Bold") ? "700" : "400",
+      style: f.style.endsWith("Italic") ? "italic" : "normal",
+    };
+    const face = new FontFace(f.family, bytes, descriptors);
+    document.fonts.add(face);
+    face.load().catch(() => {});
+    done.add(id);
+  }
+  return true;
 }
 
 // Runs inside the page (chrome.scripting.executeScript), only after the user clicked the menu item.
@@ -97,11 +144,13 @@ export function createBackground(chromeApi, options = {}) {
     status: "disconnected", // "connected" | "disconnected"; "disabled" is shown when disabled
     lastError: null, // one of ERROR_CODES or null
     disabled: false,
-    style: null, // last applied confirmed style {revision, active, css}, persisted
+    style: null, // last applied confirmed style {revision, active, css, fontKey, styles}, persisted
+    fonts: null, // web-font copies of style.fontKey: {key, faces: {style: {style, family, data}}}, persisted
     pending: [], // requests awaiting a reply, in order: [{type, tabId}]
     retryTimer: null,
     backoffMs: BACKOFF_MIN_MS,
     restricted: 0, // eligible-looking tabs the browser refused to style on the last update
+    restrictedReason: null, // the browser's message for the last refusal (shown nowhere; for diagnosis)
   };
 
   // Every change to page styling runs through this queue, one at a time.
@@ -123,7 +172,8 @@ export function createBackground(chromeApi, options = {}) {
     const badge = status === "disabled" ? "OFF" : status === "disconnected" ? "!" : "";
     try {
       await chromeApi.storage.local.set({
-        state: { status, lastError: state.lastError, restricted: state.restricted },
+        state: { status, lastError: state.lastError, restricted: state.restricted,
+          restrictedReason: state.restrictedReason },
       });
     } catch { /* storage unavailable: the badge still shows the state */ }
     try {
@@ -157,14 +207,32 @@ export function createBackground(chromeApi, options = {}) {
     } catch { /* restricted page or tab gone */ }
   }
 
+  // The web-font copies for the current style, ready to register (empty until they arrived).
+  function currentFaces() {
+    const style = state.style;
+    if (!style || !style.active || !style.fontKey || !state.fonts || state.fonts.key !== style.fontKey) return [];
+    return style.styles.map((s) => state.fonts.faces[s]).filter(Boolean);
+  }
+
+  async function registerFonts(tabId, faces) {
+    if (faces.length === 0) return;
+    try {
+      await chromeApi.scripting.executeScript({
+        target: { tabId, allFrames: true }, world: "MAIN", func: registerFontsInPage, args: [faces],
+      });
+    } catch { /* restricted page: the CSS still asks for the installed font */ }
+  }
+
   // Idempotent: removing first means the same sheet is never stacked twice in one document.
   async function styleTab(tab, css) {
     if (!css || !eligible(tab)) return true;
+    await registerFonts(tab.id, currentFaces()); // before the CSS, so the first paint can already use it
     await removeFromTab(tab.id, css);
     try {
       await chromeApi.scripting.insertCSS(cssTarget(tab.id, css));
       return true;
-    } catch {
+    } catch (error) {
+      state.restrictedReason = String(error?.message ?? error).slice(0, 160);
       return false;
     }
   }
@@ -185,6 +253,42 @@ export function createBackground(chromeApi, options = {}) {
     state.restricted = restricted;
   }
 
+  // Web fonts arrived: register them in every page that carries our CSS (text redraws when they load).
+  async function registerAllTabs() {
+    const faces = currentFaces();
+    if (faces.length === 0 || !currentCss()) return;
+    let tabs = [];
+    try {
+      tabs = await chromeApi.tabs.query({});
+    } catch {
+      return;
+    }
+    for (const tab of tabs) {
+      if (eligible(tab)) await registerFonts(tab.id, faces);
+    }
+  }
+
+  // Ask for every style of the active font set that is not stored yet (one get_font per style, K11).
+  function requestFonts() {
+    const style = state.style;
+    if (!style || !style.active || !style.fontKey) return;
+    if (!state.fonts || state.fonts.key !== style.fontKey) state.fonts = { key: style.fontKey, faces: {} };
+    for (const s of style.styles) {
+      if (state.fonts.faces[s]) continue;
+      post({ v: PROTOCOL_VERSION, type: "get_font", key: style.fontKey, style: s },
+        { type: "get_font", key: style.fontKey, style: s });
+    }
+  }
+
+  async function storeFont(request, face) {
+    if (!state.fonts || state.fonts.key !== request.key) return; // a newer style replaced this key meanwhile
+    state.fonts.faces[face.style] = face;
+    try {
+      await chromeApi.storage.local.set({ fonts: state.fonts });
+    } catch { /* kept in memory */ }
+    await registerAllTabs();
+  }
+
   async function applyStyle(style) {
     if (state.style && style.revision < state.style.revision) return false; // older: ignore
     const oldCss = currentCss();
@@ -193,6 +297,7 @@ export function createBackground(chromeApi, options = {}) {
       await chromeApi.storage.local.set({ style });
     } catch { /* kept in memory */ }
     await updateAllTabs(oldCss, currentCss());
+    requestFonts();
     return true;
   }
 
@@ -293,6 +398,18 @@ export function createBackground(chromeApi, options = {}) {
       setError("BAD_MESSAGE");
       return;
     }
+    if (request.type === "get_font") {
+      // A missing web font is not an error the user must see: the CSS still names the installed font.
+      if (msg.ok === false && knownCode(msg.error) === "APP_NOT_RUNNING") {
+        state.status = "disconnected";
+        publish();
+        scheduleRetry();
+        return;
+      }
+      const face = msg.ok === true ? parseFontReply(msg, request) : null;
+      if (face !== null) enqueue(() => storeFont(request, face));
+      return;
+    }
     if (msg.ok === false) {
       const code = knownCode(msg.error);
       if (code === "APP_NOT_RUNNING") state.status = "disconnected";
@@ -371,12 +488,26 @@ export function createBackground(chromeApi, options = {}) {
 
   async function load() {
     try {
-      const stored = await chromeApi.storage.local.get(["disabled", "style"]);
+      const stored = await chromeApi.storage.local.get(["disabled", "style", "fonts"]);
       state.disabled = stored.disabled === true;
       const style = stored.style;
       if (isObject(style) && Number.isInteger(style.revision) && typeof style.active === "boolean"
           && (!style.active || typeof style.css === "string")) {
-        state.style = { revision: style.revision, active: style.active, css: style.active ? style.css : null };
+        const fontKey = typeof style.fontKey === "string" && FONT_KEY.test(style.fontKey) ? style.fontKey : null;
+        const styles = fontKey && Array.isArray(style.styles)
+          ? style.styles.filter((s) => WEBFONT_STYLES.includes(s)) : [];
+        state.style = { revision: style.revision, active: style.active, css: style.active ? style.css : null,
+          fontKey, styles };
+      }
+      const fonts = stored.fonts;
+      if (isObject(fonts) && typeof fonts.key === "string" && FONT_KEY.test(fonts.key) && isObject(fonts.faces)) {
+        const faces = {};
+        for (const [s, f] of Object.entries(fonts.faces)) {
+          if (parseFontReply({ v: PROTOCOL_VERSION, ok: true, key: fonts.key, ...f }, { key: fonts.key, style: s })) {
+            faces[s] = { style: s, family: f.family, data: f.data };
+          }
+        }
+        state.fonts = { key: fonts.key, faces };
       }
     } catch { /* first run or storage unavailable */ }
   }
@@ -384,6 +515,9 @@ export function createBackground(chromeApi, options = {}) {
   function start() {
     // MV3: listeners are registered synchronously, before any await.
     chromeApi.runtime.onInstalled.addListener(createMenu);
+    // The open native port keeps this worker busy, so the browser would hold a new version back until it restarts.
+    // Reload as soon as one is ready; start() then reconnects and restyles every tab (2026-11-22).
+    chromeApi.runtime.onUpdateAvailable?.addListener(() => chromeApi.runtime.reload());
     chromeApi.contextMenus.onClicked.addListener((info, tab) => {
       openInReader(info, tab).catch(() => {});
     });

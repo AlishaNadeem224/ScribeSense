@@ -34,10 +34,6 @@ Never run against the real desktop from tests (AGENTS.md §5): every path comes 
 from __future__ import annotations
 
 import argparse
-import base64
-import binascii
-import hashlib
-import json
 import os
 import shlex
 import sys
@@ -50,7 +46,9 @@ from scribesense.adapters.fontconfig import delete_durable, write_durable
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 from scribesense.contracts.paths import data_dir
 from scribesense.log import log
-from scribesense.safety.native_host import HOST_DESCRIPTION, HOST_NAME, render_host_manifest
+from scribesense.adapters import extension_host
+from scribesense.adapters.extension_host import HOST_NAME, is_ours
+from scribesense.safety.native_host import render_host_manifest
 
 HOSTS_DIR = "NativeMessagingHosts"
 MANIFEST_FILE = f"{HOST_NAME}.json"
@@ -59,9 +57,7 @@ HOSTS_DIR_MODE = 0o700
 LAUNCHER_DIR = "native-host"
 LAUNCHER_NAME = "scribesense-native-host"
 LAUNCHER_MODE = 0o700
-#: Development fallback for the extension manifest (packaging moves it; Phase III W2).
-DEFAULT_EXTENSION_MANIFEST = Path(__file__).resolve().parents[3] / "extension" / "manifest.json"
-_ID_ALPHABET = str.maketrans("0123456789abcdef", "abcdefghijklmnop")
+DEFAULT_EXTENSION_MANIFEST = extension_host.DEFAULT_EXTENSION_MANIFEST
 
 Outcome = Literal["written", "replaced", "unchanged", "removed", "absent", "left_foreign", "unsupported", "failed"]
 
@@ -98,16 +94,6 @@ def host_targets() -> list[HostTarget]:
     return found
 
 
-def is_ours(data: bytes) -> bool:
-    """A host manifest this module wrote: JSON object with our host name AND our description."""
-    try:
-        manifest = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return False
-    return (isinstance(manifest, dict) and manifest.get("name") == HOST_NAME
-            and manifest.get("description") == HOST_DESCRIPTION)
-
-
 def _read(path: Path) -> bytes | None:
     try:
         return path.read_bytes()
@@ -118,18 +104,8 @@ def _read(path: Path) -> bytes | None:
 # ---------------------------------------------------------------- extension ID and launcher
 
 def extension_id_from_manifest(manifest_path: Path | None = None) -> str:
-    """The pinned extension ID for the public key in the extension's manifest.json (same rule as set_key.py).
-    Default: DEFAULT_EXTENSION_MANIFEST, looked up at call time."""
-    path = DEFAULT_EXTENSION_MANIFEST if manifest_path is None else manifest_path
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    key = manifest.get("key") if isinstance(manifest, dict) else None
-    if not isinstance(key, str) or not key:
-        raise ValueError("extension/manifest.json has no \"key\": run extension/tools/set_key.py first")
-    try:
-        der = base64.b64decode(key, validate=True)
-    except binascii.Error:
-        raise ValueError("the \"key\" in extension/manifest.json is not valid base64") from None
-    return hashlib.sha256(der).hexdigest()[:32].translate(_ID_ALPHABET)
+    """The pinned extension ID (adapters.extension_host); default: this module's DEFAULT_EXTENSION_MANIFEST."""
+    return extension_host.extension_id_from_manifest(DEFAULT_EXTENSION_MANIFEST if manifest_path is None else manifest_path)
 
 
 def launcher_path() -> Path:

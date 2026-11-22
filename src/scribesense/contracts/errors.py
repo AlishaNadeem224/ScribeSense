@@ -83,6 +83,7 @@ class ErrorCode(StrEnum):
     APP_NOT_RUNNING = "APP_NOT_RUNNING"
     HOST_MISSING = "HOST_MISSING"
     BAD_MESSAGE = "BAD_MESSAGE"
+    FONT_UNAVAILABLE = "FONT_UNAVAILABLE"  # added 2026-11-22 (K11 amendment, O4 + O2): no web font for that key/style
 
 
 class ScribeSenseError(Exception):

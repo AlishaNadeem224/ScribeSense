@@ -38,18 +38,22 @@ damaged file: PREFERENCES_UNREADABLE, nothing written. The chrome/ directory is 
 on revert (like M4.2's conf.d). Symlinked files are written through to their target, so the link survives.
 
 Running browser: Firefox keeps a "lock" symlink in the profile while it runs and removes it on a clean exit
-(.parentlock persists, so it is not used). Target.running = os.path.lexists(<profile>/lock).
-must_be_closed=True, requires_restart=True: the controller asks the user to close the browser (PENDING), and
-apply() re-checks the lock and refuses with BROWSER_RUNNING, writing nothing. revert() of user.js and
-userContent.css does not check the lock: Firefox never writes either file, so restoring the original cannot
-race with the browser, and a stale lock left by a crash must never block recovery (the restored files take
-effect on the next start). revert() of the prefs.js key DOES refuse with BROWSER_RUNNING while the lock exists
-(as M4.7 does): Firefox rewrites prefs.js and would put the line back; recovery retries later.
+(.parentlock persists, so it is not used). Target.running = adapters.browser_lock.lock_is_live(<profile>/lock): a
+lock left behind by a crash or a Flatpak quit is stale (Flatpak: the app is not in `flatpak ps`; native: a loopback
+"<ip>:+<pid>" whose pid is gone) — added 2026-11-22; anything unclear still reads as running.
+must_be_closed=False, requires_restart=True (decision changed 2026-11-22 by O4, user's go-ahead; was True since
+2026-10-12): apply writes even while the browser runs and the controller reports RESTART_NEEDED, because Firefox
+never rewrites user.js or userContent.css and reads both only at start — so nothing can race, and the user is never
+asked to close the browser. The prefs.js key is written too: if the running browser drops it when it rewrites
+prefs.js on exit, user.js sets the pref again at the next start (and revert then finds it as ours). revert() of
+user.js and userContent.css never checks the lock (a stale lock must never block recovery); revert() of the
+prefs.js key DOES refuse with BROWSER_RUNNING while the browser runs (as M4.7): Firefox would write the line back
+from memory on exit; recovery retries once it is closed.
 
 Verify (A14): configuration check only — both files contain our current block, the CSS block naming
 fonts.reading_family. drawn_ok=None: the drawn check is the render harness (M3.4).
 
-No external command is run. Logging carries codes and fixed identifiers only — never paths, profile names
+The only external command is `flatpak ps` (through run_cmd, for a Flatpak profile's lock). Logging carries codes and fixed identifiers only — never paths, profile names
 or font names.
 """
 
@@ -65,6 +69,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scribesense.adapters.browser_css import browser_css
+from scribesense.adapters.browser_lock import lock_is_live
 from scribesense.adapters.fontconfig import delete_durable, write_durable
 from scribesense.contracts.adapter import (
     AppliedItem,
@@ -331,7 +336,7 @@ def _check_location(location: str) -> tuple[Path, Path]:
 
 
 def is_running(profile: Path) -> bool:
-    return os.path.lexists(profile / LOCK_NAME)
+    return lock_is_live(profile / LOCK_NAME, "firefox")
 
 
 # ---------------------------------------------------------------- managed blocks
@@ -409,7 +414,7 @@ class FirefoxAdapter:
 
     name = ADAPTER_NAME
     requires_restart = True  # user.js and userContent.css are read at browser start only
-    must_be_closed = True  # never edit a profile while the browser runs (card)
+    must_be_closed = False  # 2026-11-22: user.js / userContent.css are never rewritten by the browser (docstring)
 
     def __init__(self, *, roots: RootsSource = install_roots) -> None:
         self._roots = roots
@@ -532,8 +537,6 @@ class FirefoxAdapter:
             raise ValueError("Firefox payload must be file bytes")
         if not profile.is_dir():
             raise ScribeSenseError(ErrorCode.PROFILE_NOT_FOUND)  # never create a profile directory
-        if is_running(profile):
-            raise ScribeSenseError(ErrorCode.BROWSER_RUNNING)
         base = self._plan_base.get((planned.location, planned.new_sha256), expected)
         if self.read_state(planned.location).sha256 != expected or base != expected:
             raise ScribeSenseError(ErrorCode.CHANGED_DURING_APPLY)  # K3 rule 12
@@ -553,8 +556,6 @@ class FirefoxAdapter:
             raise ValueError("the stylesheet pref is only ever set to true")
         if not profile.is_dir():
             raise ScribeSenseError(ErrorCode.PROFILE_NOT_FOUND)
-        if is_running(profile):
-            raise ScribeSenseError(ErrorCode.BROWSER_RUNNING)
         if self.read_state(planned.location).sha256 != expected:
             raise ScribeSenseError(ErrorCode.CHANGED_DURING_APPLY)  # K3 rule 12, this key only
         self._write_prefs(path, value)

@@ -172,7 +172,8 @@ class TestFirefoxConformance(AdapterConformance):
 def test_attributes() -> None:
     a = FirefoxAdapter()
     _typed: Adapter = a  # static K3 conformance
-    assert (a.name, a.requires_restart, a.must_be_closed) == ("firefox", True, True)
+    # must_be_closed False since 2026-11-22: the browser never rewrites user.js / userContent.css (module docstring)
+    assert (a.name, a.requires_restart, a.must_be_closed) == ("firefox", True, False)
 
 
 def test_no_install_means_no_targets(sandbox) -> None:  # type: ignore[no-untyped-def]
@@ -385,25 +386,25 @@ def test_lock_symlink_means_running_and_parentlock_does_not(sandbox) -> None:  #
     (profile / ".parentlock").write_bytes(b"")
     a = FirefoxAdapter()
     assert a.detect()[0].running is False
-    os.symlink("127.0.1.1:+4242", profile / "lock")  # dangling, as Firefox leaves it
+    os.symlink(f"127.0.1.1:+{os.getpid()}", profile / "lock")  # dangling, as Firefox leaves it
     assert a.detect()[0].running is True
 
 
-def test_apply_refuses_while_running_and_writes_nothing(sandbox) -> None:  # type: ignore[no-untyped-def]
+def test_apply_writes_while_the_browser_runs_and_reports_restart(sandbox) -> None:  # type: ignore[no-untyped-def]
+    """2026-11-22: an open browser no longer blocks Apply. The files are read at start only, so the change shows
+    after a restart (requires_restart -> the controller reports RESTART_NEEDED); the browser's lock is untouched."""
     profile = make_profile("firefox", "abcd.default")
     write(profile / "user.js", USER_JS)
+    os.symlink(f"127.0.1.1:+{os.getpid()}", profile / "lock")
     a = FirefoxAdapter()
     t = a.detect()[0]
-    a.snapshot(t)
-    planned = a.plan(t, FONTS, CFG)
-    os.symlink("127.0.1.1:+4242", profile / "lock")
-    before = fingerprint_home(sandbox.home)
-    for p in planned:
-        with pytest.raises(ScribeSenseError) as exc:
-            a.apply(p)
-        assert exc.value.code is ErrorCode.BROWSER_RUNNING
-    assert fingerprint_home(sandbox.home) == before
-    assert not (profile / "chrome").exists()
+    assert t.running is True
+    snap_plan_apply(a, t)
+    assert a.verify(t, FONTS).chosen_ok is True
+    assert ff.user_js_block() in (profile / "user.js").read_bytes()
+    assert (profile / "chrome" / "userContent.css").exists()
+    assert ff.pref_value((profile / "prefs.js").read_bytes()) == b"true"
+    assert os.readlink(profile / "lock") == f"127.0.1.1:+{os.getpid()}"
 
 
 def test_revert_is_allowed_while_the_browser_runs(sandbox) -> None:  # type: ignore[no-untyped-def]
@@ -415,7 +416,7 @@ def test_revert_is_allowed_while_the_browser_runs(sandbox) -> None:  # type: ign
     a = FirefoxAdapter()
     t = a.detect()[0]
     items, _ = snap_plan_apply(a, t)
-    os.symlink("127.0.1.1:+4242", profile / "lock")
+    os.symlink(f"127.0.1.1:+{os.getpid()}", profile / "lock")
     assert a.detect()[0].running is True
     files = [i for i in items if i.kind == "file"]
     (pref,) = [i for i in items if i.kind == "key"]
@@ -769,14 +770,17 @@ def test_an_unparsable_pref_line_is_refused_before_anything_is_written(sandbox) 
     assert fingerprint_home(sandbox.home) == before
 
 
-def test_pref_apply_refuses_while_the_browser_runs(sandbox) -> None:  # type: ignore[no-untyped-def]
+def test_a_pref_the_running_browser_dropped_comes_back_from_user_js_and_reverts_cleanly(sandbox) -> None:  # type: ignore[no-untyped-def]
+    """Applied while the browser runs: it may drop our prefs.js line when it rewrites prefs.js on exit, and user.js
+    sets the pref again at the next start. Either way, a revert with the browser closed ends at the original."""
     a, t, profile = _pref_profile(FIREFOX_PREFS)
-    a.snapshot(t)
-    planned = [p for p in a.plan(t, FONTS, CFG) if ff.is_pref_location(p.location)][0]
-    os.symlink("127.0.1.1:+4242", profile / "lock")
-    with pytest.raises(ScribeSenseError) as exc:
-        a.apply(planned)
-    assert exc.value.code is ErrorCode.BROWSER_RUNNING
+    os.symlink(f"127.0.1.1:+{os.getpid()}", profile / "lock")
+    items, _ = snap_plan_apply(a, a.detect()[0])
+    (profile / "prefs.js").write_bytes(FIREFOX_PREFS)  # the browser exited and rewrote prefs.js without our line
+    (profile / "lock").unlink()
+    (profile / "prefs.js").write_bytes(FIREFOX_PREFS + PREF + b"\n")  # next start: user.js set it, written on exit
+    for item in reversed(items):
+        a.revert(item, None)
     assert (profile / "prefs.js").read_bytes() == FIREFOX_PREFS
 
 
@@ -788,3 +792,48 @@ def test_pref_locations_are_validated() -> None:
                 f"/home/u/p/prefs.js#{ff.STYLESHEET_PREF}#x"):
         with pytest.raises(ValueError):
             ff.split_pref_location(bad)
+
+
+# ---------------------------------------------------------------- stale locks (adapters/browser_lock.py, 2026-11-22)
+
+def test_a_lock_whose_pid_is_gone_is_stale_and_apply_proceeds(sandbox) -> None:  # type: ignore[no-untyped-def]
+    profile = make_profile("firefox", "stale.default")
+    os.symlink("127.0.0.1:+999999999", profile / "lock")  # beyond any pid_max: no such process
+    a = FirefoxAdapter()
+    t = a.detect()[0]
+    assert t.running is False
+    snap_plan_apply(a, t)
+    assert ff.pref_value((profile / "prefs.js").read_bytes()) == b"true"
+    assert os.path.lexists(profile / "lock")  # the browser's own lock is never touched
+
+
+@pytest.mark.parametrize("target", ["192.168.1.7:+999999999", "garbage", "127.0.0.1:+abc"])
+def test_unclear_locks_stay_running(sandbox, target: str) -> None:  # type: ignore[no-untyped-def]
+    profile = make_profile("firefox", "unclear.default")
+    os.symlink(target, profile / "lock")
+    assert FirefoxAdapter().detect()[0].running is True  # another machine / unparsable: the safe side
+
+
+def test_a_flatpak_profile_is_running_only_while_flatpak_lists_the_app(sandbox, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    from scribesense.adapters import browser_lock
+    profile = make_profile("zen-flatpak", "zul.Default (release)")
+    os.symlink("127.0.0.1:+2", profile / "lock")  # a pid from inside the sandbox: meaningless on the host
+    monkeypatch.setattr(browser_lock, "running_flatpak_apps", lambda: {"app.zen_browser.zen", "org.other.App"})
+    assert FirefoxAdapter().detect()[0].running is True
+    monkeypatch.setattr(browser_lock, "running_flatpak_apps", lambda: {"org.other.App"})
+    assert FirefoxAdapter().detect()[0].running is False  # quit, lock left behind: stale
+    monkeypatch.setattr(browser_lock, "running_flatpak_apps", lambda: None)
+    assert FirefoxAdapter().detect()[0].running is True  # flatpak ps failed: unknown = running
+
+
+def test_the_stale_zen_case_from_2026_11_22_reverts_the_pref(sandbox, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    from scribesense.adapters import browser_lock
+    profile = make_profile("zen-flatpak", "zul.Default (release)")
+    write(profile / "prefs.js", FIREFOX_PREFS, 0o600)
+    monkeypatch.setattr(browser_lock, "running_flatpak_apps", lambda: set())
+    a = FirefoxAdapter()
+    items, _ = snap_plan_apply(a, a.detect()[0])
+    os.symlink("127.0.0.1:+2", profile / "lock")  # Zen ran, quit, and left its lock
+    for item in reversed(items):
+        a.revert(item, None)
+    assert (profile / "prefs.js").read_bytes() == FIREFOX_PREFS
