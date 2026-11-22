@@ -866,7 +866,7 @@ notes in `ARCHITECTURE.md`). K9 is signed off (2026-10-15); the journal part was
   font fields — needs adapter support.
 
 **O1 — Configuration & Fonts**
-- **K9 D3:** confirm `custom` is stored as one row with the reserved id `custom` (the code in `config/presets.py` already matches).
+- **K9 D3:** confirm `custom` is stored as one row with the reserved id `custom` (the code in `config/presets.py` already matches). (done)
 - **K9 D8:** confirm the font key's inputs are `base_family`, `letter_em`, `word_scale`, `reading_line`, `ui_line` (not `text_scale`).
 - **Uninstall:** confirm that using `fontgen.cache.installed_keys()` and `remove()` is the intended way to remove generated fonts.
 - **Open on O1's side:** base fonts are not bundled yet (`build()` refuses with `BUNDLED_FONT_MISSING`); `GENERATOR_ERROR` is proposed for the error codes.
@@ -1273,4 +1273,840 @@ full app stays Python: the slow parts are external font tools, and the security 
 (sandbox redirect in `tests/conftest.py` + guard test). Cross-owner (O3's `uninstall.py`, `doctor.py`,
 `tests/conftest.py`) with the user's go-ahead — for O3 to review. Tests: **2294 passed, 0 failed** (unit) ·
 integration 35 passed.
+    ---
+
+## W2.1 font location fixed + O1 sign-offs (2026-11-14, O1)
+
+### What was wrong
+
+    `config/bundled.py` located the bundled font tree with a module constant,
+    `FONTS_ROOT = Path(__file__).resolve().parents[3] / "fonts"`. In a checkout this file is
+    `<repo>/src/scribesense/config/bundled.py`, so three parents reach the repository root. In an
+    **installed** package there is no `src/` layer — `uv_build` is a src-layout backend and ships
+    `scribesense/` alone — so the same three parents land on the Python library directory
+    (`/usr/lib/python3.14`, not `/usr/share/scribesense`). Nothing raised: `base_font_files()` simply
+    found no directory and **every** build was refused with `BUNDLED_FONT_MISSING`. An installed RPM
+    would have shown the user "Preview unavailable" and "Nothing changed" on first Apply.
+
+    Demonstrated before/after on the dev machine: with the real `fonts/` tree copied to
+    `<share>/scribesense/fonts`, the old constant resolved to the repo and found nothing at the
+    installed path; the new resolution finds all four families there.
+
+### What changed (`src/scribesense/config/`, `src/scribesense/fontgen/`)
+
+    - **`config/bundled.py`** — the `FONTS_ROOT` constant is **removed** and replaced by
+      `fonts_root()`, `candidate_roots()`, `MANIFEST_NAME` and `BUNDLED_FONTS_ENV`.
+      Search order: `$SCRIBESENSE_BUNDLED_FONTS` (the only candidate when set, so a test pointing at an
+      empty directory cannot fall through to the real fonts) → `$XDG_DATA_DIRS` entries as
+      `<dir>/scribesense/fonts`, defaulting to XDG's own `/usr/local/share:/usr/share` → the repository
+      tree, which is this card's "the repo path as the development fallback". A candidate counts only if
+      it carries `manifest.toml`, so `/usr/share/fonts` cannot be mistaken for ours. `fonts_root()` never
+      raises and never returns `None` — when nothing matches it returns the last candidate, so the
+      refusal still comes from `base_font_files()` with K2's `BUNDLED_FONT_MISSING` and **the error
+      contract is unchanged**. The failure `detail` now names every directory searched (a packaging
+      failure and a genuinely unbundled family need opposite fixes).
+    - **A function, not a constant,** for the reason every K8 path is a function: the value must be
+      re-read so the sandbox (M3.3) and tests can redirect it *after* import. This removes the
+      `monkeypatch.setattr(bundled, "FONTS_ROOT", ...)` pattern from the suite.
+    - **`fontgen/variants.py`** — re-exports `fonts_root` instead of `FONTS_ROOT` (it was a pure
+      re-export; nothing in `fontgen` used the value). No other owner's module referenced it.
+    - **Follow-through outside those two folders** (required, or the suite would not import):
+      `tests/unit/fontgen/test_config.py` (two sites), `tests/unit/fontgen/test_bundled_fonts.py`,
+      `tests/unit/test_font_references.py` — `setattr` on the constant became `setenv` on
+      `BUNDLED_FONTS_ENV`, and `test_fonts_root_is_the_repository_fonts_dir` was rewritten (it pinned the
+      broken behaviour).
+    - **New tests: `src/scribesense/config_and_fontgen_tests/`** (12, all passing), placed beside the code
+      at O1's request rather than under `tests/`. The regression test
+      `test_an_installed_layout_resolves_the_real_families` copies the real font tree to an installed path
+      and proves the pipeline finds every shortlist family there; it fails against the old constant.
+
+### O1 approved — waiting for O3's approval (K8 owner)
+
+    **O1 approved** the fix above and has it building and tested. Three parts touch files O1 does not own.
+
+    **Tasks for O3:**
+
+    1. **Decide where the resolution lives.** W2.1 says "resolve it through K8 paths". `fonts_root()`
+       currently sits in `config/bundled.py` because `contracts/` is frozen and agents may not edit it.
+       If K8 should own it, move `fonts_root()`/`candidate_roots()` into `contracts/paths.py` and have
+       `bundled.py` call them — the name and the search order are what need agreeing, not the mechanism.
+    2. **Approve the environment variable `SCRIBESENSE_BUNDLED_FONTS`** and add it to K8's documented
+       override list (today: `HOME`, `XDG_CONFIG_HOME`, `SCRIBESENSE_DATA_DIR`, `SCRIBESENSE_FONTS_DIR`).
+       Deliberately *not* `SCRIBESENSE_FONTS_ROOT`: `SCRIBESENSE_FONTS_DIR` already means the opposite end
+       of the pipeline (where generated fonts are installed), and two variables one letter apart meaning
+       opposite things is a defect waiting to be filed.
+    3. **Decide the search-order question, and set the variable in the sandbox.** The order above is
+       W2.1's as written — installed first, repo last. It only matters when **both** exist, i.e. a
+       developer who also has the RPM installed: their unit tests would then silently measure the
+       installed fonts. `tests/conftest.py` sets `XDG_DATA_HOME` but not `XDG_DATA_DIRS`, so this is real
+       once W2 ships. Either set `SCRIBESENSE_BUNDLED_FONTS` to the repo tree in `tests/conftest.py`, or
+       flip the order so a checkout wins (one assertion in
+       `test_an_installed_tree_wins_over_the_repository_tree` pins whichever you choose).
+    4. **`pyproject.toml` (O3's file):** `testpaths = ["tests"]` means a bare `pytest` run does **not**
+       collect `src/scribesense/config_and_fontgen_tests`. Until that path is added, CI does not run these
+       tests. Run them meanwhile with `pytest src/scribesense/config_and_fontgen_tests`.
+    5. **Packaging, the other half of this fix.** The code looking in `/usr/share/scribesense/fonts` only
+       helps if the RPM installs the tree there — `<Family>/*.ttf` plus `manifest.toml`, plus each
+       family's `OFL.txt` under `/usr/share/licenses/scribesense/` (W2.3). Agree the exact path with O1
+       before the spec file is written. Also still open from W2.1: `extension/` files for the
+       native-messaging host installer (same bug shape, O4's module), and whether
+       `store/migrations/*.sql` are included in the built package.
+    6. **Decide whether a test package should ship.** `uv_build` packages everything under
+       `src/scribesense/`, so `config_and_fontgen_tests/` goes into site-packages on install. Harmless,
+       but an RPM reviewer will ask. Exclude it in `pyproject.toml` or move it under `tests/`.
+
+    **Note for O3 (not caused by this change, found while verifying):** the `tests/` suite cannot run on
+    a Windows development machine at all — `tests/conftest.py:93` hardcodes `dir="/tmp"`, and
+    `tests/unit/test_store_core.py:263` calls `os.geteuid()`, which does not exist on Windows.
+    `tests/unit/test_import_rules.py` also reads source files without `encoding=`, so it dies on cp1252.
+    O1 therefore **could not run the existing suite** to verify the four edited test files; they were
+    checked by compilation and by symbol resolution instead, and the new package was checked against
+    rules R2/R3/R4 with an equivalent UTF-8 check (clean). Someone on Linux should run the full suite
+    before this is merged.
+
+### O1 sign-offs given (2026-11-14)
+
+    - **M1.2 bundled fonts — reviewed and approved by O1.** All four `SHORTLIST` families are bundled with
+      OFL-1.1, every `licence_file` exists and carries the "SIL Open Font License, Version 1.1" text, every
+      recorded SHA-256 matches the file on disk, and `manifest.toml`'s file set equals what the pipeline
+      finds for each family. Every bundled face passes M1.3 eligibility. **Reserved Font Name compliance
+      verified by building all four families:** no primary name record (1, 3, 4, 6, 16, 17, 21, 22, 25) of
+      any generated artifact carries the source family or its RFN ("Carlito"; Lexend's "RevReading Lexend"),
+      so OFL clause 3 is satisfied. Lexend ships Regular + Bold only (no italic upstream) — correct per
+      K7 rule 4; it builds 4 artifacts where the others build 8. **This closes "O1: review the three newly
+      bundled fonts (M1.2)" in W7 and K2 rule 2's "before bundling, O1 verifies each licence".**
+    - **M1.4 "Done when: tests pass for all 4 shortlist fonts" — met and closed by O1.** The condition was
+      blocked by an empty `fonts/`; all four now patch and build (8/8/4/8 artifacts). O3's review note (4)
+      is answered. **CFF/OTF remains untested** — carried into W1.3 as planned, not claimed as done.
+    - **M1.8 integration (2026-10-15, O4) — reviewed and approved by O1.** Verified: `fc_pattern()` escapes
+      the dash (`AccessSansUI\-3f9a1c2b7d10`) so fontconfig no longer reads it as family-size; K1 rule 1
+      rounding is Python's ties-to-even as the contract writes it (0.01 -> 0.00, 0.03 -> 0.04);
+      `fontgen/validate.py` and `fontgen/cache.py` import no `subprocess` and go through `run_cmd`
+      (K3 rule 9, import rule R2); `cache.fonts_dir()` delegates to `contracts.paths.fonts_dir()`.
+    - **K7 `PreviewFonts` — confirmed by O1.** `generator.PreviewFonts` is a subclass of K7's with
+      **identical fields** (`reading_family`, `ui_family`, `files`, `styles`, `temp_dir`), adding only
+      `close()`, `__enter__` and `__exit__`, and deliberately **no `__del__`**. `FontBuildResult` keeps K7's
+      three fields and adds two defaulted ones. **This closes "confirm `PreviewFonts` fields" in the O1
+      checklist.**
+
+### Still open for O1 (not touched by this entry)
+
+    - Reviews O1 owes on other owners' cards: **M2.5** (O2) and **M4.2** (O4).
+    - Second-owner sign-offs O1 could give: K3 rule 10b, K8 socket, K4 rule 5 `subscribe_style`,
+      `list_all` in `contracts/store.py`.
+    - W7 housekeeping in O1's own code: the stale docstrings at `config/presets.py:156` and `:256` and in
+      `fontgen/generator.py`; `to_record`/`from_record` have no tests and no users.
+    - **W6.5 WCAG word-spacing question** — still O1's to settle, and it is a real defect, not only a test:
+      `target_em` is rounded to the *nearest* 0.25 `word_scale` step, so Default's "+0.16 em" resolves to
+      +0.130 em on Noto Sans — below the WCAG 1.4.12 floor the preset documents itself as meeting. Decide
+      whether the comparison is space-glyph growth or the whole word gap, and whether `target_em` should
+      round **up**. Analysis in `docs/research2-conformance-O1.md` §9.1–§9.2.
+    - W1 user font import (contract change first), and the matching card notes in `ARCHITECTURE.md`
+      (M1.2, M1.4, K2) for this entry — written here only, as instructed.
+
+    ---
+
+## M1.2 bundled-font review + M1.4 "all 4 shortlist fonts" closed (2026-11-14, O1)
+
+    Tasks 1.2 and 1.3 of O1's remaining-work list. Both were *verified* in the 2026-11-14 entry above;
+    this entry turns those one-off terminal checks into tests, and records two coverage gaps the review
+    actually found. **No defect was found in the implementation** — `config/` and `fontgen/` needed no
+    source change for either task.
+
+### Correction to the entry above
+
+    That entry said "**CFF/OTF remains untested**". That is wrong and is withdrawn:
+    `tests/unit/fontgen/test_fontgen.py::test_measured_advances_match_the_configuration` is
+    parametrized `[("a.ttf", {}), ("a.otf", {"cff": True})]`, so **CFF patching is tested** on a
+    synthetic font. What is missing is *real-font* CFF coverage — no bundled family is CFF. The
+    accurate statement is in "What bundling did not close" below.
+
+### M1.2 — review of the three newly bundled fonts: **APPROVED by O1**
+
+    Carlito, Atkinson Hyperlegible and Lexend were bundled by O4 on O1's behalf (2026-10-18) and marked
+    "for O1 to review". K2 rule 2 puts the licence duty on O1 personally. Reviewed and approved:
+
+    - **Licences.** All four declare OFL-1.1; each `licence_file` exists, carries the real
+      "SIL Open Font License, Version 1.1" text, and its grant names both verbs K2 rule 2 requires —
+      *modify* and *redistribute*. Checked against the licence text, not the SPDX string in the manifest.
+    - **Reserved Font Names.** Carlito reserves "Carlito"; Lexend reserves "RevReading Lexend"; Atkinson
+      and Noto Sans reserve nothing. Every bundled face was patched and **no identifying name record
+      (1, 3, 4, 6, 16, 17, 21, 22, 25) of any generated artifact carries the source family or its RFN**.
+      OFL clause 3 satisfied.
+    - **Integrity.** Every manifest SHA-256 matches the file on disk; the manifest's file set equals what
+      `base_font_files()` finds for each family; every face passes M1.3 eligibility (the only warnings
+      are `ITALIC_ONLY` on italic faces, which is the known per-face noise, not a defect).
+    - **Partial styles (K7 rule 4 `[V]`).** Lexend ships Regular + Bold only — upstream has no italic.
+      Correct under R2; it plans and builds 4 artifacts where the others build 8, with no refusal and no
+      synthesised style.
+    - **Measured metrics.** Space widths: Carlito 0.226 em, Atkinson 0.280, Lexend 0.280, Noto Sans
+      0.260 — matching what ARCHITECTURE.md M1.2 records.
+
+    **Two coverage gaps found, both now closed:**
+
+    1. **`manifest.toml`'s `reserved_font_name` field was dead documentation** — no test read it. The
+       existing check searched for the *family* name (`family.split()[0]`), which covers today's four
+       only by coincidence; a future import whose RFN differs from its family name (e.g. "Source Sans 3"
+       reserving "Source") would have slipped past. A new test now reads the declaration and enforces it.
+    2. **`tests/unit/fontgen/test_bundled_fonts.py` checked name records `(1, 4, 6, 16, 17)` and omitted
+       record 3** (`uniqueID`) — **which is the one record every bundled source demonstrably carries its
+       family name in** (`'1.104;tyPL;Carlito-Bold'`, `'2.015;GOOG;NotoSans-Regular'`, …). M1.4 *rewrites*
+       record 3 rather than dropping it, and it does so correctly, so nothing was leaking; but the check
+       that would have caught a regression was not looking there. Records 16/17/21/22/25 are absent from
+       every bundled source, so record 3 was the only live exposure. **`PRIMARY_NAME_IDS` widened to
+       `(1, 3, 4, 6, 16, 17, 21, 22, 25)`** — the set M1.6 uses — and re-verified against all 14 bundled
+       faces. Fixed in the existing file on purpose: it runs in CI, and the new test package does not yet
+       (see the `testpaths` task for O3 above).
+
+    **This closes "O1: review the three newly bundled fonts (M1.2)" in W7 and K2 rule 2's licence duty.**
+
+### M1.3 — M1.4 "Done when: tests pass for all 4 shortlist fonts": **MET and closed by O1**
+
+    O3's M1.4 review note (4) said the condition could not be met while `fonts/` was empty. It is met now.
+    The card's acceptance criteria are asserted **directly on the patched bytes of every style of every
+    bundled family** — advance delta `== round(letter_em × unitsPerEm)` for every Latin glyph, space
+    advance `== round(original × word_scale)`, every non-Latin advance byte-identical, no `liga` in GSUB,
+    the line box at the requested ratio, the family renamed. Previously every family was known to *build*
+    (`status == "built"`), which reaches these criteria only through M1.6; a spacing regression would have
+    been reported as a validation failure two modules away.
+
+    Also asserted on the real fonts: byte determinism (patch twice → identical bytes) and Research2 I.4's
+    "a zero-spacing configuration must build successfully" (`letter_em` 0.00, `word_scale` 1.0 → every
+    advance unchanged).
+
+    **What bundling newly closed, and it is worth noting:** **Carlito is UPM 2048** where the other three
+    are 1000. Research2 E.3 warns that "any test asserting a fixed delta must be parameterised by
+    unitsPerEm", and E.2.1's worked example is 0.12 em at 2048 = +246 units. Until Carlito was bundled
+    that path existed only in a fixture; the shortlist now covers both conventional em values with real
+    fonts.
+
+    **What bundling did NOT close — stated rather than claimed:**
+
+    - **Real-font CFF.** Every bundled family is TrueType (`glyf`). CFF patching is covered by a synthetic
+      OTF; no bundled font exercises the CFF charstring path.
+    - **Variable-font flattening.** Lexend's *upstream* is variable, but `fonts/tools/build_lexend.py`
+      flattens it to static Regular and Bold before bundling, so the patcher's `instancer` path never runs
+      for the shortlist.
+    - **Hinting and real kerning** remain undemonstrated, as O3 noted; both are M1.6 rendering concerns and
+      need the VM (W4).
+
+    Two **tripwire tests** record this: they assert that no bundled family is CFF and none is variable, so
+    bundling one later *fails the suite* and prompts the card note to be updated, instead of the claim
+    quietly widening. Real-font CFF/OTF coverage stays in **W1.3** (user font import), where OTF/CFF
+    sources are already listed as needing tests.
+
+### Code changes
+
+    - **`src/scribesense/config/` and `src/scribesense/fontgen/`: none.** Both tasks are reviews; the
+      implementation was found correct. The only source-tree change is the widened `PRIMARY_NAME_IDS`
+      constant in O1's existing test file.
+    - **New: `src/scribesense/config_and_fontgen_tests/test_bundled_font_review.py`** — 33 tests (2 skip:
+      the two families with no RFN). Licence grant text, RFN enforcement read from the manifest, the
+      record-3 premise, all nine identifying records on real patched fonts, manifest↔pipeline style
+      agreement, Lexend's missing italic, per-family eligibility, measured space widths, and the
+      per-family Default resolution.
+    - **New: `src/scribesense/config_and_fontgen_tests/test_shortlist_patching.py`** — 25 tests. The M1.4
+      acceptance criteria per family per style, UPM pinning, byte determinism, zero-spacing neutrality,
+      and the two tripwires.
+    - **Changed: `tests/unit/fontgen/test_bundled_fonts.py`** — `PRIMARY_NAME_IDS` widened (gap 2 above).
+    - New-package total: **68 passed, 2 skipped**. Import rules R2/R3/R4 clean.
+
+### One test deliberately pins a known defect
+
+    `test_default_resolves_per_family_and_three_of_four_miss_the_wcag_floor` asserts today's behaviour:
+    Default's "+0.16 em" target resolves to a space-glyph growth of **+0.130 em (Noto Sans), +0.140
+    (Atkinson, Lexend), +0.170 (Carlito)** — so **only Carlito clears WCAG 1.4.12's 0.16 em floor**, because
+    its narrow 0.226 em space pushes the quotient past the halfway point of K1's 0.25 grid. The other three
+    round *down*, below the floor the preset documents itself as meeting.
+
+    This is **W6.5, still open and still O1's**, not a fault of the bundled fonts, so it does not block this
+    review. The test exists so that whichever way W6.5 is settled — round `target_em` up, or redefine the
+    comparison as the whole word gap — the change is visible at this assertion rather than silent. Analysis:
+    `docs/research2-conformance-O1.md` §9.1–§9.2.
+
+### Nothing here needs another owner's approval
+
+    Both tasks are O1's own (K2 rule 2's licence duty; the M1.4 card O1 owns and O3 has already reviewed).
+    No contract is touched and no other owner's file is changed. The tasks for O3 listed in the entry above
+    — `testpaths`, the K8 decision, the RPM font path — are unchanged and still apply; in particular
+    **these 68 tests do not run in CI** until `src/scribesense/config_and_fontgen_tests` is added to
+    `testpaths`, which is why gap 2 was fixed in the existing CI-visible file rather than only here.
+
+    ---
+
+## M1.8 integration review + K7 `PreviewFonts` confirmed (2026-11-14, O1)
+
+    Tasks 2.1 and 2.2 of O1's remaining-work list. ARCHITECTURE.md's M1.8 note records nine changes O4
+    made to O1's modules on 2026-10-15 and ends "**O1 to review**"; K7's note adds "``build_preview()``
+    keeps the provisional `PreviewFonts` shape exactly (**O1 confirms it**)".
+
+    The 2026-11-14 entry above recorded a *spot check* of four of those claims. This is the full review:
+    **all nine claims verified, integration approved**, no source change required. One finding on
+    `PreviewFonts.styles` needs a K7 decision (below).
+
+### M1.8 integration (2026-10-15, O4) — **APPROVED by O1**
+
+    | # | Claim in the note | Verified |
+    |---|---|---|
+    | 1 | Modules moved to `src/scribesense/config` and `src/scribesense/fontgen` | Yes — both import and the pipeline runs end to end |
+    | 2 | `fc-match` dash bug fixed; patterns go through `naming.fc_pattern()` | Yes — `fc_pattern("AccessSansUI-3f9a1c2b7d10")` → `AccessSansUI\-3f9a1c2b7d10`; both `fontgen/validate.py` and `fontgen/cache.py` call it. **Every** generated family carries a `-` (the key suffix), so this was never an edge case — it was every build |
+    | 3 | Contracts used, not copied | Yes — `settings.Configuration/Issue/Range/RANGES/SHORTLIST`, `presets.WordSpacing/PresetValues/Preset/BUILTIN_IDS/ORIGINAL` and `generator.FontSet` are the **identical objects** from `contracts/`, not copies; `FontBuildResult` and `PreviewFonts` subclass K7's |
+    | 4 | K1 rule 1 rounding restored to Python's `round()` (ties to even) | Yes — 0.01 → 0.00, 0.03 → 0.04 on the `letter_em` grid, as the contract writes it |
+    | 5 | K3 rule 9 / import rule R2: `run_cmd`, not `subprocess` | Yes — neither `validate.py` nor `cache.py` imports `subprocess`; the environment goes in as `env NAME=value …` in front of argv |
+    | 6 | K8: `cache.fonts_dir()` delegates to `contracts.paths.fonts_dir()` | Yes — the body is `return paths.fonts_dir()` |
+    | 7 | Exceptions are `ScribeSenseError` subclasses, message = bare code, no paths | Yes — checked on all five refusal paths (`BundledFontMissing`, `PatchUnsupported`, `InstallFailed`, `RemoveRefused`, `PreviewUnavailable`): `str(exc)` is the code, no `/` or `\`, diagnosis on `.detail`/`.reason_code` |
+    | 8 | K2 `base_font_files()` moved to `config.bundled`, re-exported by `config.presets` and `fontgen.variants` | Yes — all three names are the **same function object** |
+    | 9 | `resolve()` measures the bundled Regular face's space width | Yes — Noto Sans reports `measured` 0.26 em and Default resolves to `word_scale` 1.5 (the 0.25 em fallback gave 1.75). The note's "**Open (O1):** no base fonts are bundled yet" is closed |
+
+    **One clarification to claim 7, so the record is accurate:** not every exception in O1's area is a
+    `ScribeSenseError`, and that is correct rather than an oversight. `PresetResolutionError`,
+    `SpaceWidthUnavailable`, `BuiltinOverwriteError` and `PresetRecordError` are `ValueError`/`LookupError`
+    subclasses because they report **caller** errors, not font or environment problems — the same split
+    `patch()` makes between `ValueError` (unvalidated config) and `PatchUnsupported` (bad font). Folding
+    the first into the second would let a bad configuration masquerade as an unpatchable font, and M1.8
+    would report `refused`/`PATCH_UNSUPPORTED` with the real fault invisible.
+
+    **The note's two "behaviour to know" items are confirmed and now tested** (they were prose only):
+    tracking reaches Latin letters but not digits or punctuation (script Common), and a line height below
+    the font's natural ascent + descent cannot be expressed.
+
+### K7 `PreviewFonts` — **FIELDS CONFIRMED by O1**, one semantic finding raised
+
+    The provisional shape is the right shape and is hereby confirmed: `reading_family`, `ui_family`,
+    `files`, `styles`, `temp_dir`, with `generator.PreviewFonts` adding `close()`/`__enter__`/`__exit__`
+    and **no `__del__`** (so loaded preview files are never deleted behind the caller's back). **This
+    closes "confirm `PreviewFonts` fields" in the O1 checklist.**
+
+    **Finding — `styles` means two different things in one contract. Needs a K7 decision.**
+
+    K7's `PreviewFonts` says *"styles — styles actually generated, in the same order as files"*, so
+    `build_preview()` returns one entry per file. Both variants are built, so every style appears twice:
+
+    ```
+    files  = (AccessSans-<key>-Regular.ttf, …, AccessSansUI-<key>-Regular.ttf, …)   # 8 for Noto Sans
+    styles = ("Regular","Bold","Italic","BoldItalic","Regular","Bold","Italic","BoldItalic")
+    ```
+
+    K7's sibling `FontSet.styles` — same contract, same field name — is the **deduplicated** set
+    (`("Regular","Bold","Italic","BoldItalic")`, 4 entries). So `len(result.styles)` is 4 or 8 for one
+    configuration depending on which object the caller holds.
+
+    Both implementations match their own wording and nothing is broken. It is worth settling now because
+    **no caller reads `PreviewFonts.styles` today** — O2's `ui/preview.py` uses `files` and `temp_dir`
+    only — so the field is free to change. After someone writes `for style in preview.styles` it is not.
+
+    **O1 approved — waiting for the K7 owner's approval plus one other owner.**
+
+    **Tasks for the K7 owner (O1 is K7's owner, so this needs a second owner — O2, O3 or O4):**
+
+    1. **Decide the shape of `PreviewFonts.styles`.** O1's recommendation: make it the **deduplicated
+       set**, identical in meaning to `FontSet.styles`, and change K7's wording from "in the same order as
+       files" to match. The per-file mapping is not lost — it is recoverable from the filename, which is
+       exactly how M1.6 (`_style_from_filename`) and M1.7 (`_identify`) already recover it.
+    2. **If the parallel-array reading is kept instead,** rename the field (e.g. `file_styles`) so the two
+       K7 types do not use one name for two shapes.
+    3. **Either way, the change is in `contracts/fonts.py`,** which is frozen and which agents may not
+       edit — a human applies it. O2 should confirm `ui/preview.py` and `ui/preset_editor.py` are
+       unaffected (they should be; neither reads the field today).
+
+### Code changes
+
+    - **`src/scribesense/config/` and `src/scribesense/fontgen/`: none.** Both tasks are reviews and the
+      implementation was found correct.
+    - **New: `src/scribesense/config_and_fontgen_tests/test_integration_review.py`** — 14 tests pinning the
+      claims that were verified by hand but not covered by a test. Specifically:
+      - `tests/unit/fontgen/test_config.py::test_vocabulary_is_the_k1_contract_not_a_copy` covers **K1
+        only**; K2's and K7's types were never asserted to be the contract's own objects. Now they are.
+      - `test_refusals_carry_error_codes` checks `FontBuildResult.reason_code`; nothing checked the
+        **errors contract itself** — that a raised exception's message is the bare code with no path.
+        That is now parametrized over all five refusal paths. O1's modules handle paths constantly, so a
+        path leaking into a log through an exception message is the realistic failure here.
+      - The deliberate `ValueError` / `ScribeSenseError` split is now asserted, so "tidying" it into one
+        hierarchy fails the suite instead of hiding bad configurations as bad fonts.
+      - The fontconfig escaping bug is pinned **at its cause** (every generated family contains a `-`),
+        not only at the symptom.
+      - The two "behaviour to know" items, on the real bundled font.
+      - `PreviewFonts` field shape, and the `styles` finding above.
+    - New-package total: **82 passed, 2 skipped**. Import rules R2/R3/R4 clean.
+
+### One test deliberately pins a second known defect
+
+    `test_a_line_height_below_the_fonts_natural_height_is_a_no_op_but_still_keys` asserts both halves of
+    the behaviour the M1.8 note mentions only half of. Noto Sans' ascent + descent is 1.362 em and
+    `line_gap_units` clamps at zero, so **`ui_line` 1.0, 1.1, 1.2 and 1.3 all produce byte-identical
+    artifacts** — and all three built-in presets ship `ui_line` 1.2, inside that band. But `ui_line` is in
+    `KEYED_FIELDS`, so those identical artifacts carry **four different content keys**: a false miss, i.e.
+    a redundant rebuild and a second install under a new family name.
+
+    Research2 F.1's open item D-08 says the line fields must leave the key exactly when the artifacts are
+    byte-identical. M1.5 closed D-08 on "the patcher does write vertical metrics" — true in general, false
+    in this band, which is the band every built-in uses. The direction of error is safe (never a wrong
+    cache hit), but it was undocumented. Analysis: `docs/research2-conformance-O1.md` §9.3. Not fixed here:
+    it is an M1.5 key-composition change and belongs with the W6.5 / key work, not with a review.
+
+    ---
+
+## W7 housekeeping in O1's own code (2026-11-14, O1)
+
+    Task 3 of O1's remaining-work list: the stale docstrings and the untested, uncalled
+    `to_record` / `from_record`. All four items are closed. One turned out to be bigger than
+    housekeeping and is recorded as an open item below.
+
+### 3.1 `config/presets.py` CUSTOM_ID docstring — already done
+
+    Found already fixed in the working tree: `"""ID of the transient Custom entry."""` now says
+    Custom is **persisted** (K9 D3, one row on the reserved id) and explains "stored is not the
+    same as listed". Not touched by this entry.
+
+### 3.2 `config/presets.py` REFERENCE_SPACE_WIDTH_EM docstring — corrected
+
+    It said the Default preset's resolved word spacing "is genuinely undetermined until the
+    bundled fonts are measured". They have been measured since 2026-10-18. The docstring now
+    records the measurements and what they produce:
+
+    | Family | space | `word_scale` | space glyph grows by |
+    |---|---|---|---|
+    | Carlito | 0.226 em | 1.75 | **+0.170 em** |
+    | Noto Sans | 0.260 em | 1.50 | +0.130 em |
+    | Atkinson Hyperlegible | 0.280 em | 1.50 | +0.140 em |
+    | Lexend | 0.280 em | 1.50 | +0.140 em |
+
+    — i.e. **three of the four land below the 0.16 em WCAG 1.4.12 floor Default is built on**,
+    because rounding to the *nearest* 0.25 step rounds down. That is W6.5, not a property of the
+    fonts. The constant is no longer reached by any bundled family; it still fires for an
+    unreadable file, and is what a W1 imported font would fall back to before its metrics are read.
+
+### 3.3 `fontgen/generator.py` — four stale claims corrected, and one real finding
+
+    The module docstring and two Protocol docstrings asserted that things do not exist. All four
+    were wrong:
+
+    | Claimed | Reality |
+    |---|---|
+    | "**M3.1 does not exist.**" (×2) | Built 2026-10-15; `store/` ships `FontRegistryRepo` |
+    | "none of them exists yet" (K7 rule 3's five sources) | O4 built `safety/font_references.py` 2026-10-17 |
+    | "**Nothing implements it yet**" (`ReferenceSource`) | `FontReferenceSource` does, and `controller/service.py` passes one to `remove_unused()` at start-up |
+    | "`base_font_files`, which does not exist yet (K7 E5)" | It exists; all four families bundled since 2026-10-18 |
+
+    A docstring that is confidently wrong is worse than none — the next reader believes it.
+
+    **Finding while correcting them, and it is not cosmetic: no font registry row is ever
+    written.** M3.1 exists, but its `FontRegistryRepo` and M1.8's `FontRegistry` seam are
+    **different shapes**:
+
+    - `FontRegistry` (M1.8): `record(Mapping)` / `forget(key)`
+    - `FontRegistryRepo` (M3.1): typed `FontRegistryEntry` through `create()` / `set_status()` /
+      `touch()` / `mark_removed()`
+
+    Nothing converts between them, and no caller passes `registry=` to `build()`, so `NullRegistry`
+    is still the default: `_record()` assembles a full row on every successful build that nobody
+    stores. Nothing depends on it for correctness — Research2 I.1 makes the filesystem the
+    authority and `installed_sets()` the reconciliation path — but the M1.8 card says this module
+    "owns font registry entries", and today it owns entries that go nowhere.
+
+    **O1 approved the correction — the bridge itself needs O3.**
+
+    **Tasks for O3 (M3.1 owner):**
+
+    1. **Decide which shape survives.** O1's `FontRegistry` Protocol was written before
+       `FontRegistryRepo` existed and has no claim to be the right one; `FontRegistryRepo` is
+       richer (it models the `building -> validated | failed -> removed` status flow that M1.8
+       does not express). O1's recommendation: **keep `FontRegistryRepo`** and have M1.8 build a
+       `FontRegistryEntry` directly, deleting the `FontRegistry` Protocol and `NullRegistry`.
+    2. **Decide who constructs the entry.** `FontRegistryEntry` needs `file_sha256` and timestamps;
+       M1.7's manifest already computes the digests, so M1.8 can supply them without re-hashing.
+    3. **Decide where it is wired** — `controller/service.py` already builds the `FontReferenceSource`
+       at start-up and is the natural place to pass a registry into `build()`.
+    4. Until then the status quo is safe, not broken: no row is written, and nothing reads one.
+
+### 3.4 `to_record` / `from_record` — **removed** (W7's "test or remove")
+
+    **Removed, and the duplication was the reason.** W7 offered "test or remove". Investigating
+    which, the answer settled itself: **M3.1 already has the same serialiser, and it is the one
+    with callers.** `store/serialize.py` implements K9 D9's versioned JSON with the same
+    fixed-decimal spelling; `PresetRepo.save()` calls `preset_values_to_json` and `PresetRepo.get()`
+    calls `preset_from_row`. O1's pair had **no caller and no test**.
+
+    Checked before removing: the two produce **identical `values` payloads**, field for field,
+    including every fixed-decimal string. So nothing was lost and neither was silently wrong —
+    the defect was that there were two. Two implementations of one record shape, in two owners'
+    modules, is a second authority on what a preset legally contains. `to_record`'s own docstring
+    made exactly that argument one level down ("Persisting both would let them drift, and the one
+    that drifts is the one the font was built from"); it applies to the record shape itself.
+
+    No contract required them: K2's `PresetApi` protocol lists `BUILTINS`, `resolve` and
+    `base_font_files` only.
+
+    Removed: `to_record`, `from_record`, `PresetRecordError`, `RECORD_VERSION`, `_FIELD_DECIMALS`,
+    `_WORD_DECIMALS`, `_text`, `_number`, and the now-dead `Mapping` / `Any` / `decimals_of` imports
+    — 245 lines, about a third of the module. **Kept:** the preset *model* the store serialises —
+    `STORABLE_KINDS`, `RESERVED_IDS`, `CUSTOM_ID`, `is_storable`, `_check_custom`. Recoverable from
+    git if the decision is revisited.
+
+    **Loose end for M3.1, not blocking:** `PresetRepo.save()` re-states the storable-kind policy
+    inline next to its SQL rather than calling `is_storable()`, which exists for exactly that. One
+    predicate is not the duplication problem the serialisers were, but it is the same shape of
+    problem one size smaller.
+
+### Code changes
+
+    - **`src/scribesense/config/presets.py`** — 3.2 docstring corrected; 3.4 removal (−289 lines net).
+    - **`src/scribesense/fontgen/generator.py`** — 3.3: four stale claims corrected, the registry
+      mismatch written down where the seam is defined.
+    - **New: `src/scribesense/config_and_fontgen_tests/test_single_authority.py`** — 8 tests guarding
+      both kinds of rot: that the serialiser does not come back (parametrized over the four removed
+      names), that the surviving store serialiser round-trips, that the preset model is intact, and
+      that each corrected docstring's **premise** still holds — M3.1 exists, the registry shapes still
+      do not match and nothing bridges them, `FontReferenceSource` is implemented and wired,
+      `base_font_files` exists. If one stops being true the suite says so, instead of the prose
+      quietly rotting again.
+    - **Updated: `test_integration_review.py`** — dropped the reference to the removed
+      `PresetRecordError`.
+    - New-package total: **92 passed, 2 skipped**. Import rules clean; the whole application still
+      imports.
+
+### One mistake worth recording
+
+    The block removal initially took `is_storable` with it — it sat inside the "Storage records"
+    section — contradicting the module docstring written in the same change, which says
+    `is_storable` stays. Caught by the new `test_what_the_model_still_owns_is_still_here`, which was
+    written before the removal and failed on it. Restored.
+
+### Raised for O3: import rule R4 matches on a string prefix
+
+    `tests/unit/test_import_rules.py` applies R4 (config/ must not import ui, store, adapters,
+    safety, controller, reader, gi) to any module whose name **starts with** `"scribesense.config"`.
+    That catches `scribesense.config_and_fontgen_tests` by accident of the name, and would catch any
+    future `scribesense.config_*` module whether or not that is intended. Harmless here — the new
+    package genuinely has no static dependency on those layers, and `test_single_authority.py` loads
+    them with `importlib` inside test functions precisely so it does not create one (noted in that
+    file, so it does not read as dodging the check). Worth making the match a package boundary rather
+    than a prefix.
+
+    ---
+
+## W1 user font import — contract proposal, and the two parts that did not need it (2026-11-14, O1)
+
+    Task 4 of O1's remaining-work list. W1.1 says the contract change comes with "a decision entry
+    here first", and `contracts/` is frozen to agents, so **the K1/K2 change is proposed below, not
+    written**. Two parts of W1 need no contract change and are **built**: the parse budget (W1.3) and
+    OTF/CFF coverage (W1.7).
+
+    ---
+
+### Part A — K1 / K2 contract change: **O1 approved, waiting for a second owner**
+
+    **The change.**
+
+    *K1* — `base_family` may name a bundled family **or** an imported one:
+
+    ```
+    base_family: str    # a member of SHORTLIST, or an imported family recorded in the store
+    ```
+
+    `SHORTLIST` stays exactly what it is: the **bundled** set. It does not grow. Validation keeps
+    refusing unknown names — it just gains a second place to look, so `UNKNOWN_FONT` still means "this
+    family is neither bundled nor imported" rather than "not one of our four".
+
+    *K2 rule 2* — "Base fonts are BUNDLED in the repo, never taken from the system" becomes:
+
+    > Base fonts are **bundled or imported**. An imported font is **copied** into
+    > `data_dir()/user-fonts/<sha256>/`; it is never read in place from the system.
+    > `base_font_files(family)` resolves both.
+
+    The "never from the system" half is the part that must not weaken. Copying is what makes a build
+    reproducible (the content key hashes the source bytes) and what stops a font disappearing or
+    changing underneath an applied configuration.
+
+    **Why `validate()` cannot do the lookup itself.** M1.1 is pure — "no I/O, no clock, no font
+    access" — and an imported family lives in the store. Three options, with O1's recommendation:
+
+    | | Approach | Assessment |
+    |---|---|---|
+    | 1 | `settings.validate()` takes an optional `known_families` argument | **Recommended.** Keeps M1.1 pure: the caller supplies the set, M1.1 only compares. Default `None` means `SHORTLIST`, so every existing call is unchanged |
+    | 2 | A module-level registry M1.1 consults | Rejected — gives M1.1 hidden state and makes `validate()` depend on call order |
+    | 3 | Validation of imported families moves to K2 `resolve()` | Rejected — splits one rule across two modules; `UNKNOWN_FONT` would fire from two places with different meanings |
+
+    **New error codes (add-only to K8, need approval):** `IMPORT_FAILED`, `IMPORT_NOT_ELIGIBLE`,
+    `IMPORTED_FONT_IN_USE`. Note `IMPORT_NOT_ELIGIBLE` is distinct from M1.3's existing refusals on
+    purpose: the user needs "this font cannot be used, because it is monospaced", and the detail
+    carries which of M1.3's codes it was.
+
+    **Tasks for the second owner (any of O2, O3, O4 — plus the K1/K2 owner, which is O1):**
+
+    1. **Agree or reject the K1 wording**, in particular that `SHORTLIST` keeps meaning "bundled" and
+       does not become "allowed".
+    2. **Agree or reject the K2 rule 2 wording**, in particular that "copied, never read in place" is
+       the invariant that survives.
+    3. **Pick the lookup approach** from the table above (O1 recommends 1).
+    4. **Approve the three error codes**, or name different ones.
+    5. A human applies the result to `contracts/config.py` and `contracts/presets.py`; agents may not.
+    6. **O3 additionally:** K9's `user_fonts` table (W1.2) and whether `data_dir()/user-fonts/` needs a
+       K8 accessor — the same question as this file's earlier `SCRIBESENSE_BUNDLED_FONTS` entry, and
+       worth settling together.
+
+    **Blocked until this is agreed:** W1.4 (the display name for an imported family that collides with
+    a bundled one), W1.5 (O2's import UI), W1.6 (O4's reference counting, O3's uninstall), and the
+    `base_font_files` resolution half of W1.2.
+
+    ---
+
+### Part B — W1.3's parse budget: **built**
+
+    `MAX_FONT_BYTES` is a size cap, and its own docstring said what that does not cover: *"A small but
+    pathological file -- a decompression bomb, or a table whose declared counts force quadratic work --
+    can still consume unbounded time inside fontTools."* Research2 D.2/D.6 require a real budget on
+    security grounds; W1.3 requires it specifically for imported files, because the font ScribeSense
+    generates from one is later loaded by **every application's font engine on the machine**.
+
+    A wall-clock budget needs something that can be killed, which a function call is not. So:
+
+    - **New `src/scribesense/config/fontprobe.py`** — `python -P -m scribesense.config.fontprobe <path>`
+      prints the verdict as one JSON line. Follows M4.13's `adapters/pango_probe` pattern exactly: one
+      line on stdout, **never a traceback** (it could echo the path, and §4 keeps paths out of logs),
+      any failure is a non-zero exit.
+    - **`rules.is_eligible(path, *, isolate=False, timeout=PARSE_TIMEOUT_S)`** — keyword-only with a
+      default, so the card's one-argument call is unchanged. The existing body is now
+      `rules.verdict()`, which both the in-process path and the child call: **one implementation, two
+      places to run it.**
+    - **`rules.FONT_PARSE_TIMEOUT`** — Research2's `E_PARSE_TIMEOUT`, reachable for real. The module
+      previously mapped that condition onto `FONT_TOO_LARGE` and said so in its code table; the table
+      now distinguishes them. `variants.error_code_for` folds the new code to `FONT_UNREADABLE` for K7.
+
+    **Isolation is off by default, deliberately.** Measured: 15 ms in process, 383 ms isolated, for one
+    bundled face. M1.5 walks `is_eligible` once per style per build, so defaulting it on would add
+    roughly 2.5 s to an eight-style build for no gain — the bundled families are pinned by SHA-256 in
+    `fonts/manifest.toml`. **W1's import path is the intended caller**, which is exactly what W1.3 asks
+    for ("parse *imported* files in a separate process").
+
+    Failure mapping, with a crashed child always a refusal and never an exception: deadline passed →
+    `FONT_PARSE_TIMEOUT`; child died, could not start, or printed something unreadable →
+    `FONT_UNREADABLE`, the same answer an unparseable font gets in process. The size cap is applied
+    **before** anything is spawned, so refusing a 2 GB file still costs one `stat`.
+
+    **One limitation, for W1's UI (O2).** The probe assumes `sys.executable` can import `scribesense` —
+    the same assumption M4.13 documents, true for an installed package. When it cannot, the result is
+    `FONT_UNREADABLE`: fail-closed and correct, but **indistinguishable from a font that will not
+    parse**. W1's import screen should say "could not check this font" rather than "not eligible" when
+    the probe itself is unavailable. Noted in `rules._isolated_verdict`.
+
+    ---
+
+### Part C — W1.7's OTF/CFF coverage: **built**
+
+    W1.7 lists "OTF/CFF and variable sources" among the tests W1 needs. Correcting this file's own
+    2026-11-14 entry once more: CFF patching *is* covered by a synthetic fixture in
+    `tests/unit/fontgen/test_fontgen.py`, but that fixture asserts three characters, and **no bundled
+    family is CFF**, so the format gets no coverage from the shortlist at all.
+
+    Added: a fuller CFF/OTF font built with `FontBuilder` (full ASCII, `é`, a Greek alpha so the
+    non-Latin invariant has something to protect, varying advances so `is_monospace` does not refuse
+    it), run through the M1.4 acceptance criteria — every Latin advance, the space factor, the
+    non-Latin invariant, the rename — plus eligibility in and out of process, the `.otf` suffix
+    surviving `variant_filename`, and Research2 I.4's zero-spacing neutrality.
+
+    ---
+
+### Code changes
+
+    - **New `src/scribesense/config/fontprobe.py`** (~95 lines).
+    - **`src/scribesense/config/rules.py`** — `is_eligible` gains `isolate` / `timeout`; the body is
+      extracted to the exported `verdict()`; `FONT_PARSE_TIMEOUT` and `PARSE_TIMEOUT_S` added; the
+      `MAX_FONT_BYTES` docstring no longer describes the gap as deferred, because it is not.
+    - **`src/scribesense/fontgen/variants.py`** — folds `FONT_PARSE_TIMEOUT` into `FONT_UNREADABLE`.
+    - **New `src/scribesense/config_and_fontgen_tests/test_isolated_parse.py`** — 23 tests: the verdict
+      is identical in and out of process on all 14 bundled faces; a deliberate refusal survives
+      isolation as a *verdict*, not a failure; the deadline kills and refuses; three corrupt-input
+      shapes are refusals not exceptions; the size cap runs before any spawn; the probe's protocol
+      (one JSON line, empty stderr, bad-argument handling, version mismatch); and the CFF suite.
+    - **New-package total: 115 passed, 2 skipped.** Import rules clean; `config/` still imports nothing
+      from ui, store, adapters, safety, controller, reader or `gi`.
+
+    **One thing caught while writing the tests, worth keeping:** the first draft imported `subprocess`
+    directly to inspect the probe's raw output. That violates import rule R2 ("only
+    `contracts/paths.py` imports subprocess — every command goes through `run_cmd`, K3 rule 9") and the
+    real checker would have failed on it once `testpaths` includes this package. Rewritten to use
+    `run_cmd`, which is also closer to what the production path does. A test is not exempt from the
+    rule whose observance it is checking.
+
+### Still open for O1 after this
+
+    - Part A's contract change (above), and W1.4/W1.5/W1.6 behind it.
+    - **W6.5**, unchanged and still the most consequential: Default's `target_em` rounds to the nearest
+      0.25 step and lands below the WCAG floor on three of four families.
+    - Reviews O1 owes: **M2.5** (O2) and **M4.2** (O4).
+    - Second-owner sign-offs O1 could give: K3 rule 10b, K8 socket, K4 rule 5 `subscribe_style`,
+      `list_all`, and now the `PreviewFonts.styles` question from the 2026-11-14 K7 entry.
+
+    ---
+
+## W6.5 WCAG 1.4.12 — open question settled, defect fixed, check automated (2026-11-14, O1)
+
+    Task 5 of O1's remaining-work list. W6.5 asked for an automated SC 1.4.12 check of the presets
+    and named one question to settle first. Both are done, and the question turned out to have a
+    defect behind it.
+
+### Decision 1 — word spacing is measured as **space-glyph growth only**
+
+    W6.5's question: *"space-glyph growth only, or the whole gap as CSS letter- + word-spacing would
+    produce"*. **Space-glyph growth only.** Measured on Noto Sans at the Default preset:
+
+    ```
+    'catdog'  grew by 0.720 em = 6 x L            (six letters, no space)
+    'cat dog' grew by 0.850 em = 6 x L + W        (six letters, one space)
+    ```
+
+    The width attributable to the **word break** is exactly `W`, the space glyph's growth. The letter
+    delta appears once per letter whether or not a space follows, so it is letter spacing. SC 1.4.12
+    requires "all of the following" to be set **together**; charging one adjustment to two criteria
+    would mean a user who sets both gets one.
+
+    **And the generous reading is not even generous in the right direction.** In CSS, `letter-spacing`
+    applies after *every* character including the space, so letter 0.12 + word 0.16 gives a gap of
+    `space + 0.16 + 2 x 0.12 = 0.660 em`. ScribeSense gives `space + W + 1 x 0.12 = 0.510 em`, because
+    the space glyph is Unicode script Common and `latin_glyphs` excludes it, so it receives no
+    tracking — **one L short of the CSS the criterion is written against**. Counting L toward the word
+    floor would have hidden that rather than made up for it. (The shortfall is a separate standing
+    finding: `docs/research2-conformance-O1.md` §9.4.)
+
+### Decision 2 — `target_em` rounds **up**, and that fixes a real defect
+
+    A `target_em` means "add **at least** this much". Rounding to the nearest 0.25 `word_scale` step
+    delivered *less* than asked whenever the quotient fell in the lower half of a step — and the one
+    place `target_em` is used is the WCAG floor. Before and after, space-glyph growth:
+
+    | Family | space | before | after | floor 0.16 |
+    |---|---|---|---|---|
+    | Carlito | 0.226 em | 1.75 → **+0.170** | 1.75 → +0.170 | already cleared |
+    | Noto Sans | 0.260 em | 1.50 → **+0.130** | **1.75 → +0.195** | fixed |
+    | Atkinson Hyperlegible | 0.280 em | 1.50 → **+0.140** | **1.75 → +0.210** | fixed |
+    | Lexend | 0.280 em | 1.50 → **+0.140** | **1.75 → +0.210** | fixed |
+
+    So the Default preset — which documents itself as WCAG-anchored on all three properties — was
+    **missing the word floor on three of the four bundled families**. It no longer does.
+
+    Nothing else moved: `target_em` is used by exactly one preset field.
+
+    **Content keys:** Default's key changes for Noto Sans, Atkinson and Lexend (Carlito's is
+    unchanged, it was already 1.75). One rebuild, the same class of one-time change as bundling the
+    real fonts.
+
+### Conformance, stated precisely
+
+    Two different claims, and the tests keep them apart:
+
+    - **SC 1.4.12 conformance is about reachability** — "no loss of content or functionality occurs
+      by **setting** all of the following". That is a property of K1's ranges, and it **holds on every
+      bundled family**: letter reaches 0.30, line reaches 2.0, and `word_scale` 3.0 reaches +0.45 to
+      +0.56 em depending on the family. This is what ScribeSense can honestly claim.
+    - **Preset conformance** is what W6.5 actually asked to automate, and is a different question:
+      does a preset land on the floors it claims?
+
+    | Preset | letter ≥ 0.12 | word ≥ 0.16 | line ≥ 1.5 |
+    |---|---|---|---|
+    | Default | yes | **yes** (was no on 3 of 4) | yes |
+    | Reading | yes | **no**, on all four | yes |
+    | High Separation | yes | yes | yes |
+
+### Finding — Reading sits below the word floor, and now below Default
+
+    **For the team, not for O1 alone.** Reading's word spacing is K2's `multiplier` 1.5 — a relative
+    intent, not a target — so Decision 2 does not touch it. It adds 0.113–0.140 em on the bundled
+    families, below the 0.16 em floor.
+
+    That is not a broken promise: K2's table gives Reading "0.12 em / 1.5× / 1.8×" and claims no WCAG
+    anchor on the word field. But the consequence is odd enough to raise: **Default now provides more
+    word spacing than Reading on every family**, which is not what the names suggest. Research2's own
+    Reading preset used +0.16 em.
+
+    Changing it means changing K2's frozen built-in table — the team's call, not O1's, and the M1.2
+    card's acceptance test is "values match the K2 table". Pinned as current behaviour in
+    `test_reading_meets_the_letter_and_line_floors_but_not_the_word_floor`, so a decision to change it
+    shows up there. **Options, if the team wants Reading at the floor:** `multiplier` 1.75, or
+    `target_em` 0.16 like Default (which would then track the font, and is what Research2 specified).
+
+### O1 approved — one wording clarification needs a second owner
+
+    K2's `resolve()` comment reads "rounded to the 0.25 step" without saying **which way**. O1 has
+    read it as *up* for `target_em`, on the grounds above, and W6.5 explicitly delegated the call
+    ("...and, if needed, round target_em up instead of to the nearest step"). The behaviour change is
+    real, so the contract text should say so.
+
+    **Task for a second owner (O2, O3 or O4):** confirm the reading, then a human edits
+    `contracts/presets.py` so `resolve()`'s comment reads "rounded **up** to the 0.25 step" — agents
+    may not edit `contracts/`. Nothing else in K2 changes; `multiplier` values are untouched, and
+    `round_to_steps` still rounds to nearest for every field a user sets directly.
+
+### Code changes
+
+    - **`config/settings.py`** — new `snap_up(range, value)` beside `snap()`: ceiling onto the step
+      lattice, `STEP_TOLERANCE`-guarded so float noise cannot push an exact value a whole step up, and
+      **not clamping** (K1 rule 1 — an out-of-range target stays out of range and `validate` refuses
+      it, rather than being quietly reduced to the maximum and reported as granted). Exported.
+    - **`config/presets.py`** — `_word_scale_from_target_em` returns `snap_up(RANGES["word_scale"], …)`.
+      The step still lives in one place: `snap_up` takes the `Range`, and `resolve`'s `round_to_steps`
+      is then a no-op on an already-on-grid value.
+    - **New `src/scribesense/config_and_fontgen_tests/test_wcag_text_spacing.py`** — 37 tests: the
+      attribution measurement behind Decision 1; the CSS comparison showing ScribeSense is one L
+      short; reachability per family; that each floor sits on a step or is reachable by `snap_up`;
+      per-preset per-family conformance; `snap_up` vs `snap` on the motivating case; `snap_up`
+      idempotence on grid positions; non-clamping; and that every built-in still resolves and
+      validates.
+    - **Updated:** `tests/unit/fontgen/test_config.py` and `tests/unit/fontgen/test_bundled_fonts.py`
+      each asserted `word_scale == 1.5` for Default — they pinned the defect, and now pin the fix with
+      the reason. The superseded per-family test in `test_bundled_font_review.py` was removed; its
+      subject moved to the new file, which owns the decision that changed it.
+    - New-package total: **148 passed, 2 skipped**. Import rules clean; the application still imports.
+
+### What this check does not claim
+
+    Passing is conformance with an **accessibility requirement**, not evidence of reading benefit.
+    Research2 is explicit that WCAG numbers are "accessibility requirements about reachability, not
+    proofs of benefit", and that letter-spacing effects are positive, null and negative depending on
+    population and task. A preset meeting these floors is a preset that meets these floors — the
+    reading-outcome question is W6's user study, not this test.
+
+### Remaining for O1 after this
+
+    - The W1 contract change (previous entry) and W1.4–W1.6 behind it.
+    - The `PreviewFonts.styles` K7 question, and the K2 wording confirmation above.
+    - Reviews O1 owes: **M2.5** (O2) and **M4.2** (O4).
+    - Second-owner sign-offs O1 could give: K3 rule 10b, K8 socket, K4 rule 5 `subscribe_style`,
+      `list_all`.
+    - Standing findings not yet acted on: `ui_line` over-keying (§9.3), digits and punctuation
+      untracked (§9.4), the per-face `ITALIC_ONLY` warning (§9.6), the kerning count-not-diff (§9.8),
+      and the unwritten font-registry row (W7 entry above).
+
+## Review of O1's 2026-11-14 work and fixes (2026-11-22, O4 for O1, user's go-ahead)
+
+    **Reviewed and good:** the bundled-fonts search (`config/bundled.py`: override → installed data dirs → repo; the
+    packaging blocker W2.1), `settings.snap_up` so `target_em` rounds UP (W6.5: Noto's Default +0.130 → +0.195 em; all
+    four families now meet 0.16 em), the isolated font parse (`rules.is_eligible(isolate=True)` + `config/fontprobe.py`,
+    W1.3), the removal of the unused `to_record` / `from_record` (W7), CFF/OTF support and the corrected docstrings. No
+    contract or other owner's file was touched. Merge with O4: only `PLAN_v2.md` conflicts; the merged code passed every
+    suite (checked on an exported copy).
+
+    **Fixed here (cross-owner, recorded on the M1.2 card):**
+    1. O1's 148 tests moved from `src/scribesense/config_and_fontgen_tests/` (kept beside the code at O1's request; costs
+       she documented herself: shipped in the package, not collected by pytest, so not in CI) to
+       `tests/unit/config_and_fontgen/`. Under `src/` they also ran WITHOUT the M3.3 sandbox, against the real HOME (no
+       damage found). The O3 task "add the directory to testpaths" is therefore no longer needed.
+    2. `test_isolated_parse.py`: `SRC_ROOT` follows the new depth; the module is marked `real_subprocess`.
+    3. Temp files: `test_wcag_text_spacing.py` / `test_integration_review.py` route `tempfile` into `tmp_path`, and a
+       leaked file handle is closed.
+    4. `SCRIBESENSE_BUNDLED_FONTS` is pinned to the repo's `fonts/` in `tests/conftest.py` and `harness/sandbox.py`.
+
+    Tests on the O1 branch after the fixes: **2338 passed, 0 failed** (unit, now including O1's 148) · integration
+    **35 passed, 0 failed**.
+
+    **Still open:**
+    - **O1:** commit `docs/research2-conformance-O1.md` — cited by the code (findings §9.1–§9.4) and five times in
+      PLAN_v2, but not in the repository.
+    - **O1 + O3:** agree the name and search order of `SCRIBESENSE_BUNDLED_FONTS` (O1 marked it pending a K8 decision);
+      bridge `FontRegistry` and `store.repos.FontRegistryRepo` (O1 documented the mismatch).
+    - **O3:** `.gitignore` ignores `*.crx` and `dist/`, so the signed extension that automatic setup looks for
+      (`extension/dist/scribesense.crx`) would be silently left out of git — add an exception
+      (`!extension/dist/scribesense.crx`) or choose another release location.
+    - The Default preset now builds a different font with Noto Sans (word_scale 1.75 instead of 1.5): expected; users
+      get it at their next Apply.
 

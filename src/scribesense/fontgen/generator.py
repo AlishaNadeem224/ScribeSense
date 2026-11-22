@@ -55,19 +55,27 @@ needs.
 
 What is missing, and what stands in for it
 ------------------------------------------
-**M3.1 does not exist.** The card lists it as a dependency and names this module the
-owner of its rows; there is no registry module in the repository. `FontRegistry` is the
-seam it must satisfy and `NullRegistry` is the default, so nothing here depends on it
-for correctness -- deliberately, because Research2 I.1 requires a ``cached`` return to
-rest on "a successful integrity check on the existing artifact, not merely the existence
-of a registry row". The filesystem is the authority; the registry is a record.
-`installed_sets` exists so that M3.1 can reconcile its rows against it on startup.
+**M3.1 exists; no registry row is ever written.** (Corrected 2026-11-14 -- this section
+previously said M3.1 did not exist. It was built 2026-10-15.) The store ships
+`FontRegistryRepo`, but its API and this module's `FontRegistry` seam **do not match**:
+`FontRegistryRepo` takes a typed `FontRegistryEntry` through `create()` / `set_status()` /
+`mark_removed()`, while `FontRegistry` here is `record(Mapping)` / `forget(key)`. Nothing
+bridges them, nothing passes ``registry=`` to `build()`, and `NullRegistry` is still the
+default -- so `_record` assembles a row on every successful build that no one stores.
 
-**Nothing tracks which fonts are in use.** K7 rule 3 lists five sources -- the active
-configuration, saved presets, unfinished transactions, ``LocationRecord``s, live target
-settings -- and none of them exists yet. `remove_unused` therefore defaults to removing
-**nothing**, which is rule 3's own instruction ("if usage can't be determined, the font
-is kept") rather than a stub. `ReferenceSource` is the seam M3 fills.
+Nothing depends on that for correctness, deliberately: Research2 I.1 requires a ``cached``
+return to rest on "a successful integrity check on the existing artifact, not merely the
+existence of a registry row". The filesystem is the authority; the registry is a record.
+`installed_sets` exists so M3.1 can reconcile its rows against it on startup. But the row
+*should* be written, and bridging the two shapes is an open item -- the M1.8 card gives O1
+the registry's content and O3 its storage, so it needs both (PLAN_v2 2026-11-14).
+
+**Which fonts are in use is now answered.** (Also corrected 2026-11-14 -- this said "none
+of them exists yet".) O4 built `safety/font_references.py` on 2026-10-17; its
+`FontReferenceSource` reads all five of K7 rule 3's sources, and `controller/service.py`
+passes one to `remove_unused()` at start-up. `remove_unused` still removes **nothing** when
+it is given no source or an incomplete answer -- that is rule 3's own instruction ("if
+usage can't be determined, the font is kept"), not a stub.
 
 Platform. Pure coordination: no display server, no global desktop setting, no font
 rendering. Wayland and X11 are equally irrelevant here -- the only subprocesses in the
@@ -280,12 +288,19 @@ class PreviewFonts(k7.PreviewFonts):
 
 
 class FontRegistry(Protocol):
-    """M3.1's font registry, as this module needs it. **M3.1 does not exist yet.**
+    """M3.1's font registry, as this module needs it. **Nothing implements this shape.**
 
     The card says M1.8 "owns font registry entries" and reads and writes them "via
     M3.1". This is the interface that implies, kept to the two operations the generator
     actually performs, so that M3.1 can be written against something concrete and this
     module does not have to guess at a schema it does not own.
+
+    M3.1 landed on 2026-10-15 with `store.repos.FontRegistryRepo`, but it is a different
+    shape: a typed `FontRegistryEntry` through `create()` / `set_status()` /
+    `mark_removed()`, not `record(Mapping)` / `forget(key)`. Nothing bridges them and no
+    caller passes ``registry=``, so every build records into `NullRegistry` (see the module
+    docstring). Whoever bridges it decides which shape survives; this one was written
+    before the other existed and has no claim to be it.
 
     Research2 H.3's rule is the important one and it is enforced here, not there:
     **the row is written only after a successful install**, never before, so a row can
@@ -331,14 +346,18 @@ class References:
 
 
 class ReferenceSource(Protocol):
-    """Where "is this font still in use?" is answered. **Nothing implements it yet.**
+    """Where "is this font still in use?" is answered.
+
+    **Implemented since 2026-10-17** by O4's `safety.font_references.FontReferenceSource`,
+    which `controller/service.py` passes to `remove_unused()` at start-up. (This docstring
+    said "nothing implements it yet" until 2026-11-14.)
 
     K7 rule 3 names five sources -- the active configuration (``Journal.active()``), a
     saved preset, an unfinished transaction, any ``LocationRecord`` with
     ``managed_font_key`` or ``unresolved`` set, and any live setting found by inspecting
-    the supported font fields of each target. All five live in M3 and in the
-    application layer; none exists in the repository today, and importing them from here
-    would invert the dependency even once they do.
+    the supported font fields of each target. All five live in M3 and in the application
+    layer, which is why this stays a Protocol: importing them from here would invert the
+    dependency.
 
     "A saved preset" means **every** stored preset, the Custom working set included
     (K9 D3): Custom is persisted, so the font it resolves to is referenced by exactly
@@ -448,10 +467,11 @@ def build(
         ``NOT_ON_STEP`` for no reason a user could act on, and would key differently
         from the identical configuration that came through `resolve`.
     ``files``
-        A ``style -> path`` map overriding K2's `base_font_files`, which does not exist
-        yet (K7 E5). Keyword-only with a default, so K7's ``build(config)`` is
-        unchanged. Every test uses it; so will the application until the bundled
-        ``fonts/`` tree lands.
+        A ``style -> path`` map overriding K2's `base_font_files`. Keyword-only with a
+        default, so K7's ``build(config)`` is unchanged. It exists for tests, which build
+        against fixtures rather than the repository's own fonts. (It was also how the
+        application worked around an empty ``fonts/``; all four shortlist families have
+        been bundled since 2026-10-18, so the application now passes nothing.)
     ``registry``
         M3.1's `FontRegistry`. Defaults to `NullRegistry`.
     ``renderer``, ``tools``

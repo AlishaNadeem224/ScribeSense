@@ -8,11 +8,15 @@ This module owns the built-in values and the resolution rules. It does **not** o
 configuration vocabulary: every range, step, tolerance and validation rule is imported
 from `scribesense.config.settings` (M1.1). No bound and no validation logic is restated here.
 
-Persistence is M3.1's job -- nothing in this module reads or writes storage. What this
-module owns is the *record*: `to_record` and `from_record` convert a saved preset (user
-or custom) to and from the versioned JSON shape K9 D9 fixes, so the store writes bytes
-and this module remains the single authority on what a preset legally contains. A
-built-in never becomes a record -- built-ins are code. It is
+Persistence is M3.1's job -- nothing in this module reads or writes storage, and since
+2026-11-14 nothing here *serialises* either. This module once carried `to_record` /
+`from_record` for K9 D9's versioned JSON shape; M3.1 shipped `store/serialize.py` with the
+same shape, `PresetRepo.save()` calls that, and O1's pair was left with no caller and no
+test. Two implementations of one record shape is a second authority on what a preset
+legally contains -- the drift `to_record`'s own docstring warned about one level down --
+so the pair was removed (PLAN_v2 2026-11-14, W7). What stays here is the *model*: which
+kinds exist, which ids are reserved, and `is_storable`. A built-in is never stored -- a
+built-in is code. It is
 platform-independent: no display-server logic. The only file it reads is the bundled
 Regular face, to measure its space width for ``target_em`` (K2 ``resolve``). The
 `ui_line` and `text_scale` fields it carries are applied by the application's
@@ -61,9 +65,8 @@ from __future__ import annotations
 
 import math
 import uuid
-from collections.abc import Mapping
 from dataclasses import replace
-from typing import Any, Callable, Literal
+from typing import Callable, Literal
 
 from scribesense.config import bundled
 from scribesense.config.bundled import base_font_files
@@ -73,8 +76,8 @@ from scribesense.config.settings import (
     RANGES,
     Configuration,
     Issue,
-    decimals_of,
     round_to_steps,
+    snap_up,
     validate,
 )
 from scribesense.contracts.presets import (
@@ -94,13 +97,11 @@ __all__ = [
     "MEASURED_SPACE_WIDTH_EM",
     "ORIGINAL",
     "READING_ID",
-    "RECORD_VERSION",
     "REFERENCE_SPACE_WIDTH_EM",
     "RESERVED_IDS",
     "STORABLE_KINDS",
     "BuiltinOverwriteError",
     "Preset",
-    "PresetRecordError",
     "PresetResolutionError",
     "PresetValues",
     "SpaceWidthUnavailable",
@@ -110,12 +111,10 @@ __all__ = [
     "catalogue",
     "custom_preset",
     "default_space_width_em",
-    "from_record",
     "is_original",
     "is_storable",
     "new_user_preset",
     "resolve",
-    "to_record",
     "space_width_source",
     "with_base_family",
     "with_word_multiplier",
@@ -153,7 +152,15 @@ HIGH_SEPARATION_ID = "high-separation"
 # fixed built-in IDs (K2 rule 1). Names are display-only; IDs are not.
 
 CUSTOM_ID = "custom"
-"""ID of the transient Custom entry. Reserved so a saved preset cannot take it."""
+"""ID of the Custom working set. Reserved so a saved preset cannot take it.
+
+Custom is **persisted**, not transient: K9 D3 stores it as exactly one row carrying this
+reserved id (see `STORABLE_KINDS`). Stored is not the same as listed -- it is editing
+state, not a catalogue entry, so `PresetRepo.list()` leaves it out while
+`PresetRepo.list_all()` returns it. Anything deciding which generated fonts are still in
+use (K7 rule 3, "a saved preset") must read `list_all()`, or the clean-up deletes the
+font of the user's own current configuration.
+"""
 
 RESERVED_IDS: frozenset[str] = frozenset(BUILTIN_IDS) | {CUSTOM_ID, ORIGINAL}
 """IDs a **user** preset may never claim.
@@ -213,20 +220,12 @@ class BuiltinOverwriteError(ValueError):
     """A user preset tried to claim a reserved ID. See `RESERVED_IDS`."""
 
 
-class PresetRecordError(ValueError):
-    """A stored preset record is malformed, or a preset cannot legally be stored.
-
-    Raised by `to_record` for something that must never reach storage (a built-in, a
-    user preset on a reserved id, a custom preset not on `CUSTOM_ID`), and by
-    `from_record` for a record this code cannot read (wrong ``v``, missing field,
-    non-numeric value, unknown word mode).
-
-    It is deliberately *not* a `PresetResolutionError`: a record that parses but whose
-    values no longer resolve -- a family dropped from ``SHORTLIST``, say -- is a
-    different failure, and conflating them would make an unreadable file and an
-    outdated-but-intact one look the same to the store. `from_record` therefore does
-    structural validation only; the caller resolves.
-    """
+# `PresetRecordError` was removed with `to_record` / `from_record` (2026-11-14). The store
+# raises `ScribeSenseError(STORE_CORRUPT)` for a record it cannot read, which is the same
+# distinction this class drew: a row that parses but no longer resolves -- a family dropped
+# from `SHORTLIST`, say -- is an outdated preset, not a corrupt one, and `resolve()` reports
+# it as `PresetResolutionError`. Conflating the two would make an unreadable file and an
+# intact-but-stale one look alike to the caller.
 
 
 # --------------------------------------------------------------------------- #
@@ -252,9 +251,18 @@ space width of **0.256 em**:
     space width > 0.256 em  ->  word_scale 1.5
     space width <= 0.256 em ->  word_scale 1.75
 
-Real sans-serif space widths sit right on top of that boundary, so the Default
-preset's resolved word spacing is genuinely undetermined until the bundled fonts are
-measured. See `MEASURED_SPACE_WIDTH_EM`.
+Real sans-serif space widths sit right on top of that boundary. **Measured, now that all
+four families are bundled** (2026-11-14): Carlito 0.226 em, Noto Sans 0.260, Atkinson
+Hyperlegible 0.280, Lexend 0.280. So Carlito resolves to 1.75 and the other three to 1.50,
+and the space glyph grows by +0.170, +0.130, +0.140 and +0.140 em respectively -- **three
+of the four land below the 0.16 em WCAG 1.4.12 floor the Default preset is built on**,
+because rounding to the *nearest* step rounds down. That is open item W6.5, not a property
+of the fonts; see `docs/research2-conformance-O1.md` 9.1.
+
+This constant is no longer reached by any bundled family. It still fires when a family's
+file is unreadable, and it is what a user-imported font (W1) would fall back to before its
+metrics are read. See `MEASURED_SPACE_WIDTH_EM` and `space_width_source`, which is how a
+caller tells a measurement from this guess.
 """
 
 MEASURED_SPACE_WIDTH_EM: dict[str, float] = {}
@@ -455,10 +463,27 @@ def builtin(preset_id: str) -> Preset:
 def _word_scale_from_target_em(
     target_em: float, family: str, space_width_em: Callable[[str], float]
 ) -> float:
-    """Convert an em target to a multiplier: ``1 + target_em / space_width``.
+    """Convert an em target to a multiplier: ``1 + target_em / space_width``, rounded **up**.
 
-    Returns the raw multiplier; snapping to K1's 0.25 step happens in `resolve`, via
-    `round_to_steps`, so the step lives in exactly one place.
+    Rounded up, not to nearest (W6.5, decided by O1 2026-11-14). ``target_em`` means "add
+    at least this much to the word gap", and its one use is the WCAG 1.4.12 floor of
+    0.16 em. Nearest-rounding delivers less than was asked for whenever the quotient falls
+    in the lower half of a step, which on Noto Sans is exactly what happened: the Default
+    preset documented itself as meeting the floor and added 0.130 em.
+
+    Measured on the bundled families, before -> after::
+
+        Carlito   0.226 em space   1.75 -> 1.75   +0.170 em   (was already above)
+        Noto Sans 0.260 em space   1.50 -> 1.75   +0.130 -> +0.195 em
+        Atkinson  0.280 em space   1.50 -> 1.75   +0.140 -> +0.210 em
+        Lexend    0.280 em space   1.50 -> 1.75   +0.140 -> +0.210 em
+
+    The step still lives in exactly one place: `settings.snap_up` takes the `Range`, and
+    `resolve`'s `round_to_steps` is then a no-op on an already-on-grid value.
+
+    It does not clamp. A target that ceilings past ``word_scale``'s maximum stays out of
+    range and `validate` refuses it -- "this font's space is too narrow to add that much
+    within the range" is a true answer, and quietly reducing it to the maximum would not be.
     """
     width = space_width_em(family)
     if not isinstance(width, (int, float)) or isinstance(width, bool):
@@ -472,7 +497,7 @@ def _word_scale_from_target_em(
         raise SpaceWidthUnavailable(
             f"space width for {family!r} must be positive, got {width!r}"
         )
-    return 1.0 + target_em / width
+    return snap_up(RANGES["word_scale"], 1.0 + target_em / width)
 
 
 def resolve(
@@ -606,8 +631,8 @@ def custom_preset(values: PresetValues, name: str = "Custom") -> Preset:
 
     Always carries `CUSTOM_ID`, which is what makes it a single upserted row rather than
     an accumulating pile: there is one working set, and saving it again replaces it.
-    Pass it to `to_record` to hand it to the store, and feed the result of `from_record`
-    back to `catalogue` on the next launch.
+    Hand it to ``store.presets.save()``; ``store.presets.get(CUSTOM_ID)`` returns it on the
+    next launch, to be passed to `catalogue` as its ``custom`` argument.
 
     Takes explicit values and has no default set: per Research2 C.4, "Custom is not a
     fixed configuration and must not be given default values". Offering it at all is
@@ -635,7 +660,7 @@ def catalogue(
     would be the worse failure of the two, because the built-in would still appear in
     the list while resolving to someone else's values.
 
-    ``custom`` is the restored working set -- typically ``from_record(stored_row)`` --
+    ``custom`` is the restored working set -- typically ``store.presets.get(CUSTOM_ID)`` --
     and is passed separately rather than inside ``user_presets`` for two reasons: it
     holds a reserved id that no user preset may claim, and the store does not return it
     from ``PresetRepo.list()`` (K9 D3), because it is editing state rather than a
@@ -684,248 +709,39 @@ def _check_custom(preset: Preset) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Storage records -- what a saved preset looks like on its way to M3.1
+# Storage -- owned by M3.1, not here
 # --------------------------------------------------------------------------- #
-
-RECORD_VERSION = 1
-"""``v`` in every record this module writes (K9 D9).
-
-Versioned from the first row so that a later field addition is a migration rather than
-a guess about what an unlabelled row meant. `from_record` refuses any other version
-outright instead of reading what it recognises: a partially understood preset would
-resolve to a configuration the user never chose.
-"""
-
-_FIELD_DECIMALS: dict[str, int] = {
-    "letter_em": decimals_of(RANGES["letter_em"]),
-    "reading_line": decimals_of(RANGES["reading_line"]),
-    "ui_line": decimals_of(RANGES["ui_line"]),
-    "text_scale": decimals_of(RANGES["text_scale"]),
-}
-"""Decimal places each stored field is written with -- derived from its K1 step.
-
-Fixed-decimal text, not floats, is what K9 D9 asks for and what K7 E2 already does for
-the content key. Two reasons, and the second is the one that bites: ``1.5`` and ``1.50``
-must be one value, and a float round-tripped through JSON can come back as
-``0.12000000000000001``, which is off the 0.02 lattice and would make a restored preset
-build a *different font* from the one the user was looking at when they saved it.
-
-Deriving the precision from `decimals_of` rather than writing ``2`` here means a K1 step
-change carries into storage automatically instead of silently truncating.
-"""
-
-_WORD_DECIMALS: dict[str, int] = {
-    "target_em": decimals_of(RANGES["letter_em"]),
-    "multiplier": decimals_of(RANGES["word_scale"]),
-}
-"""Precision for `WordSpacing.value`, which has no range of its own.
-
-A ``multiplier`` lands on ``word_scale``'s own lattice, so it borrows that step. A
-``target_em`` is an em offset like ``letter_em`` and borrows that one -- K1 gives the
-em target no range of its own, because it is intent that `resolve` converts, not a
-configuration field. Both of the figures that actually appear (WCAG's 0.12 and 0.16 em)
-are exact at this precision.
-"""
+#
+# `to_record` / `from_record` lived here until 2026-11-14. They converted a saved preset to
+# and from K9 D9's versioned JSON, and they worked -- but M3.1 shipped `store/serialize.py`
+# with the same shape and the same fixed-decimal spelling, `PresetRepo.save()` calls that,
+# and O1's pair had no caller and no test (PLAN_v2 W7). Checked before removing: the two
+# produced identical `values` payloads, so nothing was lost and nothing was silently wrong.
+#
+# They were removed rather than tested because the duplication was the defect. Two
+# implementations of one record shape, in two owners' modules, is a second authority on what
+# a preset legally contains -- and the one that drifts is the one a font gets built from.
+# `to_record`'s own docstring made that argument about storing a resolved `Configuration`
+# beside its intent; it applies to the record shape itself.
+#
+# What this module still owns is the model the store serialises: `STORABLE_KINDS`,
+# `RESERVED_IDS`, `CUSTOM_ID`, `is_storable` and `_check_custom`. `PresetRepo` re-states that
+# policy inline next to its SQL rather than asking `is_storable`; worth reconciling, but it
+# is M3.1's call and not a reason to keep a second serialiser alive here.
+#
+# Recoverable from git (this file, before 2026-11-14) if the decision is ever revisited.
 
 
 def is_storable(preset: Preset) -> bool:
     """Whether ``preset`` is one M3.1 persists -- ``user`` or ``custom``, not a built-in.
 
-    A predicate rather than a comment, so the store asks this module instead of
-    re-deciding the policy next to its SQL.
+    A predicate rather than a comment, so the store can ask this module instead of
+    re-deciding the policy next to its SQL. It does not yet: `PresetRepo.save()` re-states
+    the same rules inline. Kept because the policy belongs to K2 wherever it is enforced,
+    and because one predicate is not the duplication problem the serialisers were -- but
+    it is a loose end, and M3.1's to tie.
     """
     return preset.kind in STORABLE_KINDS
-
-
-def to_record(preset: Preset) -> dict[str, Any]:
-    """A saved preset as the JSON-serialisable record M3.1 writes (K9 D9).
-
-    Accepts ``user`` and ``custom`` alike -- that is the whole point: the Custom entry
-    goes to storage by the same path as a named preset, so there is no second, weaker
-    code path on which the user's working set can be forgotten.
-
-    Refuses, loudly:
-
-    * a **built-in** -- `BUILTINS` is code. A stored copy would be a second
-      authoritative value, and after an upgrade the stale row would shadow the corrected
-      built-in while still displaying its name;
-    * a **user preset on a reserved id** -- `RESERVED_IDS`, the same rule `catalogue`
-      enforces, applied one layer earlier so a bad row never reaches disk;
-    * a **custom preset not on `CUSTOM_ID`** -- it would stop being the single upserted
-      working row and start accumulating.
-
-    Numbers become fixed-decimal strings; see `_FIELD_DECIMALS` for why that is not
-    cosmetic. The resolved `Configuration` is deliberately **not** stored alongside:
-    K2's whole model is that a preset holds intent and `resolve` is the only producer of
-    a configuration. Persisting both would let them drift, and the one that drifts is
-    the one the font was built from.
-
-    >>> record = to_record(custom_preset(BUILTINS[0].values))
-    >>> record["id"], record["kind"], record["values"]["letter_em"]
-    ('custom', 'custom', '0.12')
-    """
-    if not is_storable(preset):
-        raise PresetRecordError(
-            f"preset kind {preset.kind!r} is not stored"
-            f" (storable: {sorted(STORABLE_KINDS)});"
-            " built-ins live in BUILTINS and ORIGINAL is not a preset"
-        )
-    if preset.kind == "custom":
-        _check_custom(preset)
-    elif preset.id in RESERVED_IDS:
-        raise PresetRecordError(
-            f"preset id {preset.id!r} is reserved and cannot be used by a"
-            f" user preset (reserved: {sorted(RESERVED_IDS)})"
-        )
-    if not isinstance(preset.name, str) or not preset.name.strip():
-        raise PresetRecordError(f"preset name must be a non-empty string, got {preset.name!r}")
-
-    values = preset.values
-    word = values.word
-    if word.mode not in _WORD_DECIMALS:
-        raise PresetRecordError(
-            f"WordSpacing.mode must be 'target_em' or 'multiplier', got {word.mode!r}"
-        )
-    if not isinstance(values.base_family, str) or not values.base_family:
-        raise PresetRecordError(f"base_family must be a non-empty string, got {values.base_family!r}")
-
-    return {
-        "v": RECORD_VERSION,
-        "id": preset.id,
-        "name": preset.name,
-        "kind": preset.kind,
-        "values": {
-            "base_family": values.base_family,
-            "letter_em": _text("letter_em", values.letter_em, _FIELD_DECIMALS["letter_em"]),
-            "word": {
-                "mode": word.mode,
-                "value": _text("word.value", word.value, _WORD_DECIMALS[word.mode]),
-            },
-            "reading_line": _text(
-                "reading_line", values.reading_line, _FIELD_DECIMALS["reading_line"]
-            ),
-            "ui_line": _text("ui_line", values.ui_line, _FIELD_DECIMALS["ui_line"]),
-            "text_scale": _text(
-                "text_scale", values.text_scale, _FIELD_DECIMALS["text_scale"]
-            ),
-        },
-    }
-
-
-def from_record(record: Mapping[str, Any]) -> Preset:
-    """Rebuild a saved preset from a stored record. The inverse of `to_record`.
-
-    Structural validation only -- version, kind, id, word mode, and that every numeric
-    field is a real finite number. It deliberately does **not** call `resolve`: a record
-    that parses but whose ``base_family`` has since left ``SHORTLIST`` is intact and
-    outdated, not corrupt, and the store must be able to hand it back so the user can
-    see and repair it. Resolving is the caller's next step, and `PresetResolutionError`
-    is what it raises.
-
-    ``base_family`` is likewise not checked against ``SHORTLIST`` here, for the same
-    reason: `validate` owns that judgement (``UNKNOWN_FONT``) and owning it twice means
-    two answers.
-
-    >>> restored = from_record(to_record(custom_preset(BUILTINS[1].values)))
-    >>> restored == custom_preset(BUILTINS[1].values)
-    True
-    """
-    if not isinstance(record, Mapping):
-        raise PresetRecordError(f"preset record must be a mapping, got {type(record).__name__}")
-    version = record.get("v")
-    if version != RECORD_VERSION:
-        raise PresetRecordError(
-            f"preset record declares v={version!r}, this code reads v={RECORD_VERSION}"
-        )
-
-    kind = record.get("kind")
-    if kind not in STORABLE_KINDS:
-        raise PresetRecordError(
-            f"stored preset kind must be one of {sorted(STORABLE_KINDS)}, got {kind!r}"
-        )
-    preset_id = record.get("id")
-    if not isinstance(preset_id, str) or not preset_id:
-        raise PresetRecordError(f"preset record has no usable id: {preset_id!r}")
-    if kind == "custom" and preset_id != CUSTOM_ID:
-        raise PresetRecordError(f"a custom record must carry id {CUSTOM_ID!r}, got {preset_id!r}")
-    if kind == "user" and preset_id in RESERVED_IDS:
-        raise PresetRecordError(f"stored user preset holds the reserved id {preset_id!r}")
-    name = record.get("name")
-    if not isinstance(name, str) or not name.strip():
-        raise PresetRecordError(f"preset record has no usable name: {name!r}")
-
-    raw_values = record.get("values")
-    if not isinstance(raw_values, Mapping):
-        raise PresetRecordError("preset record has no 'values' mapping")
-    family = raw_values.get("base_family")
-    if not isinstance(family, str) or not family:
-        raise PresetRecordError(f"base_family must be a non-empty string, got {family!r}")
-
-    raw_word = raw_values.get("word")
-    if not isinstance(raw_word, Mapping):
-        raise PresetRecordError("preset record has no 'word' mapping")
-    mode = raw_word.get("mode")
-    if mode not in _WORD_DECIMALS:
-        raise PresetRecordError(
-            f"WordSpacing.mode must be 'target_em' or 'multiplier', got {mode!r}"
-        )
-    # Narrow to the Literal K2 declares, rather than passing the record's object
-    # through: the check above is the only place the two spellings are enumerated.
-    word_mode: Literal["target_em", "multiplier"] = (
-        "target_em" if mode == "target_em" else "multiplier"
-    )
-
-    values = PresetValues(
-        base_family=family,
-        letter_em=_number("letter_em", raw_values.get("letter_em")),
-        word=WordSpacing(word_mode, _number("word.value", raw_word.get("value"))),
-        reading_line=_number("reading_line", raw_values.get("reading_line")),
-        ui_line=_number("ui_line", raw_values.get("ui_line")),
-        text_scale=_number("text_scale", raw_values.get("text_scale")),
-    )
-    preset_kind: Literal["user", "custom"] = "custom" if kind == "custom" else "user"
-    return Preset(id=preset_id, name=name, values=values, kind=preset_kind)
-
-
-def _text(field: str, value: object, decimals: int) -> str:
-    """One number as canonical fixed-decimal text, or `PresetRecordError`.
-
-    Mirrors K1's own refusals rather than inventing new ones: ``bool`` is rejected even
-    though it is numerically coercible, for the reason `NOT_A_NUMBER` exists -- ``True``
-    would otherwise store as ``1.00``, a perfectly valid ``text_scale`` the user never
-    chose.
-    """
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        raise PresetRecordError(f"{field} is not a real number: {value!r}")
-    number = float(value) + 0.0  # K1 A3: -0.0 and 0.0 must not produce different text.
-    if not math.isfinite(number):
-        raise PresetRecordError(f"{field} is not finite: {value!r}")
-    text = f"{number:.{decimals}f}"
-    # A small negative (-0.004) still formats with a sign at two decimals. Same repr
-    # problem, one rounding step later, so it is normalised here rather than left to
-    # surprise M1.5's content key.
-    return f"{0.0:.{decimals}f}" if float(text) == 0.0 else text
-
-
-def _number(field: str, raw: object) -> float:
-    """Read one stored number back. Accepts the canonical text and a bare JSON number.
-
-    Both, because a record may have been written by hand or by an older writer, and a
-    preset that refuses to load is worse than one that loads a float: `validate` still
-    has the last word on the value either way.
-    """
-    if isinstance(raw, str):
-        try:
-            number = float(raw)
-        except ValueError:
-            raise PresetRecordError(f"{field} is not a number: {raw!r}") from None
-    elif isinstance(raw, (int, float)) and not isinstance(raw, bool):
-        number = float(raw)
-    else:
-        raise PresetRecordError(f"{field} is not a number: {raw!r}")
-    if not math.isfinite(number):
-        raise PresetRecordError(f"{field} is not finite: {raw!r}")
-    return number + 0.0
 
 
 def is_original(value: object) -> bool:

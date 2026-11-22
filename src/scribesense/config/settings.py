@@ -86,6 +86,7 @@ __all__ = [
     "positions",
     "round_to_steps",
     "snap",
+    "snap_up",
     "validate",
 ]
 
@@ -227,6 +228,29 @@ def snap(r: Range, value: float) -> float:
     # content key from the canonical decimal text. Without this, a configuration
     # could flip between "-0.0" and "0.0" and silently invalidate a cached font.
     return round(r.min + round((value - r.min) / r.step) * r.step, decimals_of(r)) + 0.0
+
+
+def snap_up(r: Range, value: float) -> float:
+    """Round ``value`` **up** onto ``r``'s step lattice. Does not clamp (K1 rule 1).
+
+    `snap` rounds to the nearest step, which is right for a value the user set directly: a
+    slider at 0.131 means 0.13, not 0.14. It is wrong for a value that expresses a
+    *minimum* -- K2's ``target_em`` word spacing, whose one use is the WCAG 1.4.12 floor.
+    Nearest-rounding silently delivers less than was asked for, which on a floor is the one
+    direction that is not allowed to be wrong (W6.5, 2026-11-14).
+
+    The `STEP_TOLERANCE` subtraction keeps a value already on the lattice where it is: float
+    noise must not push an exact 1.75 up a whole step to 2.00.
+
+    Like `snap`, it does not clamp -- a target that ceilings past the range stays out of
+    range and `validate` reports it, rather than being quietly reduced to something the
+    caller did not ask for.
+
+    >>> snap_up(RANGES["word_scale"], 1.6154), snap(RANGES["word_scale"], 1.6154)
+    (1.75, 1.5)
+    """
+    steps = math.ceil((value - r.min) / r.step - STEP_TOLERANCE)
+    return round(r.min + steps * r.step, decimals_of(r)) + 0.0
 
 
 def contains(r: Range, value: float) -> bool:

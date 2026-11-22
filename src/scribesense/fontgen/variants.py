@@ -57,14 +57,15 @@ from typing import Literal
 
 from scribesense.config.bundled import (
     FONT_SUFFIXES,
-    FONTS_ROOT,
     OPTIONAL_STYLES,
     REQUIRED_STYLE,
     STYLES,
     BundledFontMissing,
     base_font_files,
+    fonts_root,
 )
 from scribesense.config.rules import (
+    FONT_PARSE_TIMEOUT,
     FONT_TOO_LARGE,
     MISSING_TABLE,
     NO_LATIN_COVERAGE,
@@ -90,7 +91,7 @@ from scribesense.fontgen.patcher import patch
 __all__ = [
     "BUNDLED_FONT_MISSING",
     "error_code_for",
-    "FONTS_ROOT",
+    "fonts_root",
     "OPTIONAL_STYLES",
     "REQUIRED_STYLE",
     "STYLES",
@@ -128,7 +129,16 @@ BUNDLED_FONT_MISSING = ErrorCode.BUNDLED_FONT_MISSING.value
 GENERATOR_ERROR = "GENERATOR_ERROR"
 """An unexpected exception inside the pipeline (M1.8). Proposed ErrorCode, see `error_code_for`."""
 
-_UNREADABLE_DETAILS = frozenset({FONT_TOO_LARGE, MISSING_TABLE, NO_UPM})
+_UNREADABLE_DETAILS = frozenset(
+    {FONT_TOO_LARGE, FONT_PARSE_TIMEOUT, MISSING_TABLE, NO_UPM}
+)
+"""M1.3 refusals that are not font *content* problems, folded to ``FONT_UNREADABLE``.
+
+``FONT_PARSE_TIMEOUT`` joined them on 2026-11-14. A font whose parse had to be killed is
+one ScribeSense could not read, which is what the user needs to be told; the distinction
+between "too big", "too slow" and "malformed" is for the report, and rides on
+``FontBuildResult.detail``.
+"""
 
 
 def error_code_for(detail: str) -> str:
