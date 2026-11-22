@@ -21,6 +21,11 @@ Socket requests the service answers (one JSON object per line, same user only):
     reset           K4 rule 6: `scribesense reset` asks a running service to reset
     pending         M2.3: which tx is awaiting confirmation (the confirm window checks it is still current)
 
+Setup (O4 safety/setup.py, wired 2026-11-22 by O4 with the user's go-ahead): `open(setup=...)` runs the given check-
+and-repair once after housekeeping and again after every Keep (a font change), so browsers that are missing the
+extension or its host are fixed without a terminal. Off by default (None): only the real app passes
+`safety.setup.ensure`, so tests never touch the real system or start a password prompt.
+
 Delete-all (M2.7 / K9 "apply lock -> block applies -> reset -> delete"): `delete_all_data()` holds the service mutex
 and the apply lock while it deletes, so no apply can start between the journal's token and the deletion.
 
@@ -66,7 +71,8 @@ class Service:
     """Owns the journal, socket and controller. Build with `Service.open()`; call `close()` on Quit."""
 
     def __init__(self, *, store: Any, lock: Any, journal: Any, server: Any, adapters: list[Adapter],
-                 controller: ApplyController, on_reader_text: Callable[[str], None] | None = None) -> None:
+                 controller: ApplyController, on_reader_text: Callable[[str], None] | None = None,
+                 setup: Callable[[], object] | None = None) -> None:
         self.store = store
         self.lock = lock
         self.journal = journal
@@ -74,6 +80,7 @@ class Service:
         self.adapters = adapters
         self.controller = controller
         self.on_reader_text = on_reader_text
+        self.setup = setup
         self._pending: _Pending | None = None
         self._mutex = threading.RLock()  # one apply / keep / revert / reset at a time inside the service
 
@@ -81,7 +88,7 @@ class Service:
 
     @classmethod
     def open(cls, *, on_reader_text: Callable[[str], None] | None = None, start_server: bool = True,
-             adapters: list[Adapter] | None = None) -> Service:
+             adapters: list[Adapter] | None = None, setup: Callable[[], object] | None = None) -> Service:
         from scribesense.adapters.registry import default_adapters
         from scribesense.config import presets, settings
         from scribesense.fontgen import generator
@@ -102,9 +109,10 @@ class Service:
             round_to_steps=settings.round_to_steps, validate=settings.validate, data_dir=paths.data_dir,
         )
         service = cls(store=store, lock=lock, journal=journal, server=server, adapters=adapter_list,
-                      controller=controller, on_reader_text=on_reader_text)
+                      controller=controller, on_reader_text=on_reader_text, setup=setup)
         holder["service"] = service
         service.housekeeping()
+        service.run_setup()
         if start_server:
             server.start()
         return service
@@ -170,6 +178,15 @@ class Service:
         with self._mutex:
             return self._pending.tx if self._pending is not None else None
 
+    def run_setup(self) -> None:
+        """The O4 check-and-repair (if wired). Never raises: setup must never stop the app or a Keep."""
+        if self.setup is None:
+            return
+        try:
+            self.setup()
+        except Exception:  # noqa: BLE001
+            pass
+
     def keep(self, tx: TxId) -> int:
         """Keep the pending tx (K4 rule 3, one atomic step). Only the CURRENT pending tx (A15)."""
         with self._mutex:
@@ -178,7 +195,8 @@ class Service:
                 raise ScribeSenseError(ErrorCode.TX_NOT_PENDING)
             revision = self.journal.keep(tx, ActiveConfig(pending.config, pending.font_key, pending.preset_id, 0))
             self._pending = None
-            return revision
+        self.run_setup()  # a font change: re-check browsers (outside the mutex; root prompts run in the background)
+        return revision
 
     def revert(self, tx: TxId) -> Any:
         """Revert the pending tx (Revert pressed, window closed, or the confirmation timed out)."""

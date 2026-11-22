@@ -1303,6 +1303,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 
 > **Cross-owner change 2026-11-22 (O4, user's go-ahead; for O2 to review):** `controller/service.py` — `get_style` adds `font_key` / `styles`; new `get_font` route serving only the active set's web-font copy through `adapters/webfont.py`. Tests: `tests/unit/test_webfont.py`.
 
+
+> **Cross-owner change 2026-11-22 (O4, user's go-ahead; for O2 to review):** `Service.open(setup=...)` runs O4's check-and-repair once after housekeeping and again after every Keep (never raises; off by default so tests never touch the real system); `ui/app.py` passes `safety.setup.ensure`.
+
 #### M2.5 Presets, adjust and preview screens
 | Field | Spec |
 |---|---|
@@ -2153,6 +2156,9 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 
 
 > **Done 2026-11-22 (O4):** extension 0.1.2 reloads itself on `runtime.onUpdateAvailable` — its permanent native port keeps the worker busy, so the browser otherwise holds a new version back until a restart (seen live: Brave kept running 0.1.0 with 0.1.1 already downloaded). Confirmed working on Brave with Shields on (web fonts, 0.1.1).
+
+
+> **Done 2026-11-22 (O4): automatic setup and repair** — `safety/setup.py` checks THIS machine (installed Chromium-family browsers by their system install marker; Flatpak ones → unsupported; a leftover `~/.config` folder of an uninstalled browser is ignored), silently installs/refreshes our host manifests and the development launcher (also after a venv rebuild), and asks ONCE per extension version through `pkexec` (polkit's graphical prompt, never a terminal) to pre-install the signed `.crx` for every installed browser via `safety/root_helper.py` — standalone, standard library only, run as `pkexec /usr/bin/python3 -I`, two commands (`install <crx>` / `remove`), validates the CRX3 and derives ID and version from it, writes only fixed paths (`/usr/share/scribesense/scribesense.crx`, each browser's documented extensions folder), removes only its own pointer files. No polkit agent → no prompt, reported instead (the dev machine has none: Hyprland needs e.g. `hyprpolkitagent`). Signed `.crx` = release artifact (`extension/dist/scribesense.crx`, or the installed copy). Tests: `tests/unit/test_setup.py` (23). Real check on the dev machine: Brave host ok, extension ok.
 
 #### M4.10 Journal
 | Field | Spec |

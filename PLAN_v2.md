@@ -1251,3 +1251,18 @@ permission prompt at that moment (graphical, no terminal), covering every browse
 — documented by Google) and Chromium's / Vivaldi's / Edge's folders on Fedora and Arch; whether a polkit agent runs
 under Hyprland (ML4W). Flatpak browsers cannot use a host outside their sandbox: reported as unsupported.
 
+### Built (2026-11-22, O4): automatic setup and repair — first version
+
+`safety/setup.py` + `safety/root_helper.py`, wired into the service (on start and after every Keep; cross-owner in
+`controller/service.py` and `ui/app.py`, user's go-ahead, for O2 to review). Per-user repairs are silent; the root step
+is one polkit prompt per extension version. Details on the M4.9 card. Tests: **2286 passed, 0 failed** (unit) ·
+integration 35 passed · extension JS 45 passed.
+
+**Still open for this feature:** a polkit agent on the user's session (`doctor` should check it; ML4W / Hyprland has
+none running by default here); the maintainer builds the signed `.crx` into `extension/dist/scribesense.crx` per
+release; `scribesense uninstall` should also run `root_helper remove` (one prompt); verify Chrome's / Chromium's
+folders on a VM; the app's banner and button for "browser extension not installed" (O2); the RPM does the root step
+at install time (O3, W2); keybinds / login hook / service start at login as silent repairs (needs O2's CLI change for
+starting the service at login). Rust for the root helper and the native host is a team option after Phase III (the
+full app stays Python: the slow parts are external font tools, and the security comes from the design).
+

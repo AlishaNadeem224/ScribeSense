@@ -414,7 +414,9 @@ class ScribeSenseApp(Adw.Application):
         if self.service is None and not self._service_tried:
             self._service_tried = True
             try:
-                self.service = Service.open(on_reader_text=self._reader_text_from_service)
+                from scribesense.safety.setup import ensure as setup_ensure  # O4 automatic setup (2026-11-22)
+
+                self.service = Service.open(on_reader_text=self._reader_text_from_service, setup=setup_ensure)
             except ScribeSenseError as exc:
                 log(exc.code, "ui", step="startup")
                 self._startup_problem = startup_text(exc.code)
