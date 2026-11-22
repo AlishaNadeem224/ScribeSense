@@ -98,8 +98,9 @@ def test_builtins_resolve_and_validate() -> None:
     for p in presets.BUILTINS:
         c = presets.resolve(p.values, space_width_em=lambda _f: 0.26)
         assert not [i for i in settings.validate(c) if i.level == "error"]
-    # Default: 1 + 0.16 / 0.26 = 1.615 -> 1.5 on the 0.25 grid.
-    assert presets.resolve(presets.BUILTINS[0].values, space_width_em=lambda _f: 0.26).word_scale == 1.5
+    # Default: 1 + 0.16 / 0.26 = 1.615 -> 1.75, rounded UP on the 0.25 grid (W6.5, 2026-11-14).
+    # `target_em` is a floor, so nearest-rounding would deliver 0.130 em against WCAG's 0.16.
+    assert presets.resolve(presets.BUILTINS[0].values, space_width_em=lambda _f: 0.26).word_scale == 1.75
 
 
 def test_target_em_is_recalculated_on_font_change_multiplier_is_kept() -> None:
@@ -132,7 +133,7 @@ def test_unknown_word_mode_is_rejected() -> None:
 
 def test_base_font_files_and_space_width_come_from_the_bundled_tree(tmp_path: Path, make_font,  # type: ignore[no-untyped-def]
                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bundled, "FONTS_ROOT", tmp_path / "fonts")
+    monkeypatch.setenv(bundled.BUNDLED_FONTS_ENV, str(tmp_path / "fonts"))
     monkeypatch.setattr(presets, "MEASURED_SPACE_WIDTH_EM", {})
     with pytest.raises(ScribeSenseError) as exc:
         presets.base_font_files("Lexend")
@@ -149,8 +150,14 @@ def test_base_font_files_and_space_width_come_from_the_bundled_tree(tmp_path: Pa
     assert presets.space_width_source("Lexend") == "measured"
 
 
-def test_fonts_root_is_the_repository_fonts_dir() -> None:
-    assert bundled.FONTS_ROOT == Path(__file__).resolve().parents[3] / "fonts"
+def test_fonts_root_is_the_repository_fonts_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """In a checkout, with nothing installed, the repository tree is what resolves.
+
+    The installed-package cases live in `scribesense.config_and_fontgen_tests` (W2.1).
+    """
+    monkeypatch.delenv(bundled.BUNDLED_FONTS_ENV, raising=False)
+    monkeypatch.setenv("XDG_DATA_DIRS", str(tmp_path))  # no installed tree to find
+    assert bundled.fonts_root() == Path(__file__).resolve().parents[3] / "fonts"
 
 
 # ---- M1.3 ----------------------------------------------------------------------------------------

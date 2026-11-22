@@ -48,9 +48,10 @@ SYSTEM_PYTHON = "/usr/bin/python3"
 PKEXEC_TIMEOUT_S = 300.0
 STATE_FILE = "setup-state.json"
 #: Process names of polkit authentication agents (what shows the password dialog under a Wayland compositor).
-POLKIT_AGENTS = ("hyprpolkitagent", "polkit-gnome-authentication-agent-1", "polkit-kde-authentication-agent-1",
-                 "polkit-mate-authentication-agent-1", "lxqt-policykit-agent", "lxpolkit", "xfce-polkit",
-                 "soteria", "polkit-agent-helper")
+#: GNOME has no separate agent: GNOME Shell itself is the polkit agent (fixed 2026-11-23 — a GNOME laptop got no prompt).
+POLKIT_AGENTS = ("gnome-shell", "hyprpolkitagent", "polkit-gnome-authentication-agent-1",
+                 "polkit-kde-authentication-agent-1", "polkit-mate-authentication-agent-1", "lxqt-policykit-agent",
+                 "lxpolkit", "xfce-polkit", "soteria")
 
 Status = Literal["ok", "missing", "outdated", "unsupported", "unavailable"]
 
@@ -138,6 +139,11 @@ def _extension_status(key: str, ext_id: str, version: str) -> Status:
     return "ok" if seen == version else "outdated"
 
 
+def is_agent_process(comm: str, exe: str) -> bool:
+    """`comm` (/proc/<pid>/comm, cut to 15 characters by the kernel) or the program name names a polkit agent."""
+    return any(comm == agent[:15] or os.path.basename(exe) == agent for agent in POLKIT_AGENTS)
+
+
 def polkit_agent_running() -> bool:
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
@@ -147,7 +153,7 @@ def polkit_agent_running() -> bool:
             cmd = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[0].decode("utf-8", "replace")
         except OSError:
             continue
-        if any(name == agent[:15] or os.path.basename(cmd) == agent for agent in POLKIT_AGENTS):  # comm: 15 chars
+        if is_agent_process(name, cmd):
             return True
     return False
 

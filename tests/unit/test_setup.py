@@ -320,3 +320,16 @@ def test_every_test_sees_only_sandboxed_system_folders(sandbox) -> None:  # type
     assert str(rh.CRX_TARGET).startswith(str(sandbox.root))
     for markers, folders in rh.BROWSER_FOLDERS.values():
         assert all(p.startswith(str(sandbox.root)) for p in (*markers, *folders))
+
+
+
+@pytest.mark.parametrize("comm,exe,expected", [
+    ("gnome-shell", "/usr/bin/gnome-shell", True),  # GNOME: the shell IS the agent (2026-11-23 bug)
+    ("hyprpolkitagen", "/usr/libexec/hyprpolkitagent", True),  # comm cut to 15 characters by the kernel
+    ("polkit-kde-auth", "/usr/libexec/polkit-kde-authentication-agent-1", True),
+    ("polkit-agent-he", "/usr/lib/polkit-1/polkit-agent-helper-1", False),  # polkit's helper, not an agent
+    ("bash", "/usr/bin/bash", False),
+    ("s", "/usr/bin/s", False),  # a short name must never prefix-match an agent
+])
+def test_polkit_agent_names(comm: str, exe: str, expected: bool) -> None:
+    assert setup.is_agent_process(comm, exe) is expected

@@ -102,7 +102,7 @@ def test_an_unreadable_source_makes_the_answer_incomplete_but_the_others_still_c
 def test_bundled_font_key_is_none_while_no_base_font_is_bundled(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     from scribesense.config import bundled
 
-    monkeypatch.setattr(bundled, "FONTS_ROOT", tmp_path / "fonts")  # empty: build() would refuse
+    monkeypatch.setenv(bundled.BUNDLED_FONTS_ENV, str(tmp_path / "fonts"))  # empty: build() would refuse
     assert bundled_font_key(A) is None
 
 
