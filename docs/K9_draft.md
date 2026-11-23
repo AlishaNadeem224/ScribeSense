@@ -438,4 +438,52 @@ three built-in intents and their resolved values match the K2 table in `contract
 * The reply also suggests persisting "the user's working configuration" as its own row. K9 already has `active_config` (the confirmed, applied configuration); the
   unapplied `custom` working set is a different thing — to be settled together with D3.
 * Other points from the reply: uninstall removes fonts only through `fontgen.cache` (`reconcile()`, then `installed_keys()` + `remove(key)`); `ReferenceSource` is not an O1 task
+
+---
+
+## 10. Schema addition — `built_in_presets` / `preset_adjustment_limit` (2026-11-23, draft K1/K2 amendment, **NOT signed off**)
+
+Full reasoning, the D3-exception rationale, and the sign-off checklist are in
+`docs/K1_K2_preset_adjustment_draft.md`; this is the schema block, verbatim, for the two tables added by
+migrations `003_builtin_presets.sql` and `004_preset_adjustment_limit.sql` — the same "schema as built"
+treatment section 2 gives `001_initial.sql`.
+
+```sql
+-- 003_builtin_presets
+CREATE TABLE built_in_presets (
+  preset_id        TEXT PRIMARY KEY,
+  name             TEXT NOT NULL,
+  base_family_rule TEXT NOT NULL,   -- token ('platform_sans' | 'eligible_sans'); resolving to a concrete
+                                     -- font pick is an open O1 design question, not decided by this migration
+  letter_em        REAL NOT NULL,
+  word_spacing_em  REAL NOT NULL,
+  reading_line     REAL NOT NULL,
+  ui_line          REAL NOT NULL,
+  text_scale       REAL NOT NULL
+);
+-- 7 rows seeded: neutral-baseline, wcag-text-spacing, high-separation-crowding, word-spacing-first,
+-- low-vision-magnification, older-adult-comfort, read-along-support (exact values in the migration file).
+
+-- 004_preset_adjustment_limit
+CREATE TABLE preset_adjustment_limit (
+  field_name    TEXT PRIMARY KEY,
+  min_allowed   REAL NOT NULL,
+  max_allowed   REAL NOT NULL,
+  step          REAL NOT NULL,
+  warn_below    REAL,
+  warn_above    REAL,
+  why_that_stop TEXT NOT NULL
+);
+-- 5 rows seeded: letter_em, word_spacing_em, reading_line, ui_line, text_scale (exact values and
+-- why_that_stop text in the migration file). word_spacing_em.warn_below is NULL: that threshold is
+-- per-preset (PresetAdjustmentLimitRepo.word_spacing_warn_below(preset_id)), not a static number. 3 of
+-- the task's claimed 8 adjustable fields have no verified value anywhere in this repo and are not
+-- inserted — not invented.
+
+PRAGMA user_version = 4;
+```
+
+Not in this schema on purpose: no UI-slider wiring, no write path (both tables are read-only reference
+data — `BuiltInPresetRepo`, `PresetAdjustmentLimitRepo` in `store/repos.py` expose `get`/`list_all` only),
+and the existing 3 code-only built-ins (`config.presets.BUILTINS`) stay exactly where D3 put them.
   (O4 has since built it); bundled fonts will change every content key once (re-resolve rows, do not migrate keys).

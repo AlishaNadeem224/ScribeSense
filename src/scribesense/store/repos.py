@@ -356,6 +356,91 @@ class UserFontsRepo:
             return [r.sha256 for r in rows]
 
 
+# ---------------------------------------------------------------- built-in presets / adjustment limits
+# (O3, K9 addition — draft amendment to K1/K2, pending O1 sign-off: docs/K1_K2_preset_adjustment_draft.md)
+
+@dataclass(frozen=True)
+class BuiltInPresetEntry:
+    preset_id: str
+    name: str
+    base_family_rule: str
+    letter_em: float
+    word_spacing_em: float
+    reading_line: float
+    ui_line: float
+    text_scale: float
+
+
+@dataclass(frozen=True)
+class PresetAdjustmentLimitEntry:
+    field_name: str
+    min_allowed: float
+    max_allowed: float
+    step: float
+    warn_below: float | None
+    warn_above: float | None
+    why_that_stop: str
+
+
+class BuiltInPresetRepo:
+    """READ-ONLY: the 7-preset catalogue in `built_in_presets` (migration 003). No write path exists —
+    these are immutable reference data, distinct from the existing code-only builtins in
+    `config.presets.BUILTINS` (D3), which this repo never touches."""
+
+    def __init__(self, store: Store) -> None:
+        self._s = store
+
+    @staticmethod
+    def _entry(row: Any) -> BuiltInPresetEntry:
+        return BuiltInPresetEntry(
+            preset_id=row["preset_id"], name=row["name"], base_family_rule=row["base_family_rule"],
+            letter_em=row["letter_em"], word_spacing_em=row["word_spacing_em"],
+            reading_line=row["reading_line"], ui_line=row["ui_line"], text_scale=row["text_scale"],
+        )
+
+    def get(self, preset_id: str) -> BuiltInPresetEntry | None:
+        row = self._s.fetchone("SELECT * FROM built_in_presets WHERE preset_id = ?", (preset_id,))
+        return None if row is None else self._entry(row)
+
+    def list_all(self) -> list[BuiltInPresetEntry]:
+        rows = self._s.fetchall("SELECT * FROM built_in_presets ORDER BY preset_id")
+        return [self._entry(r) for r in rows]
+
+
+class PresetAdjustmentLimitRepo:
+    """READ-ONLY: slider hard-bounds and advisory-warning thresholds in `preset_adjustment_limit`
+    (migration 004), for the 5 fields with a verified value (see the migration file for the other 2
+    claimed-but-unresolved fields — not invented, not inserted)."""
+
+    def __init__(self, store: Store) -> None:
+        self._s = store
+
+    @staticmethod
+    def _entry(row: Any) -> PresetAdjustmentLimitEntry:
+        return PresetAdjustmentLimitEntry(
+            field_name=row["field_name"], min_allowed=row["min_allowed"], max_allowed=row["max_allowed"],
+            step=row["step"], warn_below=row["warn_below"], warn_above=row["warn_above"],
+            why_that_stop=row["why_that_stop"],
+        )
+
+    def get(self, field_name: str) -> PresetAdjustmentLimitEntry | None:
+        row = self._s.fetchone("SELECT * FROM preset_adjustment_limit WHERE field_name = ?", (field_name,))
+        return None if row is None else self._entry(row)
+
+    def list_all(self) -> list[PresetAdjustmentLimitEntry]:
+        rows = self._s.fetchall("SELECT * FROM preset_adjustment_limit ORDER BY field_name")
+        return [self._entry(r) for r in rows]
+
+    def word_spacing_warn_below(self, preset_id: str) -> float | None:
+        """Phase 3's one documented exception: `word_spacing_em`'s lower advisory threshold is the
+        SELECTED preset's own ORIGINAL `word_spacing_em` (never its currently-modified value), looked up
+        from `built_in_presets` — not a static number in `preset_adjustment_limit` (whose row for this
+        field stores `warn_below = NULL` for exactly this reason). Returns None if `preset_id` names no
+        known built-in preset, so a caller falls back to "no lower warning" rather than guessing."""
+        preset = BuiltInPresetRepo(self._s).get(preset_id)
+        return None if preset is None else preset.word_spacing_em
+
+
 # ---------------------------------------------------------------- coverage (read-only)
 
 class CoverageRepo:

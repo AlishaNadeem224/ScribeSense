@@ -2188,3 +2188,35 @@ integration 35 passed.
     (K1/K2 wording, lookup approach, the three error codes — still open to any of O2/O3/O4); `base_font_files()`
     resolving imported families stays blocked on Part A, same as before.
 
+## Build (2026-11-23, O3) — built_in_presets / preset_adjustment_limit tables (proposed K1/K2 amendment, NOT signed off)
+
+    A task asked for a research-backed accessibility-preset catalogue (7 presets) and per-field slider
+    limits/warnings. Full reasoning, the D3-exception rationale, and the open sign-off items are in
+    `docs/K1_K2_preset_adjustment_draft.md` — this entry is the short version.
+
+    **Schema:** `store/migrations/003_builtin_presets.sql` (`built_in_presets`, 7 seeded rows) and
+    `store/migrations/004_preset_adjustment_limit.sql` (`preset_adjustment_limit`, 5 confirmed rows —
+    only 5 of the task's claimed 8 fields are backed by a verified value anywhere in this repo; the other
+    2 are not inserted, nothing invented).
+
+    **Repos:** `BuiltInPresetRepo`, `PresetAdjustmentLimitRepo` (`store/repos.py`), read-only, wired into
+    `Store.__init__`. `PresetAdjustmentLimitRepo.word_spacing_warn_below(preset_id)` is the single,
+    centralized implementation of the per-preset lower-warning-threshold exception (the selected preset's
+    own original `word_spacing_em`, looked up from `built_in_presets` — not a static number).
+
+    **Decision taken while building:** the new 7 presets go in SQL rather than in `config.presets.BUILTINS`
+    (which would honor D3 — "built-ins are code, not SQL, so they cannot drift" — more directly), because
+    this session owns `store/`, not `config/` (AGENTS.md §3 ownership). The existing 3 built-ins stay in
+    code, untouched. This is flagged as a scoped exception to D3 for O1 to accept, revise, or reverse —
+    not a unilateral re-litigation of that decision.
+
+    **Not done (needs O1/O2):** slider/warning UI wiring, applying a selected preset to the live
+    `Configuration`, resolving `base_family_rule` tokens into concrete font picks, and reconciling the new
+    limit bounds with the existing, frozen `RANGES` (different `letter_em` bounds/step).
+
+    Tests: 19 added (`tests/unit/test_builtin_presets.py`) plus 2 existing `test_store_core.py` assertions
+    updated for the migration count (2 → 4). Full suite after: **2321 passed, 0 failed, 138 skipped**.
+
+    **Still open:** everything in §7 of the draft doc — O1 sign-off (+ one other owner) before `contracts/`
+    or `ARCHITECTURE.md` are actually amended. No contract file was edited by this session.
+
