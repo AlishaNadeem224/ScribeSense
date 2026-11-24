@@ -219,6 +219,18 @@ def validate(c: Configuration) -> list[Issue]
 
 > **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" P3-3, W1):** **Proposed change, not yet agreed (O1 + one other owner):** `base_family` may also name a user-**imported** family, looked up from the store; `SHORTLIST` stays the bundled set so unknown names are still refused. Until the change is signed off and recorded in PLAN_v2, K1 is unchanged.
 
+> **W1 font-import amendment (2026-11-24) — O4 signed off; O1 (contract owner) to confirm.** One amendment across
+> K1 / K2 / K8 / K9, in code in `contracts/`: **K1 rule 6** — `base_family` is a SHORTLIST name or an imported family;
+> an imported name is printable, has no outer whitespace, is 1–`IMPORTED_FAMILY_MAX_CHARS` (64) characters and never
+> equals a SHORTLIST name ignoring case; `validate()` learns imported names only through a provider the service
+> registers (`config.settings.set_imported_families`) — `config` never imports the store. **K2 rule 2** — bundled or
+> imported (copied into the store), never read in place from the system; `base_font_files` raises `FONT_UNREADABLE`
+> for an imported family whose stored copy is missing (`config.bundled.set_imported_files`, copies outside
+> `user_fonts_dir()` are refused). **K8** — `user_fonts_dir()` = `data_dir()/user-fonts`, `<sha256>/<file_name>`
+> (64 lowercase hex / plain base name), dirs 0700, files 0600. **K9** — `UserFontEntry`, `UserFontsRepo`,
+> `Store.user_fonts`; `IMPORTED_FONT_IN_USE` for replacing / deleting a family in use. Error codes `IMPORT_FAILED`,
+> `IMPORT_NOT_ELIGIBLE`, `IMPORTED_FONT_IN_USE` (added on O2 with the K1/K2 proposal). Built: see PLAN_v2 "W1 built".
+
 ### K2 — Preset (owner O1) — FROZEN 2026-10-09
 
 A preset stores the user's **intent**; `resolve()` turns it into one concrete `Configuration` (K1).

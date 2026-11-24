@@ -2193,3 +2193,45 @@ claim to be confirmed) · K11 amendment (web fonts, Alisha) · O4's hooks in O2'
 O1's importer and O3's `user_fonts` store; W6 study is human work.
 
 Tests (O2 branch, uncommitted): **2531 passed, 0 failed** (unit) · integration **35 passed** · extension JS **45 passed**.
+
+## W1 built: user font import (2026-11-24, O4 with the user's go-ahead, across owners — for O1 / O2 / O3 to review)
+
+**Sign-off.** The K1/K2 commits on O2 said "O1 + O4 sign-off", but no record existed (the draft said NOT SIGNED OFF)
+and O3's note on main said the contract part was still open. Reviewed by O4 (2026-11-24) and amended before signing:
+the K2 text had not been changed, the planned store lookup in `config/` would break the import rule, imported names
+could equal bundled ones, and O3's `user_fonts` row values become a path without any check. **O4 signs off the W1
+amendment below. O1 (contract owner, K1/K2) to confirm; O3 to confirm K8 / K9.**
+
+**Contract** (patch applied by the user): K1 rule 6 + `IMPORTED_FAMILY_MAX_CHARS` · K2 rule 2 + `base_font_files`
+(`FONT_UNREADABLE` for a missing imported copy) · K8 `user_fonts_dir()` · K9 `UserFontEntry` / `UserFontsRepo` /
+`Store.user_fonts`. Details in ARCHITECTURE before K2.
+
+**Built:**
+1. **O1** `config/settings.py`: `imported_name_ok`, `set_imported_families`, the `_is_imported_family` stub replaced
+   (no provider, a refused name or a failing provider -> UNKNOWN_FONT, never a crash). `config/bundled.py`:
+   `set_imported_files`; imported copies only from inside `user_fonts_dir()`. **New `fontgen/importer.py`**: copy
+   first (at most 32 MB, read with the cap), then check the COPY in a child process with a deadline
+   (`rules.is_eligible(isolate=True)`), read name / style from the checked copy; only Regular / Bold / Italic /
+   BoldItalic (Light, SemiBold… refused, never promoted); a family needs a Regular; a bundled name gets
+   " (imported)"; stored as `<sha256>/<Style>.ttf|otf` (the user's file name never becomes a path); dedup; replaced
+   or refused copies removed; files, folders (no sub-folders, no symlinks) and installed fonts (fc-list; copied, not
+   used in place); at most 64 files per import; logs carry codes only.
+2. **O3** `store/repos.py`: `UserFontsRepo.add` refuses a bad sha256 / family / file name (ValueError) and raises
+   `IMPORTED_FONT_IN_USE`; types and `user_fonts_dir` from the contract. `uninstall.py`: `--delete-data` removes the
+   imported copies (kept in the "preferences only" case).
+3. **O2** `controller/service.py`: registers / unregisters the lookups; `import_fonts`, `delete_imported_family`
+   (refused while a change awaits Keep / Revert), `imported_families`; delete-all removes imported fonts once nothing
+   is left to restore. `ui/preset_editor.py` + `ui/window.py`: the base-font dropdown lists bundled + imported fonts
+   only; a "Fonts…" menu: import files / a folder / an installed font, remove the selected imported font; messages
+   name each refused file and why.
+4. **O4:** nothing needed in `font_references` — generated fonts are unchanged (the key hashes the source bytes) and
+   imported sources are protected by the store's in-use check and the service's pending-apply refusal.
+
+**Checked:** unit **2583 passed, 0 failed** · integration **35 passed** · extension JS **45 passed**. End to end in
+tests: import -> resolve (imported space width) -> real patch -> Apply -> Keep -> in-use refusal -> Original -> delete.
+Headless GTK (Broadway): importing through the page adds and selects the family, Remove is enabled, Apply is enabled.
+
+**Open:** the preview status stayed "Updating preview…" in the headless run for bundled AND imported fonts alike
+(the preview fonts themselves build in 0.3 s) — check on the real desktop. OTF/CFF imports are covered by O1's
+existing CFF tests through the same eligibility check, but no CFF font was imported end to end. Manual: try a real
+downloaded family (e.g. a Google Fonts zip unpacked to a folder).

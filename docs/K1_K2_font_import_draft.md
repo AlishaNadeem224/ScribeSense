@@ -1,6 +1,6 @@
 # K1 / K2 font-import amendment — working draft (O2)
 
-**Status: NOT SIGNED OFF.** Proposal to amend frozen contracts K1 (Configuration) and K2 (Preset) so that
+**Status (2026-11-24): superseded by the W1 amendment in `contracts/` — O4 signed off, O1 to confirm; see PLAN_v2 "W1 built". Original status: NOT SIGNED OFF.** Proposal to amend frozen contracts K1 (Configuration) and K2 (Preset) so that
 `base_family` may name a user-imported font family, looked up from the ScribeSense font store, alongside
 the bundled families. Per AGENTS.md §4: contract owner (O1) + one other owner (O3 or O4), plus a
 `PLAN_v2.md` entry, before `contracts/` or `ARCHITECTURE.md` are edited.
