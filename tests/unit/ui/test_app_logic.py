@@ -258,6 +258,32 @@ def test_reset_text_counts(app_mod: Any) -> None:
     assert "failed 1" in app_mod.reset_text(SimpleNamespace(restored=[], skipped=[], failed=["x"]))
 
 
+def test_reset_text_includes_failed_codes(app_mod: Any) -> None:
+    """O2.3: reset_text must surface the ErrorCode values, not just the count."""
+    from scribesense.safety.revert import RevertReport
+
+    report = RevertReport(
+        restored=["a"],
+        skipped=[],
+        failed=["b", "c"],
+        failed_codes={"b": "DRIFT_SKIPPED", "c": "STORE_IO_ERROR"},
+    )
+    text = app_mod.reset_text(report)
+    assert "failed 2" in text
+    assert "DRIFT_SKIPPED" in text
+    assert "STORE_IO_ERROR" in text
+
+
+def test_reset_text_without_codes_is_unchanged(app_mod: Any) -> None:
+    """When failed_codes is empty, the message is exactly as before (no dangling 'Codes:' suffix)."""
+    from scribesense.safety.revert import RevertReport
+
+    report = RevertReport(restored=[], skipped=[], failed=["x"])
+    text = app_mod.reset_text(report)
+    assert "Codes:" not in text
+    assert "failed 1" in text
+
+
 # ================================================================ M2.9 reader font choice
 
 def _fontset(key: str) -> Any:

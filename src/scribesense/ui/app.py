@@ -198,16 +198,18 @@ def outcome_text(state: TxState | None) -> str:
 
 
 def reset_text(report: Any) -> str:
-    """Summary of service.original() / reset (RevertReport counts)."""
+    """Summary of service.original() / reset (RevertReport counts + failed codes)."""
     restored, skipped, failed = (len(getattr(report, k, ())) for k in ("restored", "skipped", "failed"))
+    codes = getattr(report, "failed_codes", {}) or {}
+    code_list = ", ".join(sorted(set(codes.values()))) if codes else ""
     if failed:
-        return (f"Original: restored {restored}, skipped {skipped}, failed {failed}. Failed items are "
-                "retried at your next login.")
+        suffix = f" Codes: {code_list}." if code_list else ""
+        return (f"Original: restored {restored}, skipped {skipped}, failed {failed}.{suffix} "
+                "Failed items are retried at your next login.")
     if skipped:
         return (f"Original: restored {restored}. {skipped} setting(s) were changed by another program and "
                 "were left alone.")
     return f"Original settings restored ({restored})."
-
 
 #: M2.10 capture codes -> distinct messages (empty and too-large are different, A17).
 CAPTURE_MESSAGES: dict[ErrorCode, str] = {

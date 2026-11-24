@@ -153,9 +153,9 @@ def _print_revert_report(report: RevertReport) -> None:
     if report.failed:
         print("Could not restore (recovery information kept; run `scribesense reset` again):")
         for loc in report.failed:
-            print(f"  {loc}")
+            code = report.failed_codes.get(loc)
+            print(f"  {loc}" + (f"  [{code}]" if code else ""))
     print(f"restored {len(report.restored)} · skipped {len(report.skipped)} · failed {len(report.failed)}")
-
 
 def _run_recovery(command: str, role: LockRole, operation: Callable[..., RevertReport]) -> int:
     """`reset` / `recover --login`: open the existing store in recovery mode and run `operation`.
