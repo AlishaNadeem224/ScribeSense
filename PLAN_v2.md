@@ -2220,3 +2220,26 @@ integration 35 passed.
     **Still open:** everything in §7 of the draft doc — O1 sign-off (+ one other owner) before `contracts/`
     or `ARCHITECTURE.md` are actually amended. No contract file was edited by this session.
 
+## O3: CI fix, lost commits restored, remaining work (2026-11-24, O4 for O3, user's go-ahead)
+
+**Why GitHub's checks failed:** only the integration job, and only `test_store_concurrency` — it asserted schema
+version 1, and O3's migrations 002–004 made it 4. The concurrency checks themselves passed. Fixed: it compares with
+`store.core.latest_version()`. **Lost work restored:** O3's `5e4b1f0` (`list()` no longer returns the Custom row, D3
+step 2) and `669d85b1` (K9 draft note) had passed CI on 2026-10-18 but were in no branch any more (the O3 branch was
+reset or recreated); re-applied. Tests on O3: **2470 passed, 0 failed** (unit) · integration **35 passed, 0 failed**.
+
+**Process note:** migrations 003 / 004 already create the tables of the two UNSIGNED drafts
+(`docs/K9_draft.md`, `docs/K1_K2_preset_adjustment_draft.md`). A shipped migration cannot be edited, so if the review
+changes the design it takes another migration — get the sign-offs (O1 for K1/K2, a second owner for K9; O2 depends on
+them) before a release.
+
+**Still open for O3:** CI packages `gir1.2-gtk-4.0 gir1.2-adw-1` (not in the workflow yet) · make `integration` a
+required check (repo settings, with O2) · RPM + COPR with the extension's root step at install time (W2) · VM tests
+(M3.5, M3.8 byte-identical uninstall) · drawn-font checks for Firefox / Chromium in `harness/render.py` (M3.4,
+"not implemented") · the `FontRegistry` ↔ `FontRegistryRepo` bridge with O1 · review O4's changes to `uninstall.py`,
+`doctor.py`, `tests/conftest.py`, `harness/sandbox.py`.
+
+**Open for O4 (found in O3's notes):** the extension's files are still found relative to the repository
+(`adapters/extension_host.DEFAULT_EXTENSION_MANIFEST`, `safety/setup.DEV_CRX`) — the same packaging bug O1 fixed
+for the fonts; needs the same search (override → installed data dir → repo).
+

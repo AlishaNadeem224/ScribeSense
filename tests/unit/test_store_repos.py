@@ -115,14 +115,16 @@ def test_user_preset_round_trips_with_its_word_mode(store: Store) -> None:
     assert store.fetchone("SELECT COUNT(*) FROM presets")[0] == 1
 
 
-def test_the_custom_row_is_stored_once_with_the_reserved_id(store: Store) -> None:
+def test_the_custom_row_is_stored_once_but_never_listed(store: Store) -> None:  # K9 D3: "stored ≠ listed"
     custom = Preset("custom", "Custom", values(), "custom")
     store.presets.save(custom)
     store.presets.save(replace(custom, values=values(letter_em=0.2)))
-    assert store.presets.get("custom").values.letter_em == 0.2  # type: ignore[union-attr]
-    assert store.fetchone("SELECT COUNT(*) FROM presets")[0] == 1
+    assert store.presets.get("custom").values.letter_em == 0.2  # type: ignore[union-attr]  # read it with get()
+    assert store.fetchone("SELECT COUNT(*) FROM presets")[0] == 1  # one row, upserted
     store.presets.save(user_preset(name="AAA"))
-    assert [p.id for p in store.presets.list()][3] == "custom"  # right after the built-ins
+    assert "custom" not in [p.id for p in store.presets.list()]  # the catalogue never returns it
+    assert [p.id for p in store.presets.list()][:3] == ["default", "reading", "high-separation"]
+    assert [p.name for p in store.presets.list()][3:] == ["AAA"]
     assert store.presets.delete("custom") is True and store.presets.get("custom") is None
 
 

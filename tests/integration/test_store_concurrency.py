@@ -15,6 +15,7 @@ import pytest
 
 from scribesense.contracts.paths import run_cmd
 from scribesense.store import Store
+from scribesense.store.core import latest_version
 
 pytestmark = pytest.mark.integration
 
@@ -39,4 +40,6 @@ def test_concurrent_processes_never_corrupt_the_store(sandbox) -> None:  # type:
     assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == WRITERS * PER_WRITER
     per_tag = dict(conn.execute("SELECT preset_id, COUNT(*) FROM transactions GROUP BY preset_id").fetchall())
     assert per_tag == {f"w{i}": PER_WRITER for i in range(WRITERS)}  # every commit landed, none twice
-    assert Store(db).fetchone("PRAGMA user_version")[0] == 1  # opened concurrently, migrated exactly once
+    # opened concurrently, migrated exactly once — to the LATEST migration (was a hard-coded 1, which broke CI when
+    # O3 added migrations 002–004; fixed 2026-11-24 by O4 with the user's go-ahead)
+    assert Store(db).fetchone("PRAGMA user_version")[0] == latest_version()
