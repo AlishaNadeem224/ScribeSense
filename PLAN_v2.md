@@ -2142,3 +2142,54 @@ required check (repo settings, with O2) · RPM + COPR with the extension's root 
 (`adapters/extension_host.DEFAULT_EXTENSION_MANIFEST`, `safety/setup.DEV_CRX`) — the same packaging bug O1 fixed
 for the fonts; needs the same search (override → installed data dir → repo).
 
+
+## O2 Phase III finished on the O2 branch (2026-11-24, O4 for O2, user's go-ahead — for O2 (Alisha) to review)
+
+**Reviewed first — Alisha's final O2 commits:** visible "Restore original" button (W5.2) · `RevertReport.failed_codes`
+in the reset / Original output, app + CLI (W5.3) · K1/K2 font-import amendment (`base_family` may name an imported
+family, `IMPORT_FAILED` / `IMPORT_NOT_ELIGIBLE` / `IMPORTED_FONT_IN_USE`, `_is_imported_family` stub). GitHub CI on O2
+is green. **Two record problems:** the K1/K2 commits say "O1 + O4 sign-off" but `docs/K1_K2_font_import_draft.md`
+still says NOT SIGNED OFF and there was no decision entry here — **O1 and O4 to confirm or withdraw the sign-off**; the
+commit "W5.4 decisions recorded" recorded nothing (now recorded below).
+
+**Built now (all cross-owner in O2's files unless marked O4):**
+1. **W5.1 confirm window — done** (see the M2.3 card): readiness, startup deadline, heartbeat, sample-font check,
+   30 s from readiness. Headless end-to-end check passed.
+2. **Finish when closed + A3 relaxation (O4: `safety/watcher.py`, both journals; wired in `controller/service.py`,
+   `ui/app.py`)** — see the M4.12 card and A3. Restores waiting for a browser finish by themselves once it is closed;
+   such waits no longer block a new Apply; a newer Keep is never undone (tested by mutation: removing the guard fails
+   the test). **Not done, by decision:** *pending applies* (a Chromium profile without the extension, open during Apply)
+   do not apply by themselves later — that would change the screen without the confirm window (A15). Automatic setup
+   now installs the extension, which removes those profiles from Apply; the coverage text says to close the browser
+   and press Apply again.
+3. **Clearer messages:** Original / reset name the open app ("Zen is open: this finishes by itself when you close
+   it") and no longer count it as a failure; real failures keep their codes; the app says "Press Original again to
+   retry" (the old "retried at your next login" was wrong: login recovery does not restore baselines). CLI prints the
+   same, the K10 counts line is unchanged.
+4. **Service start at login:** `scribesense service` (CLI + app: opens the service, no window; exit 4 if it cannot
+   start) and the login hook (O4, `safety/keybinds.py`) runs `recover --login ; service`. **Needs the K10 amendment**
+   (patch handed to the user; O2 + one other owner to sign). Existing keybind files get the new hook at the next
+   keybind install / setup repair.
+5. **Setup banner** — see the M2.4 note (`ui/setup_notice.py`, `ui/window.py`, `ui/app.py`; O4: `repair_root(...,
+   user_asked=True)` in `safety/setup.py`). Checked in real GTK (Broadway).
+6. **Accessibility audit (W5.5), code level.** Fixed: the confirm window's Keep button had a name that changed every
+   second (a screen reader would re-read it) → fixed name + description; Escape = Revert in the confirm window; Escape
+   closes the reader (checked: the text is cleared); labels for the reader text, the "Save preset" name entry (a
+   placeholder is not a label) and the "Delete…" button. Already fine: header icon buttons, sliders, dropdowns, Restore
+   button, coverage status (text + colour, not colour only), banners; only libadwaita style classes, no custom colours.
+   **Open for a human (cannot be done by an agent):** a real Orca pass (Keep / Revert / sliders / coverage list),
+   keyboard-only walk-through of every page, and measuring the contrast of `dim-label` text (coverage details, preview
+   status) against WCAG AA 4.5:1. **Open question for O2:** the confirm window focuses Keep, so Enter keeps — a user who
+   cannot read the new font may press Enter by habit; focusing Revert instead is safer.
+7. **W5.4 decisions (recorded as the current, tested behaviour):** (a) the reader does not apply `text_scale` itself:
+   the GTK adapter sets the desktop `text-scaling-factor`, which the reader inherits; scaling again would give
+   text_scale² (if the GTK target is not covered, the reader shows 1.0×). (b) `apply`: exit 4 when the app starts but
+   its service cannot; exit 1 when the GTK app itself cannot start (K10 asks 4 only of `read` / `preset next`;
+   `test_cli_routing.py` pins this). O2 may change (b) to 4 in both cases.
+
+**Sign-offs still needed (humans):** K10 `service` amendment (O2 + one) · K1/K2 font-import (O1 + one; the commits'
+claim to be confirmed) · K11 amendment (web fonts, Alisha) · O4's hooks in O2's files (`service.py`, `app.py`,
+`confirm.py`, `window.py`, `cli.py`) to be reviewed by O2. **Still blocked for O2:** W1 UI ("Import font…") waits for
+O1's importer and O3's `user_fonts` store; W6 study is human work.
+
+Tests (O2 branch, uncommitted): **2531 passed, 0 failed** (unit) · integration **35 passed** · extension JS **45 passed**.

@@ -101,7 +101,7 @@ All twenty were reviewed and decided by the team (proposals + six amendments). T
 |---|---|---|
 | A1 | **Single-instance background service.** Closing the window doesn't quit; explicit Quit (UI + `scribesense quit`) exits safely; further launches forward to the running instance — **except `confirm`** (A15). | M2.4, M2.9, M2.11 |
 | A2 | **Recovery works without the GUI** and without loading the newly generated font. `reset`, `recover --login`, `uninstall`, `doctor` import no UI modules (CI-enforced, M3.9). | M4.12, M3.8, M3.9 |
-| A3 | **Login recovery via Hyprland `exec-once` → `scribesense recover --login`.** Reverts only unfinished/unconfirmed transactions, never a confirmed configuration; idempotent; completes before any new Apply (journal lock). [V] test interrupted tx + startup ordering in the VM. | M4.12, M3.8 |
+| A3 | **Login recovery via Hyprland `exec-once` → `scribesense recover --login`.** Reverts only unfinished/unconfirmed transactions, never a confirmed configuration; idempotent; completes before any new Apply (journal lock). [V] test interrupted tx + startup ordering in the VM. **Relaxed 2026-11-24 (O4, user's go-ahead):** work that only waits for an app to close does not block an Apply — every unfinished tx is a `revert` tx in REVERT_FAILED and every unresolved location is BROWSER_RUNNING or DRIFT_SKIPPED (`safety/watcher.only_waiting_for_apps`, both journals); the watcher finishes it when the app closes. The login hook now also starts the service after recovery (`recover --login ; service`, pending K10 amendment). | M4.12, M3.8 |
 | A4 | **Libraries:** fontTools · PyGObject (GTK4 + libadwaita, from system packages, not pip) · sqlite3 (stdlib) · pytest. No other dependency without team approval. Extension: plain JavaScript, no libraries. | all |
 | A5 | **Interactive preview before Apply:** shortlist dropdown, built-in sample passage, optional user-entered text (memory only, never logged), then adjust spacing. Options described as choices, not clinical recommendations. Approach: [V] load the generated font into the preview only; fallback: rendered image, with accessible text and controls kept. | M2.5 |
 | A6 | **Manifest V3 + native messaging**, Chromium family only. Path *extension → native-messaging host → running instance* verified early. Unsupported browser / host missing / app stopped → clear failure. [V] Flatpak browsers: feasibility test, not assumed. | M4.9, M2.10, K11 |
@@ -832,6 +832,12 @@ accepted · journal tables return everything in `JournalItem` / `LocationRecord`
 
 ### K10 — CLI commands (owner O2) [D A7] — FROZEN 2026-10-09
 
+> **Amendment proposed 2026-11-24 (O4 for O2, user's go-ahead) — NOT applied, needs O2 (contract owner) + one other owner:**
+> `scribesense service` — starts the background service without a window (login hook, after `recover --login`);
+> already running → 0; 4 only if it cannot start. Patch file handed to the user (`K10_service_command.patch`, adds the
+> `COMMANDS` entry and one docstring line). The CLI / app / login hook already accept it; `test_cli_routing.py`'s
+> "every K10 command parses" check covers it once applied.
+
 | Command | Used by |
 |---|---|
 | `scribesense` | opens / focuses the app |
@@ -1281,7 +1287,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 | Done when | Tests pass · manual checklist item passes · reviewed by O4 |
 
 
-> **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" W5.1):** **Status: the startup deadline, readiness signal, heartbeat and sample-family check are NOT built yet** (`ui/confirm.py` says so). Today only the 30 s timeout and the service watchdog protect the user. O4 adds the service-side API.
+> **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" W5.1):** ~~Status: the startup deadline, readiness signal, heartbeat and sample-family check are NOT built yet~~
+>
+> **Built 2026-11-24 (O4 for O2, user's go-ahead; for O2 to review):** service socket messages `confirm_ready` / `heartbeat` (internal, not a contract) and `pending` now names the reading family; `Service.supervise_confirmation()` reverts on **startup deadline** (`CONFIRM_STARTUP_SECONDS` = 20, `CONFIRM_STARTUP_TIMEOUT`), **heartbeat lost** (none for `HEARTBEAT_MISSED_SECONDS` = 6 after readiness, one per second sent from the window's event loop, `CONFIRM_HEARTBEAT_LOST`) and **timeout** (30 s counted from readiness + 5 s answer grace, `CONFIRM_TIMEOUT`); the window draws its sample in the new family, checks Pango resolves it (mismatch → `ADAPTER_VERIFY_FAILED`, auto-revert), sends readiness only then, and enables its buttons at readiness. `confirm_watchdog()` stays as the last resort. Verified end to end headless (Broadway). Accessibility (same date): the Keep button has a fixed screen-reader name (its visible countdown changes every second); Escape = Revert.
 
 #### M2.4 UI shell
 | Field | Spec |
@@ -1338,6 +1346,8 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 
 
 > **Phase III (decided 2026-10-24, PLAN_v2 "Phase III plan" W1, W5):** (1) "Import font…" (file / folder, no zip) and "Choose an installed font" (fontconfig list). (2) The base-font dropdown lists only fonts that are actually available (bundled + imported). (3) A visible **"Restore original"** button; today it is the "Original (revert all)" dropdown entry. (4) Accessibility audit of the UI.
+
+> **Setup banner (2026-11-24, O4 for O2, user's go-ahead):** a second `Adw.Banner` under the start-up banner shows what automatic setup (`safety/setup.py`) could not do, with one action: extension missing after the one automatic prompt was declined → "Install…" (one polkit prompt, `repair_root(user_asked=True)`); no polkit agent → "Check again"; no signed package → information only. Hidden while the automatic prompt is still due (never two prompts). Text is plain (no markup). Logic in `ui/setup_notice.py` (no GTK), checked off the GTK thread on every window activation.
 
 #### M2.6 Coverage report
 | Field | Spec |
@@ -2277,6 +2287,8 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 | Must never | Depend on the GUI [D A2]; remove the recovery keybind (only uninstall does) [D] |
 | Acceptance tests | VM: crash + reboot scenario; keybind triggers reset |
 | Done when | VM scenarios pass · manual checklist item passes |
+
+> **Finish when closed (2026-11-24, O4; built for O2's Phase III item, user's go-ahead):** `safety/watcher.py`. A restore refused with BROWSER_RUNNING (writes nothing; recovery data kept) is finished by a background round in the service (`Service.open(watch=True)`, every `WATCH_SECONDS` = 3; only the real app turns it on). Rules: retry a location only when a fresh `detect()` says its target is closed; through `recovery._restore_baseline` (drift rule unchanged); **never undo a newer Keep** — a location re-managed by the active font key is skipped; failed `apply` txs are finished first (step 1, as in reset), and a location such a tx still owes is not baseline-restored in the same round; a retry refused again waits until the app is seen open and closed (no loop); the round runs in its own `revert` tx and is skipped if the lock or the service mutex is busy. `RevertReport.waiting_apps` (location → app name) lets the UI / CLI say "Zen is open: this finishes by itself when you close it" instead of listing a failure. `tx_kind()` added to both journals (not in K4). Tests: `tests/unit/test_watcher.py` (both journals) + service tests.
 
 > **O4 response (2026-10-18): both done** — `probe_argv` documents that `sys.executable` must import `gi` and `scribesense`; the
 > fontset probe's docstring says it reports Pango's per-character pick, a proxy for the layout run, not the run itself.
