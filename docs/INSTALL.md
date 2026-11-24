@@ -65,11 +65,44 @@ operation is running — try again. It never needs the background service or the
 
 Removing the program itself: delete the project folder (and its `.venv`). Uninstall first, so the settings are restored.
 
-## 4. Status of this feature (2026-10-15)
+## 4. Fedora package (RPM / COPR) — added 2026-11-24 (W2)
+
+The package is built from `packaging/scribesense.spec`:
+
+    packaging/make-srpm.sh [outdir]        # source RPM from `git archive HEAD` (+ the signed .crx if present)
+    rpmbuild --rebuild <outdir>/scribesense-*.src.rpm    # or let COPR build it ("make srpm": .copr/Makefile)
+
+The signed browser extension is a release artifact: put it at `extension/dist/scribesense.crx` (or set
+`SCRIBESENSE_CRX`) before `make-srpm.sh`; for COPR, attach it to the GitHub release `v<version>`. A missing `.crx` stops
+the build (a release without it would remove the extension from users' browsers on upgrade); build without it only on
+purpose: `SCRIBESENSE_NO_CRX=1 packaging/make-srpm.sh` (COPR: `CRX=0`). The build also checks that the `.crx` is signed
+with the key pinned in `extension/manifest.json`.
+
+**Moving from a development checkout to the package:** if you ever let the app set up the extension from a checkout
+(one password prompt), files from that setup may stay in Brave's / Chrome's own folders. The packaged app detects them
+and offers **Clean up…** in its banner (one password prompt); `scribesense uninstall` removes them too.
+
+What the package installs: the Python package, `/usr/bin/scribesense`, the bundled fonts in
+`/usr/share/scribesense/fonts`, the extension's files in `/usr/share/scribesense/extension`, the signed `.crx` and the
+browsers' pointer files (`/usr/share/chromium/extensions` — read by Chromium **and** Brave — and
+`/usr/share/google-chrome/extensions`), a desktop entry with a **Restore original** action, AppStream metainfo and an
+icon. It installs nothing in any user's home: keybinds, the login hook and the browser's native-messaging host are set
+up by the app for each user. A packaged install never shows a password prompt; the package manager owns the extension.
+
+**Before `sudo dnf remove scribesense`:** every user who used ScribeSense runs **Restore original** (or
+`scribesense uninstall`). The package manager runs as root and cannot restore per-user settings. If the package is
+removed first, the login hook no longer runs (Hyprland keeps loading its config) and the fontconfig rule keeps pointing
+at the spaced fonts in the user's font folder until they are removed by hand — harmless, but not reverted.
+
+**Open:** ScribeSense's own licence is not chosen yet (`License: LicenseRef-TODO` in the spec); decide it before any
+public COPR build. The package has not been built and install-tested end to end yet (planned: a COPR or container
+build).
+
+## 5. Status of this feature (updated 2026-11-24)
 
 | Part | State |
 |---|---|
 | `scribesense doctor` | works |
-| Uninstall flow (`src/scribesense/uninstall.py`) | built and tested against fake desktops, a fake font folder and the real font cache in the sandbox |
-| `scribesense uninstall` / `reset` / `recover` on the command line | **not wired yet**: `cli.py` (O2) must call `uninstall.run_uninstall(...)`, and it needs the SQLite journal (M4.10, O4) that sits on `store.JournalTables` |
-| Full check on a real desktop (install → apply → uninstall → every file byte-identical) | **not run**: needs the test VM (M3.5) |
+| `scribesense uninstall` / `reset` / `recover --login` | wired and tested (unit + bubblewrap sandbox) |
+| Fedora package | spec, desktop entry, metainfo, icon and COPR Makefile written; static checks pass (see §4) |
+| Full check on a real desktop | not part of the plan any more (VM checks dropped 2026-11-24) |

@@ -7,6 +7,7 @@ pkexec is replaced — no password prompt, no real browser folder, no real syste
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import os
@@ -40,8 +41,27 @@ def crx_bytes(version: str = "0.1.2", key: str | None = KEY_B64) -> bytes:
             manifest["key"] = key
         z.writestr("manifest.json", json.dumps(manifest))
         z.writestr("background.js", "// test")
-    header = b"\x12\x00signed-header-not-checked-here"
+    header = crx3_header(base64.b64decode(key if key is not None else KEY_B64))
     return b"Cr24" + struct.pack("<II", 3, len(header)) + header + buf.getvalue()
+
+
+def _field(number: int, value: bytes) -> bytes:
+    """One length-delimited protobuf field."""
+    def varint(n: int) -> bytes:
+        out = b""
+        while True:
+            byte, n = n & 0x7F, n >> 7
+            out += bytes([byte | (0x80 if n else 0)])
+            if not n:
+                return out
+    return varint((number << 3) | 2) + varint(len(value)) + value
+
+
+def crx3_header(public_key: bytes, *, crx_id: bytes | None = None) -> bytes:
+    """A CRX3 CrxFileHeader: sha256_with_rsa { public_key, signature } + signed_header_data { crx_id }."""
+    crx_id = hashlib.sha256(public_key).digest()[:16] if crx_id is None else crx_id
+    proof = _field(1, public_key) + _field(2, b"signature-not-checked-here")
+    return _field(2, proof) + _field(10000, _field(1, crx_id))
 
 
 EXT_ID = rh.crx_info(crx_bytes())[0]
@@ -363,3 +383,31 @@ def test_an_old_launcher_without_dash_p_is_rewritten(sandbox, system: Path) -> N
     assert setup._launcher_ok(path)
     path.write_text(nhi.launcher_script(sys.executable).decode().replace(" -P -m", " -m"))
     assert not setup._launcher_ok(path)
+
+
+# ---------------------------------------------------------------- CRX3 header check (review 2026-11-24)
+
+def _with_header(header: bytes, key: str = KEY_B64) -> bytes:
+    good = crx_bytes(key=key)
+    header_len = struct.unpack("<I", good[8:12])[0]
+    return b"Cr24" + struct.pack("<II", 3, len(header)) + header + good[12 + header_len:]
+
+
+def test_a_crx_signed_with_another_key_than_its_manifest_pins_is_refused() -> None:
+    """The browsers check the signature against the expected ID; we refuse a .crx whose header key is not the pinned
+    one, so it is never shipped or pre-installed under the pinned ID."""
+    other = b"another signing key"
+    with pytest.raises(rh.HelperError, match="different key"):
+        rh.crx_info(_with_header(crx3_header(other)))
+
+
+@pytest.mark.parametrize("header", [
+    crx3_header(KEY_DER, crx_id=b"\x00" * 16),  # declared id matches no signing key
+    crx3_header(KEY_DER, crx_id=b"short"),
+    b"\x12\x05abc",  # truncated field
+    b"\x0b",  # unsupported wire type
+    b"",  # no signed data at all
+])
+def test_a_malformed_or_inconsistent_crx3_header_is_refused(header: bytes) -> None:
+    with pytest.raises(rh.HelperError):
+        rh.crx_info(_with_header(header))

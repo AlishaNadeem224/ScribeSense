@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=ScribeSense
+GenericName=Reading Spacing
+Comment=Wider letter, word and line spacing for reading, across the desktop
+Exec=scribesense
+Icon=io.github.scribesense.ScribeSense
+Terminal=false
+StartupNotify=true
+Categories=Utility;Accessibility;
+Keywords=dyslexia;reading;spacing;font;accessibility;
+Actions=restore-original;
+
+[Desktop Action restore-original]
+Name=Restore original
+Exec=scribesense reset

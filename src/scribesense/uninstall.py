@@ -66,7 +66,7 @@ CONFIRM_WORD = "delete"
 KeybindOutcome = Literal["removed", "absent", "left_edited", "failed", "kept_for_recovery"]
 DataOutcome = Literal["kept", "deleted", "preferences_only", "not_confirmed", "service_running"]
 HostOutcome = Literal["removed", "absent", "left_foreign", "failed", "kept_for_recovery"]
-ExtensionOutcome = Literal["removed", "absent", "failed", "kept_for_recovery"]
+ExtensionOutcome = Literal["removed", "absent", "failed", "kept_for_recovery", "packaged"]
 
 
 QUIT_TIMEOUT_S = 10.0
@@ -258,7 +258,7 @@ def _remove_extension(report: UninstallReport, remover: Callable[[], str]) -> No
         code = exc.code if isinstance(exc, ScribeSenseError) else ErrorCode.ADAPTER_COMMAND_FAILED
         log(code, "uninstall", step="extension")
         outcome = "failed"
-    report.extension = outcome if outcome in ("removed", "absent") else "failed"  # type: ignore[assignment]
+    report.extension = outcome if outcome in ("removed", "absent", "packaged") else "failed"  # type: ignore[assignment]
 
 
 def _delete_data(report: UninstallReport, journal: Journal, store: Store, confirm: Callable[[str], bool],
@@ -418,6 +418,8 @@ def format_report(report: UninstallReport) -> str:
         lines.append(host_line)
     extension_line = {
         "removed": "The browser extension was removed; each browser drops it at its next start.",
+        "packaged": "The browser extension belongs to the scribesense package: `sudo dnf remove scribesense` removes "
+                    "it (each browser drops it at its next start).",
         "absent": None,
         "failed": "The browser extension could not be removed (the password prompt was cancelled or failed). Run "
                   "`scribesense uninstall` again, or remove ScribeSense from the browser's extensions page.",

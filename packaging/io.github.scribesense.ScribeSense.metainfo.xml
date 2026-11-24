@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- W2 (2026-11-24). TODO(license): add <project_license> once the team has chosen ScribeSense's license. -->
+<component type="desktop-application">
+  <id>io.github.scribesense.ScribeSense</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>ScribeSense</name>
+  <summary>Wider letter, word and line spacing for reading, across the desktop</summary>
+  <description>
+    <p>
+      ScribeSense applies your reading spacing (letter, word and line spacing, base font and text size) to the
+      whole desktop: GTK and Qt apps, Flatpak apps and the browsers. It builds spaced copies of open fonts and
+      changes each app's settings through a journal, so every change can be undone.
+    </p>
+    <p>
+      Every change is shown first and kept only if you press Keep; otherwise it is undone after 30 seconds.
+      "Restore original" puts every setting back. A reader window shows selected text in your spacing.
+    </p>
+    <p>
+      Before removing the package, run "Restore original" or "scribesense uninstall" so your settings are restored.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.scribesense.ScribeSense.desktop</launchable>
+  <url type="homepage">https://github.com/AlishaNadeem224/ScribeSense</url>
+  <url type="bugtracker">https://github.com/AlishaNadeem224/ScribeSense/issues</url>
+  <developer id="io.github.scribesense">
+    <name>The ScribeSense team</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>scribesense</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2026-11-24"/>
+  </releases>
+</component>

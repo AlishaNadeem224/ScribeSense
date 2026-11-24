@@ -32,3 +32,4 @@ htmlcov/
 .idea/
 *.swp
 .DS_Store
+packaging/out/

@@ -138,6 +138,9 @@ def _redirect_system_folders(monkeypatch: pytest.MonkeyPatch, system: Path) -> N
     from scribesense.safety import root_helper
 
     monkeypatch.setattr(root_helper, "CRX_TARGET", system / "usr/share/scribesense/scribesense.crx")
+    monkeypatch.setattr(root_helper, "PACKAGED_MARKER", system / "usr/share/scribesense/packaged")  # W2, 2026-11-24
+    monkeypatch.setattr(root_helper, "PACKAGE_FOLDERS",
+                        tuple(str(system / f.lstrip("/")) for f in root_helper.PACKAGE_FOLDERS))
     monkeypatch.setattr(root_helper, "BROWSER_FOLDERS", {
         key: (tuple(str(system / m.lstrip("/")) for m in markers), tuple(str(system / f.lstrip("/")) for f in folders))
         for key, (markers, folders) in root_helper.BROWSER_FOLDERS.items()

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- ScribeSense app icon (W2, 2026-11-24): a page with widely spaced lines of text. -->
+  <rect x="12" y="8" width="104" height="112" rx="14" fill="#2b5797"/>
+  <rect x="22" y="18" width="84" height="92" rx="8" fill="#f7f4ea"/>
+  <text x="64" y="58" font-family="sans-serif" font-size="30" font-weight="bold" fill="#2b5797"
+        text-anchor="middle" letter-spacing="7">Aa</text>
+  <rect x="32" y="74" width="64" height="6" rx="3" fill="#2b5797" opacity="0.7"/>
+  <rect x="32" y="90" width="44" height="6" rx="3" fill="#2b5797" opacity="0.7"/>
+</svg>

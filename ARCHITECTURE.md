@@ -2210,6 +2210,15 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 > `extension/dist/scribesense.crx`. Child Pythons started with `-m` now use `-P` (confirm window, uninstall's quit,
 > native-host launcher; an older launcher without `-P` is rewritten by setup).
 
+> **Packaged installs (W2, 2026-11-24, O4).** The RPM (`packaging/scribesense.spec`) ships the signed `.crx` at
+> `root_helper.CRX_TARGET`, the pointer files in `root_helper.PACKAGE_FOLDERS` (`/usr/share/chromium/extensions` — read
+> by Chromium AND Brave, verified in Brave's binary — and `/usr/share/google-chrome/extensions`) and
+> `root_helper.PACKAGED_MARKER`, all as package files (no scriptlets, nothing under /opt). With the marker: the root
+> helper refuses `install`; `remove` deletes only OUR pointers outside PACKAGE_FOLDERS (development leftovers); setup
+> never prompts on its own (`root_possible` False) and offers "Clean up…" for leftovers; uninstall reports "packaged".
+> `crx_info` now also parses the CRX3 header: the signed `crx_id` must match one of the header's signing keys and the
+> manifest's pinned key (checked on a real Chrome-built .crx). Signatures themselves are left to the browsers.
+
 #### M4.10 Journal
 | Field | Spec |
 |---|---|

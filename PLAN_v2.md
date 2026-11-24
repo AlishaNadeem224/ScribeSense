@@ -2256,3 +2256,33 @@ RPM needs it as a separate release source and must place it at `root_helper.CRX_
 when installed root-owned (a checkout's helper is user-editable, as documented in `safety/setup.py`).
 
 Tests: unit **2592 passed, 0 failed** · integration **35 passed** · extension JS **45 passed**.
+
+## W2: Fedora RPM written (2026-11-24, O4 with the user's go-ahead; packaging owner O3 to review)
+
+**Facts first** (workflow, 4 read-only investigations + cross-checks): Fedora 44 package names for every command and
+typelib the code uses (`gobject-introspection` is needed and pulled in by nothing else; `hyprland` and
+`hyprpolkitagent` are COPR-only); Fedora's Python / desktop / AppStream / scriptlet rules; the PyPI-style sdist lacks
+`fonts/` and `extension/`, so Source0 is a `git archive`. **Brave reads `/usr/share/chromium/extensions`** (its binary
+has that path and not `/usr/share/brave/extensions`), so one package file serves Brave and Chromium.
+
+**Built:** `packaging/scribesense.spec` (pyproject macros; fonts, extension files, signed .crx, browser pointer files
+and a marker as package files; desktop entry with a "Restore original" action, AppStream metainfo, icon; `%check`
+validates them, imports the package and proves the installed search paths find the packaged fonts / extension),
+`packaging/make-srpm.sh`, `packaging/crx_pointer.py`, `.copr/Makefile` ("make srpm"), `docs/INSTALL.md` §4 (incl.
+"Restore original before `dnf remove`"). Code: packaged mode in `safety/root_helper.py`, `safety/setup.py`,
+`uninstall.py`, `ui/setup_notice.py`, `ui/app.py`; sandbox redirect of the new root-helper paths in `tests/conftest.py`.
+
+**Reviewed** (workflow: 3 lenses, each finding adversarially verified; 7 confirmed, all fixed): development leftovers
+could never be removed on a packaged install (now detected, "Clean up…" + uninstall remove only those); a build without
+the .crx had no marker and COPR could make one silently (marker always shipped; a missing .crx is an error unless
+`SCRIBESENSE_NO_CRX=1` / `CRX=0`); the COPR Makefile read the version before installing rpm-build; the build's ID check
+compared two copies of the manifest (now the CRX3 header's signed id must match a signing key and the pinned key);
+`Recommends: PolicyKit-authentication-agent` could pull in a desktop shell (now `Suggests: polkit` only).
+
+**Checked here:** `rpmspec -P` (with / without crx), source RPM builds, `%prep` runs, the spec's `%install` fragments
+(fonts with spaces in names, extension, pointers, marker) produce the intended tree and the code finds it, a .crx with
+a foreign key stops the build, desktop-file-validate + appstreamcli pass. **Not checked:** a full binary build and an
+install (needs uv_build / a Fedora container; the user will test later). **Open:** the project licence
+(`LicenseRef-TODO` in the spec), the first signed `.crx` release asset, a `v0.1.0` tag.
+
+Tests: unit **2616 passed, 0 failed** · integration **35 passed** · extension JS **45 passed**.

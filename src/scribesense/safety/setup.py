@@ -15,8 +15,10 @@ Firefox / Zen need nothing here (their stylesheet is written by Apply). Flatpak 
 The signed .crx is a release artifact made by the maintainer with the private key (never in the repo): looked for at
 `root_helper.CRX_TARGET` (already installed / packaged) and the development fallback `extension/dist/scribesense.crx`.
 
-Development note: in a repository checkout the root helper is a file the user can edit; a packaged install ships it
-root-owned and does the root step at install time (W2), so packaged users are never prompted.
+Packaged installs (W2, 2026-11-24): the RPM ships the .crx and the browsers' pointer files as its own files plus
+`root_helper.PACKAGED_MARKER`. Then nothing here ever asks for root (`root_possible` is False), uninstall leaves the
+extension to `dnf remove` ("packaged"), and the banner never offers "Install…". Development note: in a repository
+checkout the root helper is a file the user can edit; a packaged install ships it root-owned.
 
     python -m scribesense.safety.setup check | repair       (setup tool for development; not part of K10)
 """
@@ -61,7 +63,7 @@ Status = Literal["ok", "missing", "outdated", "unsupported", "unavailable"]
 
 @dataclass(frozen=True)
 class Item:
-    kind: Literal["host", "extension", "agent"]
+    kind: Literal["host", "extension", "agent", "stale"]  # stale: development leftovers on a packaged install
     browser: str  # M4.7 key, or "" for the agent
     display: str
     status: Status
@@ -73,6 +75,7 @@ class SetupReport:
     items: list[Item] = field(default_factory=list)
     crx: Path | None = None
     crx_version: str | None = None
+    packaged: bool = False  # the scribesense package owns the extension files (root_helper.PACKAGED_MARKER)
 
     def missing(self, kind: str, *, root: bool | None = None) -> list[Item]:
         return [i for i in self.items if i.kind == kind and i.status in ("missing", "outdated")
@@ -164,7 +167,7 @@ def polkit_agent_running() -> bool:
 
 def check() -> SetupReport:
     """Read-only: what is missing on this machine."""
-    report = SetupReport()
+    report = SetupReport(packaged=packaged())
     report.crx, report.crx_version = find_crx()
     try:
         ext_id: str | None = extension_id_from_manifest()
@@ -180,7 +183,9 @@ def check() -> SetupReport:
         else:
             report.items.append(Item("extension", key, display, _extension_status(key, ext_id, report.crx_version),
                                      needs_root=True))
-    if report.missing("extension", root=True):
+    if report.packaged and stale_pointers():
+        report.items.append(Item("stale", "", "files from an earlier development setup", "missing", needs_root=True))
+    if report.missing("extension", root=True) or report.missing("stale"):
         report.items.append(Item("agent", "", "password prompt (polkit agent)",
                                  "ok" if polkit_agent_running() else "missing"))
     return report
@@ -221,10 +226,36 @@ def _remember_asked(version: str | None, outcome: str) -> None:
     write_durable(path, (json.dumps({"root_asked_for": version, "outcome": outcome}) + "\n").encode(), 0o600)
 
 
+def packaged() -> bool:
+    """The scribesense package owns the extension files: root is never asked for them."""
+    return root_helper.PACKAGED_MARKER.is_file()
+
+
+def stale_pointers() -> list[Path]:
+    """On a packaged install: OUR pointer files outside the package's folders, left by an earlier development root
+    step. They can name an older version, and the package manager never removes them (review 2026-11-24)."""
+    return root_helper.our_pointers(outside_package=True) if packaged() else []
+
+
+def cleanup_stale(report: SetupReport) -> bool:
+    """The banner's "Clean up…" (user-initiated only, never automatic): one polkit prompt running `root_helper
+    remove`, which on a packaged install deletes only those leftovers. True when it ran."""
+    if not report.packaged or not report.missing("stale") or report.missing("agent"):
+        return False
+    try:
+        run_cmd(["pkexec", SYSTEM_PYTHON, "-I", str(ROOT_HELPER), "remove"], timeout=PKEXEC_TIMEOUT_S)
+    except (ScribeSenseError, OSError) as exc:
+        code = exc.code if isinstance(exc, ScribeSenseError) else ErrorCode.ADAPTER_COMMAND_FAILED
+        log(code, "setup", step="cleanup")
+        return False
+    return True
+
+
 def root_possible(report: SetupReport) -> bool:
-    """Something is missing, a .crx exists and an agent can show the password dialog."""
+    """Something is missing, a .crx exists, an agent can show the password dialog, and the files are not the
+    package's (a packaged install is repaired by the package manager, never by our root helper)."""
     return (bool(report.missing("extension", root=True)) and report.crx is not None
-            and not report.missing("agent"))
+            and not report.missing("agent") and not report.packaged)
 
 
 def root_needed(report: SetupReport) -> bool:
@@ -274,9 +305,20 @@ def extension_preinstalled() -> bool:
     return False
 
 
-def remove_extension() -> Literal["removed", "absent", "failed"]:
+def remove_extension() -> Literal["removed", "absent", "failed", "packaged"]:
     """Uninstall: remove the pre-installed extension from every browser (one password prompt, root_helper remove).
-    Each browser then drops the extension at its next start. Nothing installed -> no prompt."""
+    Each browser then drops the extension at its next start. Nothing installed -> no prompt. Packaged -> "packaged":
+    the files are the package's, `dnf remove scribesense` removes them."""
+    if packaged():
+        if not stale_pointers():
+            return "packaged"
+        try:  # development leftovers outside the package's folders: only those are removed (root_helper)
+            run_cmd(["pkexec", SYSTEM_PYTHON, "-I", str(ROOT_HELPER), "remove"], timeout=PKEXEC_TIMEOUT_S)
+        except (ScribeSenseError, OSError) as exc:
+            code = exc.code if isinstance(exc, ScribeSenseError) else ErrorCode.ADAPTER_COMMAND_FAILED
+            log(code, "setup", step="remove")
+            return "failed"
+        return "packaged" if not stale_pointers() else "failed"
     if not extension_preinstalled():
         return "absent"
     argv = ["pkexec", SYSTEM_PYTHON, "-I", str(ROOT_HELPER), "remove"]

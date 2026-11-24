@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-Action = Literal["install", "check"]
+Action = Literal["install", "check", "cleanup"]
 
 
 @dataclass(frozen=True)
@@ -35,12 +35,24 @@ def _names(items: list[Any]) -> str:
 def setup_notice(report: Any, *, prompt_due: bool) -> SetupNotice | None:
     """`report`: a safety.setup.SetupReport. `prompt_due`: setup.root_needed(report) — the automatic prompt is still
     to come (then the banner waits for it)."""
+    items = getattr(report, "items", [])
+    if any(i.kind == "stale" and i.status == "missing" for i in items):  # packaged install + development leftovers
+        if any(i.kind == "agent" and i.status == "missing" for i in items):
+            return SetupNotice("An earlier development setup left ScribeSense browser-extension files that can keep an "
+                               "old version in your browsers. No password prompt can be shown (no polkit agent is "
+                               "running): start one, e.g. hyprpolkitagent, then check again.", "Check again", "check")
+        return SetupNotice("An earlier development setup left ScribeSense browser-extension files that can keep an "
+                           "old version in your browsers. Clean them up (one password prompt)?", "Clean up…",
+                           "cleanup")
     missing = [i for i in getattr(report, "items", []) if i.kind == "extension" and i.status in ("missing", "outdated")]
     unavailable = [i for i in getattr(report, "items", []) if i.kind == "extension" and i.status == "unavailable"]
     if missing:
         if prompt_due:
             return None
         where = _names(missing)
+        if getattr(report, "packaged", False):  # W2: the package owns the extension; no root step from the app
+            return SetupNotice(f"The ScribeSense browser extension is not set up for {where}. It comes with the "
+                               "scribesense package: reinstall the package (sudo dnf reinstall scribesense).")
         if any(i.kind == "agent" and i.status == "missing" for i in report.items):
             return SetupNotice(f"The ScribeSense browser extension is not installed in {where}, and no password "
                                "prompt can be shown (no polkit agent is running). Start one, e.g. hyprpolkitagent, "

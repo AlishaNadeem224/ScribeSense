@@ -538,11 +538,15 @@ class ScribeSenseApp(Adw.Application):
         def work() -> None:
             from scribesense.safety import setup
 
-            if action == "install":
+            if action in ("install", "cleanup"):
                 try:
-                    setup.repair_root(setup.check(), user_asked=True)
+                    report = setup.check()
+                    if action == "install":
+                        setup.repair_root(report, user_asked=True)
+                    else:  # packaged install: remove development leftovers (W2, 2026-11-24)
+                        setup.cleanup_stale(report)
                 except Exception:  # noqa: BLE001
-                    log(ErrorCode.UNEXPECTED_ADAPTER_ERROR, "ui", step="setup-install")
+                    log(ErrorCode.UNEXPECTED_ADAPTER_ERROR, "ui", step=f"setup-{action}")
             self.refresh_setup_notice()
 
         threading.Thread(target=work, name="scribesense-setup-action", daemon=True).start()
