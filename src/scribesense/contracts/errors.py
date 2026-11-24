@@ -17,6 +17,10 @@ class ErrorCode(StrEnum):
     BASE_IS_MONOSPACE = "BASE_IS_MONOSPACE"
     BASE_IS_ICON_FONT = "BASE_IS_ICON_FONT"
     PATCH_UNSUPPORTED = "PATCH_UNSUPPORTED"
+    # --- Fonts — import (K1/K2 amendment 2026-11-24, O1 + O4) ---
+    IMPORT_FAILED = "IMPORT_FAILED"  # the import pipeline failed (parse, copy, or store write)
+    IMPORT_NOT_ELIGIBLE = "IMPORT_NOT_ELIGIBLE"  # icon font, monospace, no Regular style, no Latin coverage, or > 32 MB
+    IMPORTED_FONT_IN_USE = "IMPORTED_FONT_IN_USE"  # cannot delete: a kept preset or the active config still names it
     VALIDATION_FAILED = "VALIDATION_FAILED"
     INSTALL_FAILED = "INSTALL_FAILED"
     PREVIEW_UNAVAILABLE = "PREVIEW_UNAVAILABLE"

@@ -102,7 +102,7 @@ OUT_OF_RANGE = IssueCode.OUT_OF_RANGE.value
 """error -- value lies outside ``RANGES[field]``."""
 
 UNKNOWN_FONT = IssueCode.UNKNOWN_FONT.value
-"""error -- ``base_family`` is not a member of ``SHORTLIST``."""
+"""error -- ``base_family`` is not a member of ``SHORTLIST`` and not an imported family."""
 
 NOT_ON_STEP = IssueCode.NOT_ON_STEP.value
 """error -- guard only: the value was not passed through ``round_to_steps`` first.
@@ -272,8 +272,9 @@ def is_on_step(r: Range, value: float) -> bool:
 # The vocabulary itself
 # --------------------------------------------------------------------------- #
 
-# SHORTLIST (K1, imported): Carlito, Atkinson Hyperlegible, Lexend, Noto Sans.
-# Permitted values for ``base_family`` (K1).
+# SHORTLIST (K1): Carlito, Atkinson Hyperlegible, Lexend, Noto Sans.
+# Bundled families; `base_family` may also name an imported family in the font store
+# (K1 amendment 2026-11-24, O1 + O4). `SHORTLIST` itself is unchanged.
 #
 # The four families are fixed by the frozen contract. Research2 D.1.4 searched for
 # reading-performance evidence for each and reports: "I located no controlled
@@ -506,7 +507,7 @@ def validate(c: Configuration) -> list[Issue]:
     """
     issues: list[Issue] = []
 
-    if c.base_family not in SHORTLIST:
+    if c.base_family not in SHORTLIST and not _is_imported_family(c.base_family):
         issues.append(Issue("error", "base_family", UNKNOWN_FONT))
 
     for name in NUMERIC_FIELDS:
@@ -531,3 +532,12 @@ def validate(c: Configuration) -> list[Issue]:
             issues.append(Issue("warning", name, UI_LINE_ABOVE_RECOMMENDED))
 
     return issues
+
+
+def _is_imported_family(family: str) -> bool:
+    """True if ``family`` is the display name of an imported family in the font store.
+
+    Stub until card W1 lands the font store: today always False. When the store exists,
+    this consults it. Kept in one place so callers do not each invent their own lookup.
+    """
+    return False

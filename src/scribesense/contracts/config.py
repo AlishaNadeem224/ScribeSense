@@ -26,7 +26,7 @@ from typing import Literal, Protocol
 class Configuration:
     """Always resolved and canonical when used (K2 resolve -> round -> validate)."""
 
-    base_family: str  # one of SHORTLIST
+    base_family: str  # one of SHORTLIST, or the display name of an imported family in the font store (K1 amendment 2026-11-24)
     letter_em: float  # 0.00–0.30, step 0.02
     word_scale: float  # 1.0–3.0 × space width, step 0.25
     reading_line: float  # 1.0–2.0 ×, step 0.1
@@ -61,7 +61,7 @@ STEP_TOLERANCE = 1e-9
 class IssueCode(StrEnum):
     NON_FINITE = "NON_FINITE"  # error: NaN or ±inf
     OUT_OF_RANGE = "OUT_OF_RANGE"  # error: outside RANGES[field]
-    UNKNOWN_FONT = "UNKNOWN_FONT"  # error: base_family not in SHORTLIST
+    UNKNOWN_FONT = "UNKNOWN_FONT"  # error: base_family not in SHORTLIST and not an imported family
     NOT_ON_STEP = "NOT_ON_STEP"  # error: guard only — value was not rounded first
     NOT_A_NUMBER = "NOT_A_NUMBER"  # error: not a real number (None, str, bool) — K1 amendment 2026-10-14
     UI_LINE_ABOVE_RECOMMENDED = "UI_LINE_ABOVE_RECOMMENDED"  # warning: ui_line > 1.3
