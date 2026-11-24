@@ -35,6 +35,7 @@ journal then uses the held lock for its revert tx and leaves releasing it to thi
 from __future__ import annotations
 
 import re
+import shutil
 import sys
 import time
 from collections.abc import Callable, Mapping
@@ -47,7 +48,7 @@ from scribesense.contracts.cli import ExitCode
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 from scribesense.contracts.fonts import READING_FAMILY_PREFIX, UI_FAMILY_PREFIX
 from scribesense.contracts.journal import Journal
-from scribesense.contracts.paths import data_dir, run_cmd
+from scribesense.contracts.paths import data_dir, run_cmd, user_fonts_dir
 from scribesense.log import log, log_path
 from scribesense.safety.keybinds import remove_keybinds
 from scribesense.safety.native_host_install import HostReport
@@ -262,7 +263,7 @@ def _remove_extension(report: UninstallReport, remover: Callable[[], str]) -> No
 
 def _delete_data(report: UninstallReport, journal: Journal, store: Store, confirm: Callable[[str], bool],
                  service: ServiceControl | None) -> None:
-    question = ("Delete all ScribeSense data (history, presets, settings, backups)? This removes ScribeSense's "
+    question = ("Delete all ScribeSense data (history, presets, settings, backups, imported fonts)? This removes ScribeSense's "
                 "records — it is not secure erasure. Restoring the original settings from ScribeSense will no "
                 "longer be possible.")
     if not confirm(question):
@@ -286,6 +287,9 @@ def _delete_data(report: UninstallReport, journal: Journal, store: Store, confir
         Path(str(store.path) + name).unlink(missing_ok=True)
     for path in (log_path(), Path(str(log_path()) + ".1")):
         path.unlink(missing_ok=True)
+    # W1 (2026-11-24, O4 for O3, user's go-ahead): imported font copies are user data — removed only here, with
+    # --delete-data confirmed and nothing left to restore (the "preferences_only" branch above keeps them).
+    shutil.rmtree(user_fonts_dir(), ignore_errors=True)
     try:
         data_dir().rmdir()  # only if empty: the stable lock file is never ours to remove (K4 rule 1)
     except OSError:

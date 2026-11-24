@@ -15,6 +15,7 @@ from scribesense.adapters.fake import FakeAdapter, FakeWorld
 from scribesense.contracts.cli import ExitCode
 from scribesense.contracts.config import Configuration
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
+from scribesense.contracts.paths import user_fonts_dir
 from scribesense.contracts.presets import Preset, PresetValues, WordSpacing
 from scribesense.log import log_path
 from scribesense.safety.memory_journal import InMemoryJournal
@@ -284,18 +285,25 @@ def test_confirmed_delete_removes_the_records_and_the_files(real_store: tuple[St
     store, s = real_store
     log_path().parent.mkdir(parents=True, exist_ok=True)
     log_path().write_text("{}\n")
+    imported = user_fonts_dir() / ("a" * 64) / "Regular.ttf"  # W1: imported fonts are user data
+    imported.parent.mkdir(parents=True)
+    imported.write_bytes(b"font")
     report = run(s, store=store, delete_data=True, confirm=lambda q: True, service=NOT_RUNNING)
     assert report.data == "deleted" and un.exit_code(report) is ExitCode.OK
     assert not store.path.exists() and not Path(str(store.path) + "-wal").exists()
-    assert not log_path().exists()
+    assert not log_path().exists() and not user_fonts_dir().exists()
     assert "All ScribeSense data was deleted." in un.format_report(report)
 
 
 def test_when_something_is_unresolved_only_the_preferences_go(real_store: tuple[Store, RecoverySystem], world: FakeWorld) -> None:
     store, s = real_store
     world.external_edit(KEY, "'My Own Font 12'")  # skipped -> unresolved: recovery records must stay
+    imported = user_fonts_dir() / ("a" * 64) / "Regular.ttf"
+    imported.parent.mkdir(parents=True)
+    imported.write_bytes(b"font")
     report = run(s, store=store, delete_data=True, confirm=lambda q: True, service=NOT_RUNNING)
     assert report.data == "preferences_only" and KEY in report.reset.skipped
+    assert imported.exists()  # kept with the recovery records: data is deleted only when nothing is left to restore
     assert store.path.exists() and store.fetchone("SELECT COUNT(*) FROM presets")[0] == 0
     assert store.fetchone("SELECT COUNT(*) FROM location_records WHERE unresolved IS NOT NULL")[0] == 1
     assert "recovery records were kept" in un.format_report(report)

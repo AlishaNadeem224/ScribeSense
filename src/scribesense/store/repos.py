@@ -24,6 +24,7 @@ from scribesense.contracts.store import (
     SETTING_RANGES,
     SETTINGS,
     FontRegistryEntry,
+    UserFontEntry,
 )
 from scribesense.log import log
 from scribesense.store import serialize as ser
@@ -260,22 +261,24 @@ class FontRegistryRepo:
 
 # ---------------------------------------------------------------- user fonts (W1 import, K9 addition, 2026-11-22)
 
-@dataclass(frozen=True)
-class UserFontEntry:
-    sha256: str
-    family: str
-    style: str
-    file_name: str
-    size: int
-    source_kind: Literal["file", "folder", "installed"]
-    imported_at: datetime
+#: K8 (amendment 2026-11-24): the folder now lives in contracts/paths.py; kept here as a name for existing callers.
+user_fonts_dir = paths.user_fonts_dir
+
+_HEX = frozenset("0123456789abcdef")
 
 
-def user_fonts_dir() -> Path:
-    """data_dir() / "user-fonts" — proposed K8 accessor (PLAN_v2.md 2026-11-22 decision), not yet applied to
-    contracts/paths.py. Lives here, not in contracts/, until a human adds it and a second owner signs off.
-    Imported font bytes are stored at `user_fonts_dir() / sha256 / file_name` (dir 0700, file 0600, §4)."""
-    return paths.data_dir() / "user-fonts"
+def _check_user_font(sha256: str, family: str, file_name: str) -> None:
+    """K8 / K9 (amendment 2026-11-24): the values become a path (user_fonts_dir()/<sha256>/<file_name>) and a
+    family name the whole app shows, so they are checked here too, not only by the importer."""
+    from scribesense.config.settings import imported_name_ok
+
+    if not (isinstance(sha256, str) and len(sha256) == 64 and set(sha256) <= _HEX):
+        raise ValueError("sha256 must be 64 lowercase hex characters")
+    if not imported_name_ok(family):
+        raise ValueError("not a valid imported family name (K1 rule 6)")
+    if (not isinstance(file_name, str) or not file_name or file_name in (".", "..") or "/" in file_name
+            or "\0" in file_name or len(file_name.encode("utf-8", "surrogateescape")) > 255):
+        raise ValueError("file_name must be a plain base name")
 
 
 class UserFontsRepo:
@@ -283,8 +286,8 @@ class UserFontsRepo:
     bytes to `user_fonts_dir()/<sha256>/<file_name>` before `add()`, and removes that directory after a
     successful `delete_family()` — the repo only ever returns the sha256 values to remove.
 
-    "In use" reuses the existing FONT_IN_USE code: the dedicated IMPORTED_FONT_IN_USE code proposed in
-    W1 Part A is not in contracts/errors.py yet (no second-owner sign-off), so there is nothing to raise.
+    K9 amendment 2026-11-24: bad sha256 / family / file_name -> ValueError (they become a path and a shown
+    name); replacing or deleting a family in use -> IMPORTED_FONT_IN_USE (was FONT_IN_USE before the code existed).
     """
 
     def __init__(self, store: Store) -> None:
@@ -315,8 +318,7 @@ class UserFontsRepo:
             raise ValueError(f"unknown style {style!r}")
         if source_kind not in ("file", "folder", "installed"):
             raise ValueError(f"unknown source kind {source_kind!r}")
-        if not sha256 or not family or not file_name:
-            raise ValueError("a user font needs a sha256, a family and a file name")
+        _check_user_font(sha256, family, file_name)
         now = ser.ts_to_text(self._s.clock())
         with self._s.transaction():
             existing = self.get(sha256)
@@ -326,7 +328,7 @@ class UserFontsRepo:
                 "SELECT sha256 FROM user_fonts WHERE family = ? AND style = ?", (family, style))
             if same_slot is not None:
                 if self._in_use_by_family(family):
-                    raise ScribeSenseError(ErrorCode.FONT_IN_USE)
+                    raise ScribeSenseError(ErrorCode.IMPORTED_FONT_IN_USE)
                 self._s.execute("DELETE FROM user_fonts WHERE family = ? AND style = ?", (family, style))
             self._s.execute(
                 "INSERT INTO user_fonts (sha256, family, style, file_name, size, source_kind, imported_at) "
@@ -353,7 +355,7 @@ class UserFontsRepo:
             if not rows:
                 return []
             if self._in_use_by_family(family):
-                raise ScribeSenseError(ErrorCode.FONT_IN_USE)
+                raise ScribeSenseError(ErrorCode.IMPORTED_FONT_IN_USE)
             self._s.execute("DELETE FROM user_fonts WHERE family = ?", (family,))
             return [r.sha256 for r in rows]
 

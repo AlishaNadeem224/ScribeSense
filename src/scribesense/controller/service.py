@@ -156,6 +156,7 @@ class Service:
         service = cls(store=store, lock=lock, journal=journal, server=server, adapters=adapter_list,
                       controller=controller, on_reader_text=on_reader_text, setup=setup)
         holder["service"] = service
+        service.register_imported_fonts()
         service.housekeeping()
         service.run_setup()
         if start_server:
@@ -191,7 +192,57 @@ class Service:
     def close(self) -> None:
         self._stop.set()
         self.server.stop()
+        self.unregister_imported_fonts()
         self.store.close()
+
+    # ---------------------------------------------------------------- imported fonts (W1, 2026-11-24)
+
+    def register_imported_fonts(self) -> None:
+        """K1 rule 6 / K2: tell `config` where imported family names and their stored copies come from (it never
+        imports the store itself). Undone by `close()`."""
+        from scribesense.config import bundled, settings
+        from scribesense.fontgen import importer
+
+        repo = self.store.user_fonts
+        settings.set_imported_families(repo.families)
+        bundled.set_imported_files(lambda family: importer.stored_files(family, repo=repo))
+
+    def unregister_imported_fonts(self) -> None:
+        from scribesense.config import bundled, settings
+
+        settings.set_imported_families(None)
+        bundled.set_imported_files(None)
+
+    def imported_families(self) -> list[str]:
+        return list(self.store.user_fonts.families())
+
+    def import_fonts(self, kind: str, what: Any) -> Any:
+        """W1: kind "files" (a list of paths), "folder" (a path) or "installed" (a family name). Runs the checks in a
+        child process, so it takes a moment: call it off the GTK thread. Refused (APPLY_IN_PROGRESS) while a change
+        awaits Keep / Revert, so the confirm window never races an import."""
+        from scribesense.fontgen import importer
+
+        with self._mutex:
+            if self._pending is not None:
+                raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
+            repo = self.store.user_fonts
+            if kind == "files":
+                return importer.import_files(list(what), repo=repo)
+            if kind == "folder":
+                return importer.import_folder(what, repo=repo)
+            if kind == "installed":
+                return importer.import_installed(str(what), repo=repo)
+            raise ValueError(f"unknown import kind {kind!r}")
+
+    def delete_imported_family(self, family: str) -> bool:
+        """Remove an imported family. IMPORTED_FONT_IN_USE while a preset or the confirmed style names it;
+        APPLY_IN_PROGRESS while a change awaits Keep / Revert."""
+        from scribesense.fontgen import importer
+
+        with self._mutex:
+            if self._pending is not None:
+                raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
+            return importer.delete_family(family, repo=self.store.user_fonts)
 
     # ---------------------------------------------------------------- apply / confirm (M2.1, M2.3)
 
@@ -481,4 +532,21 @@ def delete_store_data(store: Any, journal: Any) -> bool:
         if exc.code is not ErrorCode.RECOVERY_OBLIGATIONS_REMAIN:
             raise
         return False
+    _delete_imported_fonts(store)
     return True
+
+
+def _delete_imported_fonts(store: Any) -> None:
+    """W1: imported fonts are user data, so "delete all" removes them too — only once nothing is left to restore
+    (the presets are gone and no style is active, so none is in use)."""
+    from scribesense.fontgen import importer
+    from scribesense.log import log
+
+    repo = getattr(store, "user_fonts", None)
+    if repo is None:
+        return
+    for family in repo.families():
+        try:
+            importer.delete_family(family, repo=repo)
+        except ScribeSenseError as exc:
+            log(exc.code, "service", step="delete-imported")

@@ -49,10 +49,12 @@ particular value helps any particular reader.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from decimal import Decimal
 
 from scribesense.contracts.config import (
+    IMPORTED_FAMILY_MAX_CHARS,
     RANGES,
     SHORTLIST,
     STEP_TOLERANCE,
@@ -82,9 +84,11 @@ __all__ = [
     "contains",
     "count",
     "decimals_of",
+    "imported_name_ok",
     "is_on_step",
     "positions",
     "round_to_steps",
+    "set_imported_families",
     "snap",
     "snap_up",
     "validate",
@@ -534,10 +538,35 @@ def validate(c: Configuration) -> list[Issue]:
     return issues
 
 
-def _is_imported_family(family: str) -> bool:
-    """True if ``family`` is the display name of an imported family in the font store.
+# --------------------------------------------------------------------------- #
+# Imported families (K1 rule 6, amendment 2026-11-24; W1 font import)
+# --------------------------------------------------------------------------- #
 
-    Stub until card W1 lands the font store: today always False. When the store exists,
-    this consults it. Kept in one place so callers do not each invent their own lookup.
-    """
-    return False
+_SHORTLIST_FOLDED = frozenset(name.casefold() for name in SHORTLIST)
+_imported_families: Callable[[], Iterable[str]] | None = None
+
+
+def imported_name_ok(name: object) -> bool:
+    """K1 rule 6: an imported family name is printable, has no leading/trailing whitespace, is
+    1..IMPORTED_FAMILY_MAX_CHARS characters, and never equals a SHORTLIST name ignoring case."""
+    return (isinstance(name, str) and 1 <= len(name) <= IMPORTED_FAMILY_MAX_CHARS and name.isprintable()
+            and name == name.strip() and name.casefold() not in _SHORTLIST_FOLDED)
+
+
+def set_imported_families(provider: Callable[[], Iterable[str]] | None) -> None:
+    """K1 rule 6: the composition root (the service) registers where imported family names come from — in
+    practice ``store.user_fonts.families``. ``config`` never imports the store. ``None`` unregisters."""
+    global _imported_families
+    _imported_families = provider
+
+
+def _is_imported_family(family: str) -> bool:
+    """True if ``family`` is a valid imported name that the registered provider lists. No provider, or a
+    provider that fails (e.g. the store is unreadable) -> False: the name is refused, never guessed."""
+    provider = _imported_families
+    if provider is None or not imported_name_ok(family):
+        return False
+    try:
+        return family in set(provider())
+    except Exception:  # noqa: BLE001 — validate() must never raise because a lookup failed
+        return False

@@ -77,6 +77,28 @@ def _find_header(widget: Gtk.Widget | None) -> Adw.HeaderBar | None:
     return None
 
 
+class ServiceFonts:
+    """The preset editor's imported-font actions (W1, 2026-11-24), backed by the Service. All blocking: the page
+    runs them off the GTK thread."""
+
+    def __init__(self, service: Any) -> None:
+        self._service = service
+
+    def imported(self) -> list[str]:
+        return list(self._service.imported_families())
+
+    def installed(self) -> list[str]:
+        from scribesense.fontgen.importer import installed_families
+
+        return installed_families()
+
+    def import_(self, kind: str, what: Any) -> Any:
+        return self._service.import_fonts(kind, what)
+
+    def remove(self, family: str) -> bool:
+        return bool(self._service.delete_imported_family(family))
+
+
 class ScribeSenseWindow(Adw.ApplicationWindow):
     """The single top-level window (M2.4)."""
 
@@ -135,6 +157,7 @@ class ScribeSenseWindow(Adw.ApplicationWindow):
             on_original=self._on_original,
             list_presets=self._list_presets,
             save_preset=self._save_preset,
+            fonts=ServiceFonts(service) if service is not None else None,  # W1 import (2026-11-24)
         )
         self.nav.push(self.editor)
         self._add_header_buttons(box)

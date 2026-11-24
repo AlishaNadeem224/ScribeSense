@@ -40,7 +40,7 @@ from scribesense.config.presets import (
     with_base_family,
     with_word_multiplier,
 )
-from scribesense.config.settings import decimals_of, snap, validate
+from scribesense.config.settings import decimals_of, imported_name_ok, snap, validate
 from scribesense.contracts.config import (
     RANGES,
     SHORTLIST,
@@ -113,11 +113,71 @@ def slider_edit_changes(values: PresetValues, field: str, raw: float) -> bool:
     return getattr(edited, field) != control_values(values)[field]
 
 
-def edit_base_family(values: PresetValues, family: str) -> PresetValues:
-    """Change the base font (K2: multiplier kept, target_em recalculated at resolve)."""
-    if family not in SHORTLIST:
+def edit_base_family(values: PresetValues, family: str,
+                     available: list[str] | tuple[str, ...] = SHORTLIST) -> PresetValues:
+    """Change the base font (K2: multiplier kept, target_em recalculated at resolve). Only a font that is available
+    — the dropdown's `font_choices()`: bundled, or imported (W1) — is accepted."""
+    if family not in available:
         raise ValueError(family)
     return with_base_family(values, family)
+
+
+# --------------------------------------------------------------------------- #
+# Imported fonts (W1, 2026-11-24)
+# --------------------------------------------------------------------------- #
+
+def font_choices(imported: list[str] | tuple[str, ...]) -> list[str]:
+    """The base-font dropdown: the bundled families, then the imported ones (sorted, valid names only). Only fonts
+    that are actually available are listed (PLAN_v2 W1.5)."""
+    extra = sorted({f for f in imported if f not in SHORTLIST and imported_name_ok(f)}, key=str.casefold)
+    return [*SHORTLIST, *extra]
+
+
+#: importer reasons -> plain words (shown next to the file's name).
+IMPORT_REASONS: dict[str, str] = {
+    "STYLE_UNSUPPORTED": "only Regular, Bold, Italic and Bold Italic can be used",
+    "NO_REGULAR": "the family has no Regular style",
+    "DUPLICATE_STYLE": "another file has the same style",
+    "BAD_FAMILY_NAME": "the font's family name cannot be used",
+    "TOO_MANY_FILES": "too many files at once (at most 64)",
+    "FONT_TOO_LARGE": "the file is over 32 MB",
+    "FONT_PARSE_TIMEOUT": "the font took too long to check",
+    "FONT_UNREADABLE": "not a font ScribeSense can read, or it could not be checked",
+    "MISSING_TABLE": "not a complete font file",
+    "NO_UPM": "not a complete font file",
+    "BASE_IS_MONOSPACE": "monospaced fonts cannot be spaced",
+    "BASE_IS_ICON_FONT": "icon fonts cannot be used",
+    "NO_LATIN_COVERAGE": "the font has no Latin letters",
+    "IMPORTED_FONT_IN_USE": "this family is used by a preset or the current style",
+    "STORE": "it could not be saved",
+    "COPY": "it could not be copied",
+    "STAGING": "the font folder could not be prepared",
+    "NOT_INSTALLED": "not found among the installed fonts",
+    "FOLDER_UNREADABLE": "the folder could not be read",
+}
+STYLE_NAMES = {"Regular": "Regular", "Bold": "Bold", "Italic": "Italic", "BoldItalic": "Bold Italic"}
+
+
+def import_message(report: Any, *, limit: int = 5) -> str:
+    """What an import did, in one message: the families added, then each refused file with its reason."""
+    parts: list[str] = []
+    for family, styles in getattr(report, "imported", {}).items():
+        parts.append(f"Imported {family} ({', '.join(STYLE_NAMES.get(s, s) for s in styles)}).")
+    refused = list(getattr(report, "refused", []))
+    if refused:
+        shown = [f"{r.source}: {IMPORT_REASONS.get(r.detail, r.detail)}" for r in refused[:limit]]
+        more = f"; and {len(refused) - limit} more" if len(refused) > limit else ""
+        parts.append(f"Not imported — {'; '.join(shown)}{more}.")
+    return " ".join(parts) or "Nothing was imported."
+
+
+def _font_error_text(exc: BaseException) -> str:
+    code = getattr(getattr(exc, "code", None), "value", None)
+    if code == "APPLY_IN_PROGRESS":
+        return "Fonts cannot be changed while a change waits for Keep or Revert."
+    if code == "IMPORTED_FONT_IN_USE":
+        return "This font is used by a saved preset or the current style. Change those first."
+    return f"The font could not be changed ({code or 'unexpected error'})."
 
 
 def control_values(values: PresetValues) -> dict[str, float]:
@@ -261,11 +321,11 @@ try:
 
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, Gtk
+    from gi.repository import Adw, Gio, GLib, Gtk
 
     from scribesense.ui.preview import PreviewWidget
 except (ImportError, ValueError):  # no PyGObject / typelibs: logic tests still run
-    Adw = Gtk = None  # type: ignore[assignment]
+    Adw = Gio = GLib = Gtk = None  # type: ignore[assignment]
     PreviewWidget = None  # type: ignore[assignment,misc]
 
 _PageBase: Any = Adw.NavigationPage if Adw is not None else object
@@ -281,7 +341,11 @@ class PresetEditorPage(_PageBase):  # type: ignore[misc]
         on_original: Callable[[], None],
         list_presets: Callable[[], list[Preset]] = lambda: [],
         save_preset: Callable[[Preset], None] | None = None,
+        fonts: Any | None = None,
     ) -> None:
+        """`fonts` (W1, 2026-11-24): imported-font actions, or None (no service: bundled fonts only). Methods, all
+        blocking (the page runs them off the GTK thread): imported() -> names · installed() -> names ·
+        import_(kind, what) -> importer.ImportReport · remove(family) -> bool."""
         if Adw is None:
             raise ImportError("PresetEditorPage needs GTK 4 and libadwaita")
         super().__init__(title="Presets")
@@ -290,6 +354,8 @@ class PresetEditorPage(_PageBase):  # type: ignore[misc]
         self._on_original = on_original
         self._list_presets = list_presets
         self._save_preset = save_preset
+        self._fonts = fonts
+        self._choices: list[str] = font_choices([])
 
         self._rows: list[PresetRow] = []
         self._selected: Preset | None = BUILTINS[0]  # the preset the values came from
@@ -334,13 +400,20 @@ class PresetEditorPage(_PageBase):  # type: ignore[misc]
         outer.append(self._labeled_section("Preview", self.preview))
 
         # Base font (K1 SHORTLIST)
-        self.font_dropdown = Gtk.DropDown.new_from_strings(list(SHORTLIST))
+        self.font_model = Gtk.StringList.new(self._choices)
+        self.font_dropdown = Gtk.DropDown(model=self.font_model)
         self.font_dropdown.update_property([Gtk.AccessibleProperty.LABEL], ["Base font"])
         self.font_dropdown.connect("notify::selected", self._on_font_changed)
+        self.font_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.font_row.append(self.font_dropdown)
+        self.font_menu = self._build_font_menu()
+        self.font_row.append(self.font_menu)
+        self.font_menu.set_visible(fonts is not None)
 
         # Sliders (generated from RANGES only)
         self.sliders_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        self.sliders_box.append(self._control_row("Base font", self.font_dropdown)[0])
+        self.sliders_box.append(self._control_row("Base font", self.font_row)[0])
+        self.font_dropdown.set_hexpand(True)
         self.scales: dict[str, Gtk.Scale] = {}
         self.scale_labels: dict[str, Gtk.Label] = {}
         self._build_sliders()
@@ -370,6 +443,7 @@ class PresetEditorPage(_PageBase):  # type: ignore[misc]
         self.set_child(toolbar)
 
         self._reload_presets(select=self._selected)
+        self.reload_fonts()
         self.preset_dropdown.connect("notify::selected", self._on_preset_changed)
         self._sync_controls()
         self._refresh()
@@ -480,10 +554,11 @@ class PresetEditorPage(_PageBase):  # type: ignore[misc]
         if self._updating_ui:
             return
         idx = dropdown.get_selected()
-        if idx >= len(SHORTLIST) or SHORTLIST[idx] == self._values.base_family:
+        if idx >= len(self._choices) or self._choices[idx] == self._values.base_family:
             return
-        self._values = edit_base_family(self._values, SHORTLIST[idx])
+        self._values = edit_base_family(self._values, self._choices[idx], self._choices)
         self._after_edit()
+        self._sync_font_menu()
 
     def _after_edit(self) -> None:
         """An edit leaves Original and becomes Custom unless it matches the preset."""
@@ -505,6 +580,184 @@ class PresetEditorPage(_PageBase):  # type: ignore[misc]
     def _on_restore_clicked(self, _button: Gtk.Button) -> None:
         """The always-visible "Restore original" button: same callback as the dropdown."""
         self._on_original()
+
+    # --- imported fonts (W1, 2026-11-24) ---------------------------------------
+
+    def _build_font_menu(self) -> Gtk.MenuButton:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(box, f"set_margin_{side}")(6)
+        self.font_buttons: dict[str, Gtk.Button] = {}
+        for key, label, handler in (
+            ("files", "Import font files…", self._on_import_files),
+            ("folder", "Import a font folder…", self._on_import_folder),
+            ("installed", "Use an installed font…", self._on_import_installed),
+            ("remove", "Remove this imported font…", self._on_remove_font),
+        ):
+            button = Gtk.Button(label=label)
+            button.add_css_class("flat")
+            button.connect("clicked", handler)
+            box.append(button)
+            self.font_buttons[key] = button
+        popover = Gtk.Popover()
+        popover.set_child(box)
+        menu = Gtk.MenuButton(label="Fonts…", popover=popover)
+        menu.update_property([Gtk.AccessibleProperty.LABEL], ["Import or remove fonts"])
+        self._font_popover = popover
+        return menu
+
+    def _sync_font_menu(self) -> None:
+        if hasattr(self, "font_buttons"):
+            self.font_buttons["remove"].set_sensitive(self._values.base_family not in SHORTLIST)
+
+    def _fonts_async(self, work: Callable[[], Any], done: Callable[[Any], None]) -> None:
+        """Run blocking font work in a thread; `done(result or exception)` on the GTK main loop."""
+        import threading
+
+        def runner() -> None:
+            try:
+                outcome: Any = work()
+            except BaseException as exc:  # noqa: BLE001 — handed to `done`
+                outcome = exc
+            GLib.idle_add(lambda: done(outcome) or False)
+
+        threading.Thread(target=runner, name="scribesense-fonts", daemon=True).start()
+
+    def reload_fonts(self, select: str | None = None) -> None:
+        """Re-read the imported families into the dropdown; `select` one (e.g. just imported)."""
+        if self._fonts is None:
+            return
+
+        def done(result: Any) -> None:
+            if isinstance(result, BaseException):
+                self._show_message("The imported fonts could not be listed.")
+                return
+            self._choices = font_choices(list(result))
+            self._updating_ui = True
+            self.font_model.splice(0, self.font_model.get_n_items(), self._choices)
+            self._updating_ui = False
+            if select is not None and select in self._choices:
+                self._values = edit_base_family(self._values, select, self._choices)
+                self._after_edit()
+            self._sync_controls()
+
+        self._fonts_async(self._fonts.imported, done)
+
+    def _run_import(self, kind: str, what: Any) -> None:
+        self._font_popover.popdown()
+        self.font_menu.set_sensitive(False)
+        self._show_message("Checking the font… (each file is checked safely before it is used)")
+
+        def done(result: Any) -> None:
+            self.font_menu.set_sensitive(True)
+            if isinstance(result, BaseException):
+                self._show_message(_font_error_text(result))
+                return
+            self._show_message(import_message(result))
+            families = list(getattr(result, "imported", {}))
+            self.reload_fonts(select=families[0] if len(families) == 1 else None)
+
+        self._fonts_async(lambda: self._fonts.import_(kind, what), done)
+
+    def _font_dialog(self, title: str) -> Gtk.FileDialog:
+        dialog = Gtk.FileDialog(title=title, modal=True)
+        only_fonts = Gtk.FileFilter()
+        only_fonts.set_name("Fonts (.ttf, .otf)")
+        for suffix in ("ttf", "otf", "TTF", "OTF"):
+            only_fonts.add_suffix(suffix)
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(only_fonts)
+        dialog.set_filters(filters)
+        dialog.set_default_filter(only_fonts)
+        return dialog
+
+    def _on_import_files(self, _button: Gtk.Button) -> None:
+        dialog = self._font_dialog("Import font files")
+
+        def chosen(dlg: Gtk.FileDialog, result: Any) -> None:
+            try:
+                files = dlg.open_multiple_finish(result)
+            except GLib.Error:
+                return  # cancelled
+            paths = [files.get_item(i).get_path() for i in range(files.get_n_items())]
+            if any(paths):
+                self._run_import("files", [p for p in paths if p])
+
+        dialog.open_multiple(self.get_root(), None, chosen)
+
+    def _on_import_folder(self, _button: Gtk.Button) -> None:
+        dialog = Gtk.FileDialog(title="Import a font folder", modal=True)
+
+        def chosen(dlg: Gtk.FileDialog, result: Any) -> None:
+            try:
+                folder = dlg.select_folder_finish(result)
+            except GLib.Error:
+                return
+            if folder is not None and folder.get_path():
+                self._run_import("folder", folder.get_path())
+
+        dialog.select_folder(self.get_root(), None, chosen)
+
+    def _on_import_installed(self, _button: Gtk.Button) -> None:
+        self._font_popover.popdown()
+
+        def done(result: Any) -> None:
+            if isinstance(result, BaseException) or not result:
+                self._show_message("No installed fonts were found.")
+                return
+            names = list(result)
+            picker = Gtk.DropDown.new_from_strings(names)
+            picker.set_enable_search(True)
+            picker.set_expression(Gtk.PropertyExpression.new(Gtk.StringObject, None, "string"))
+            picker.update_property([Gtk.AccessibleProperty.LABEL], ["Installed font"])
+            dialog = Adw.AlertDialog.new("Use an installed font",
+                                         "ScribeSense copies the font and checks it before using it.")
+            dialog.set_extra_child(picker)
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("import", "Use this font")
+            dialog.set_response_appearance("import", Adw.ResponseAppearance.SUGGESTED)
+            dialog.set_default_response("import")
+            dialog.set_close_response("cancel")
+
+            def respond(_d: Any, response: str) -> None:
+                index = picker.get_selected()
+                if response == "import" and index < len(names):
+                    self._run_import("installed", names[index])
+
+            dialog.connect("response", respond)
+            dialog.present(self)
+
+        self._fonts_async(self._fonts.installed, done)
+
+    def _on_remove_font(self, _button: Gtk.Button) -> None:
+        self._font_popover.popdown()
+        family = self._values.base_family
+        if family in SHORTLIST or self._fonts is None:
+            return
+        dialog = Adw.AlertDialog.new(f"Remove {family}?",
+                                     "Its copy is deleted from ScribeSense. Presets that use it must be changed first.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("remove", "Remove")
+        dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_close_response("cancel")
+
+        def respond(_d: Any, response: str) -> None:
+            if response != "remove":
+                return
+
+            def done(result: Any) -> None:
+                if isinstance(result, BaseException):
+                    self._show_message(_font_error_text(result))
+                    return
+                self._show_message(f"{family} was removed.")
+                self._values = edit_base_family(self._values, SHORTLIST[-1], SHORTLIST)  # back to a bundled font
+                self._after_edit()
+                self.reload_fonts()
+
+            self._fonts_async(lambda: self._fonts.remove(family), done)
+
+        dialog.connect("response", respond)
+        dialog.present(self)
 
     def _on_save_clicked(self, _button: Gtk.Button) -> None:
         if self._save_preset is None:
@@ -556,9 +809,10 @@ class PresetEditorPage(_PageBase):  # type: ignore[misc]
         for field, scale in self.scales.items():
             scale.set_value(shown[field])
         self.scale_labels["word_scale"].set_text(word_label(self._values))
-        if self._values.base_family in SHORTLIST:
-            self.font_dropdown.set_selected(SHORTLIST.index(self._values.base_family))
+        if self._values.base_family in self._choices:
+            self.font_dropdown.set_selected(self._choices.index(self._values.base_family))
         self._updating_ui = False
+        self._sync_font_menu()
 
     def _refresh(self) -> None:
         """Re-check the values, update warnings / Apply, and request a new preview."""

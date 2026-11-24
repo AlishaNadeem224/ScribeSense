@@ -495,3 +495,34 @@ def test_font_size_units_converts_points_with_the_context_resolution() -> None:
     attrs = preview.sample_attributes(ctx, "X", 1.0, None)  # no reading_line: no line attr
     kinds = {a.klass.type for a in attrs.get_attributes()}
     assert Pango.AttrType.LINE_HEIGHT not in kinds and Pango.AttrType.ABSOLUTE_LINE_HEIGHT not in kinds
+
+
+# ---------------------------------------------------------------- imported fonts (W1, 2026-11-24)
+
+def test_font_choices_lists_bundled_then_valid_imported_names() -> None:
+    choices = pe.font_choices(["zeta Sans", "Alpha Serif", "Noto Sans", "noto sans", "", "x" * 65])
+    assert choices == [*SHORTLIST, "Alpha Serif", "zeta Sans"]  # bundled names / bad names never duplicate
+
+
+def test_an_imported_family_is_accepted_only_when_available() -> None:
+    choices = pe.font_choices(["Alpha Serif"])
+    assert pe.edit_base_family(DEFAULT.values, "Alpha Serif", choices).base_family == "Alpha Serif"
+    with pytest.raises(ValueError):
+        pe.edit_base_family(DEFAULT.values, "Alpha Serif")  # not imported: not available
+
+
+def test_import_message_names_families_and_each_refusal() -> None:
+    from scribesense.contracts.errors import ErrorCode
+    from scribesense.fontgen.importer import ImportReport, Refused
+
+    report = ImportReport(imported={"Alpha Serif": ["Regular", "BoldItalic"]},
+                          refused=[Refused("light.ttf", ErrorCode.IMPORT_NOT_ELIGIBLE, "STYLE_UNSUPPORTED"),
+                                   Refused("mono.ttf", ErrorCode.IMPORT_NOT_ELIGIBLE, "BASE_IS_MONOSPACE")])
+    text = pe.import_message(report)
+    assert text.startswith("Imported Alpha Serif (Regular, Bold Italic).")
+    assert "light.ttf: only Regular, Bold, Italic and Bold Italic can be used" in text
+    assert "mono.ttf: monospaced fonts cannot be spaced" in text
+    assert pe.import_message(ImportReport()) == "Nothing was imported."
+    many = ImportReport(refused=[Refused(f"{i}.ttf", ErrorCode.IMPORT_NOT_ELIGIBLE, "FONT_UNREADABLE")
+                                 for i in range(7)])
+    assert "and 2 more" in pe.import_message(many)

@@ -174,7 +174,7 @@ class Store:
         self.coverage = CoverageRepo(self)
         self.settings = SettingsRepo(self)
         self.samples = SampleRepo(self)
-        self.user_fonts = UserFontsRepo(self)  # W1 import, K9 addition 2026-11-22; not yet in contracts.store.Store
+        self.user_fonts = UserFontsRepo(self)  # W1 import, K9 addition 2026-11-22; in contracts.store.Store since 2026-11-24
         self.built_in_presets = BuiltInPresetRepo(self)  # K9 addition; draft amendment to K2, not yet signed off
         self.preset_adjustment_limit = PresetAdjustmentLimitRepo(self)  # draft amendment to K1, not yet signed off
 

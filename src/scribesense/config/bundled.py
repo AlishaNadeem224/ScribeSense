@@ -24,7 +24,7 @@ copy sits after installation is answered differently.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from scribesense.contracts.config import SHORTLIST
@@ -201,6 +201,43 @@ class BundledFontMissing(ScribeSenseError):
 
 
 
+# --------------------------------------------------------------------------- #
+# Imported families (K2 rule 2 + K1 rule 6, amendment 2026-11-24; W1)
+# --------------------------------------------------------------------------- #
+
+_imported_files: Callable[[str], Mapping[str, Path] | None] | None = None
+
+
+def set_imported_files(provider: Callable[[str], Mapping[str, Path] | None] | None) -> None:
+    """Registered by the composition root (the service): ``family -> {style: stored copy}`` for an imported family,
+    or None when the family is not imported. ``config`` never imports the store (K1 rule 6). ``None`` unregisters."""
+    global _imported_files
+    _imported_files = provider
+
+
+def _imported_font_files(family: str) -> dict[str, Path]:
+    """K2 (amendment 2026-11-24): an unknown name -> BUNDLED_FONT_MISSING, as before; an imported family whose
+    stored copy is gone or has no Regular -> FONT_UNREADABLE. Never reads a font in place from the system: the
+    provider returns copies under K8 ``user_fonts_dir()``, and anything outside it is refused."""
+    from scribesense.config.settings import imported_name_ok
+    from scribesense.contracts.paths import user_fonts_dir
+
+    provider = _imported_files
+    files = provider(family) if provider is not None and imported_name_ok(family) else None
+    if files is None:
+        raise BundledFontMissing(f"{family!r} is neither bundled nor imported")
+    root = user_fonts_dir().resolve()
+    found: dict[str, Path] = {}
+    for style, path in files.items():
+        real = Path(path).resolve()
+        if not real.is_relative_to(root) or not real.is_file():
+            raise ScribeSenseError(ErrorCode.FONT_UNREADABLE)
+        found[style] = real
+    if REQUIRED_STYLE not in found:
+        raise ScribeSenseError(ErrorCode.FONT_UNREADABLE)
+    return found
+
+
 def base_font_files(family: str) -> dict[str, Path]:
     """Bundled ``style -> file`` map for one family, per K2's ``fonts/`` layout.
 
@@ -223,7 +260,7 @@ def base_font_files(family: str) -> dict[str, Path]:
     it ships no Regular.
     """
     if family not in SHORTLIST:
-        raise BundledFontMissing(f"{family!r} is not in SHORTLIST")
+        return _imported_font_files(family)
 
     directory = fonts_root() / family
     if not directory.is_dir():
