@@ -27,14 +27,6 @@ htmlcov/
 *.pem
 *.crx
 
-# --- Exception: the signed extension automatic setup looks for (never the signing key itself) ---
-# `dist/` above also matches `extension/dist/`, so the directory must be un-ignored first, or the
-# file-level exception below has nothing to apply to (a known git gitignore gotcha). Re-ignoring
-# everything else under it keeps other build intermediates (e.g. *.js) out, same as before.
-!extension/dist/
-extension/dist/*
-!extension/dist/scribesense.crx
-
 # --- Editors / OS ---
 .vscode/
 .idea/
