@@ -19,7 +19,7 @@ from scribesense.contracts.states import TERMINAL, TRANSITIONS, UNFINISHED, TxSt
 
 def test_error_codes_are_unique_identifiers() -> None:
     values = [c.value for c in ErrorCode]
-    assert len(values) == len(set(values)) == 58  # + FONT_UNAVAILABLE (K11 amendment 2026-11-22)
+    assert len(values) == len(set(values)) == 61  # + FONT_UNAVAILABLE (K11 2026-11-22) + IMPORT_* (K1/K2 2026-11-24)
     assert all(c.name == c.value and c.value.isupper() for c in ErrorCode)
 
 
