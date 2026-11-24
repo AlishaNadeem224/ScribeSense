@@ -2118,4 +2118,113 @@ only for SEPARATE polkit agents (hyprpolkitagent, polkit-gnome-…), but on GNOM
 `gnome-shell` counts as an agent; `polkit-agent-helper` (polkit's own helper, not an agent) was removed from the
 list; tests for the name matching. First GNOME findings for the GNOME item: the app runs; no keybind / login recovery
 (Hyprland-only); Qt not covered (no qt6ct); the signed .crx must be copied by hand (it is git-ignored).
+## Decision (2026-11-22, O3) — W2 font-location fix, all four sub-points closed
+
+    O3 (K8 owner) signs off O1's `config/bundled.py` fix (2026-11-14 entry above) on all four points W2.1 left open:
+
+    1. **Placement: stays in `config/bundled.py`, not moved into `contracts/paths.py`.** `fonts_root()` /
+       `candidate_roots()` are not part of K8 — no contract change, so nothing for a human to apply to
+       `contracts/paths.py`.
+    2. **`SCRIBESENSE_BUNDLED_FONTS` approved as a `config/bundled.py`-local env var.** Because it is not a K8
+       function (point 1), it does **not** join K8's documented override list (`HOME`, `XDG_CONFIG_HOME`,
+       `SCRIBESENSE_DATA_DIR`, `SCRIBESENSE_FONTS_DIR`) — that list stays unchanged.
+    3. **Search order confirmed as implemented:** override → `$XDG_DATA_DIRS` (installed) → repo tree (dev
+       fallback). Installed wins over a checkout when both exist on a dev machine; moot for the test suite
+       itself, since `tests/conftest.py` and `harness/sandbox.py` already pin the override to the repo
+       (2026-11-22 O4 fix, same entry above).
+    4. **Packaging path confirmed: `/usr/share/scribesense/fonts`.** Already on the code's own `$XDG_DATA_DIRS`
+       search (default `/usr/local/share:/usr/share`) — no new behaviour needed, just committing to it for the
+       RPM `.spec` (W2.2/W2.3), alongside each family's `OFL.txt` under `/usr/share/licenses/scribesense/`.
+
+    **Closes:** W2.1's O3 tasks 1–3 and the packaging-path half of task 5. **Still open from that task list:**
+    task 5's other half (`extension/` files for the native-messaging host installer — O4's module, same bug
+    shape) and task 6 (moot — O4's 2026-11-22 fix already relocated O1's tests out of the shipped package).
+    The duplicate ask in the 2026-11-22 entry above ("O1 + O3: agree the name and search order of
+    `SCRIBESENSE_BUNDLED_FONTS`") is answered by points 2–3.
+
+## Build (2026-11-22, O3) — W1's `user_fonts` table (K9 addition)
+
+    O3's piece of W1 (user font import), item 6 of the W1 Part A task list: the `user_fonts` table and its
+    K8 accessor question. Built now, independent of whether Part A's K1/K2 wording or lookup approach gets a
+    second owner — nothing here depends on that half of the proposal.
+
+    **Schema** (`store/migrations/002_user_fonts.sql`): `user_fonts(sha256 PK, family, style, file_name, size,
+    source_kind, imported_at)`, `UNIQUE(family, style)`, indexed on `family`. One row per unique file content
+    (sha256); `family`/`style` are attributes, not the key. Mirrors `font_registry`'s style (TEXT timestamps,
+    CHECK-constrained enums).
+
+    **Repo** (`store/repos.py`, `UserFontsRepo`, wired into `Store.__init__` as `self.user_fonts`):
+    `get`, `by_family`, `families`, `add`, `delete_family`. Metadata only — the repo never touches the
+    filesystem; the caller copies bytes to `user_fonts_dir()/<sha256>/<file_name>` before `add()`, and
+    deletes that directory for each sha256 `delete_family()` returns.
+
+    **Decisions taken while building, per the earlier conversation:**
+    1. **Re-import collision: upsert-replace, blocked by the in-use check.** `add()` on an existing
+       `(family, style)` with different bytes deletes the old row and inserts the new one, unless
+       `_in_use_by_family()` says the family is referenced — then `FONT_IN_USE`, old row untouched.
+       Identical bytes (same sha256) are a no-op (dedup), checked first.
+    2. **`IMPORTED_FONT_IN_USE` not used — reused the existing `FONT_IN_USE` instead.** The dedicated code
+       is part of W1 Part A's error-code proposal (task 4), which has no second-owner sign-off yet; using it
+       would make this code fail at import (`contracts/errors.py` doesn't have it). **Replacement work, once
+       Part A's error codes are signed off and a human adds the enum line:** change the two raise sites in
+       `UserFontsRepo.add()` and `delete_family()` from `ErrorCode.FONT_IN_USE` to `ErrorCode.IMPORTED_FONT_IN_USE`,
+       and update the three tests in `test_store_repos.py` that assert `FONT_IN_USE` for a `user_fonts` refusal
+       (`test_reimport_is_blocked_...`, `test_delete_family_blocked_by_the_active_configuration`,
+       `test_delete_family_blocked_by_a_saved_preset`). Until then `FONT_IN_USE` conflates "a generated font is
+       in use" with "an imported source font is in use" — no functional bug, just a less specific error code.
+    3. **`user_fonts_dir()` proposed as a K8 accessor** (`data_dir() / "user-fonts"`) but implemented as a
+       plain function in `store/repos.py` for now, same reasoning as `fonts_root()` staying local: it isn't
+       in `contracts/paths.py` yet. Unlike `fonts_root()` (settled to stay local, previous entry), this one
+       is a genuine proposal awaiting a second owner (any of O1/O2/O4). **Replacement work, once a human adds
+       it to `contracts/paths.py`:** delete the local `user_fonts_dir()` definition in `store/repos.py` and
+       import it from `scribesense.contracts.paths` instead (same shape — `data_dir() / "user-fonts"` — so no
+       caller or test needs to change, only where the one function lives).
+    4. **"In use" for an imported family** checks `active_config`'s `base_family` and every preset from
+       `presets.list_all()` — simpler than `FontRegistryRepo.in_use()` because `base_family` is stored
+       directly on `Configuration`/`PresetValues`, with no `resolve()` step and no unfinished-transaction
+       scan needed (planned adapter writes carry generated family names, never the imported source's).
+
+    `contracts/store.py`'s `Store` Protocol does not list `user_fonts` yet (agents may not edit `contracts/`);
+    the attribute exists and works by duck typing until a human adds it alongside the K8 accessor.
+
+    Tests: 9 added to `tests/unit/test_store_repos.py` (round trip, dedup, replace, replace-blocked, by_family/
+    families, delete, delete-blocked by active config, delete-blocked by a preset, bad style/source_kind).
+    Two pre-existing tests in `test_store_core.py` had the migration count hardcoded to 1 — updated to 2.
+    Full suite after: **2302 passed, 0 failed, 138 skipped** (same skip count as before — no new GUI tests).
+
+    **Still open:** the second-owner sign-off on `user_fonts_dir()` (point 3) and on W1 Part A proper
+    (K1/K2 wording, lookup approach, the three error codes — still open to any of O2/O3/O4); `base_font_files()`
+    resolving imported families stays blocked on Part A, same as before.
+
+## Build (2026-11-23, O3) — built_in_presets / preset_adjustment_limit tables (proposed K1/K2 amendment, NOT signed off)
+
+    A task asked for a research-backed accessibility-preset catalogue (7 presets) and per-field slider
+    limits/warnings. Full reasoning, the D3-exception rationale, and the open sign-off items are in
+    `docs/K1_K2_preset_adjustment_draft.md` — this entry is the short version.
+
+    **Schema:** `store/migrations/003_builtin_presets.sql` (`built_in_presets`, 7 seeded rows) and
+    `store/migrations/004_preset_adjustment_limit.sql` (`preset_adjustment_limit`, 5 confirmed rows —
+    only 5 of the task's claimed 8 fields are backed by a verified value anywhere in this repo; the other
+    2 are not inserted, nothing invented).
+
+    **Repos:** `BuiltInPresetRepo`, `PresetAdjustmentLimitRepo` (`store/repos.py`), read-only, wired into
+    `Store.__init__`. `PresetAdjustmentLimitRepo.word_spacing_warn_below(preset_id)` is the single,
+    centralized implementation of the per-preset lower-warning-threshold exception (the selected preset's
+    own original `word_spacing_em`, looked up from `built_in_presets` — not a static number).
+
+    **Decision taken while building:** the new 7 presets go in SQL rather than in `config.presets.BUILTINS`
+    (which would honor D3 — "built-ins are code, not SQL, so they cannot drift" — more directly), because
+    this session owns `store/`, not `config/` (AGENTS.md §3 ownership). The existing 3 built-ins stay in
+    code, untouched. This is flagged as a scoped exception to D3 for O1 to accept, revise, or reverse —
+    not a unilateral re-litigation of that decision.
+
+    **Not done (needs O1/O2):** slider/warning UI wiring, applying a selected preset to the live
+    `Configuration`, resolving `base_family_rule` tokens into concrete font picks, and reconciling the new
+    limit bounds with the existing, frozen `RANGES` (different `letter_em` bounds/step).
+
+    Tests: 19 added (`tests/unit/test_builtin_presets.py`) plus 2 existing `test_store_core.py` assertions
+    updated for the migration count (2 → 4). Full suite after: **2321 passed, 0 failed, 138 skipped**.
+
+    **Still open:** everything in §7 of the draft doc — O1 sign-off (+ one other owner) before `contracts/`
+    or `ARCHITECTURE.md` are actually amended. No contract file was edited by this session.
 

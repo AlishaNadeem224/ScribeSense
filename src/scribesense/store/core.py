@@ -30,11 +30,14 @@ from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 from scribesense.contracts.journal import NoRecoveryObligations
 from scribesense.contracts.store import SQLITE_BUSY_TIMEOUT_MS
 from scribesense.store.repos import (
+    BuiltInPresetRepo,
     CoverageRepo,
     FontRegistryRepo,
+    PresetAdjustmentLimitRepo,
     PresetRepo,
     SampleRepo,
     SettingsRepo,
+    UserFontsRepo,
     utcnow,
 )
 
@@ -171,6 +174,9 @@ class Store:
         self.coverage = CoverageRepo(self)
         self.settings = SettingsRepo(self)
         self.samples = SampleRepo(self)
+        self.user_fonts = UserFontsRepo(self)  # W1 import, K9 addition 2026-11-22; not yet in contracts.store.Store
+        self.built_in_presets = BuiltInPresetRepo(self)  # K9 addition; draft amendment to K2, not yet signed off
+        self.preset_adjustment_limit = PresetAdjustmentLimitRepo(self)  # draft amendment to K1, not yet signed off
 
     # ---- opening
 

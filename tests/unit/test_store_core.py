@@ -63,17 +63,18 @@ def test_every_connection_has_the_k9_pragmas(db: Path) -> None:
 
 def test_migration_from_empty_reaches_the_latest_version(db: Path) -> None:
     store = Store(db)
-    assert store.fetchone("PRAGMA user_version")[0] == latest_version() == 1
+    assert store.fetchone("PRAGMA user_version")[0] == latest_version() == 4
     tables = {r[0] for r in store.fetchall("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"presets", "settings", "recommendation_samples", "font_registry", "transactions", "journal_items",
-            "backups", "location_records", "active_config", "coverage"} <= tables
+            "backups", "location_records", "active_config", "coverage", "user_fonts", "built_in_presets",
+            "preset_adjustment_limit"} <= tables
     assert store.fetchone("SELECT COUNT(*) FROM active_config")[0] == 1  # the one permanent row
 
 
 def test_reopening_does_not_migrate_again(db: Path) -> None:
     Store(db).close()
     store = Store(db)
-    assert store.fetchone("PRAGMA user_version")[0] == 1
+    assert store.fetchone("PRAGMA user_version")[0] == 4
 
 
 def _migrations(tmp_path: Path, files: dict[str, str]) -> Path:

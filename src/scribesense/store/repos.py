@@ -8,9 +8,12 @@ Built-in presets are NOT stored: they come from `scribesense.config.presets.BUIL
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal
 
+from scribesense.contracts import paths
 from scribesense.contracts.adapter import Target
 from scribesense.contracts.config import Configuration
 from scribesense.contracts.coverage import CoverageEntry, CoverageStatus
@@ -251,6 +254,191 @@ class FontRegistryRepo:
             if self.in_use(entry):
                 raise ScribeSenseError(ErrorCode.FONT_IN_USE)
             self.set_status(key, "removed", None)
+
+
+# ---------------------------------------------------------------- user fonts (W1 import, K9 addition, 2026-11-22)
+
+@dataclass(frozen=True)
+class UserFontEntry:
+    sha256: str
+    family: str
+    style: str
+    file_name: str
+    size: int
+    source_kind: Literal["file", "folder", "installed"]
+    imported_at: datetime
+
+
+def user_fonts_dir() -> Path:
+    """data_dir() / "user-fonts" — proposed K8 accessor (PLAN_v2.md 2026-11-22 decision), not yet applied to
+    contracts/paths.py. Lives here, not in contracts/, until a human adds it and a second owner signs off.
+    Imported font bytes are stored at `user_fonts_dir() / sha256 / file_name` (dir 0700, file 0600, §4)."""
+    return paths.data_dir() / "user-fonts"
+
+
+class UserFontsRepo:
+    """Metadata only (K9's own split: the store never touches the filesystem). The caller copies file
+    bytes to `user_fonts_dir()/<sha256>/<file_name>` before `add()`, and removes that directory after a
+    successful `delete_family()` — the repo only ever returns the sha256 values to remove.
+
+    "In use" reuses the existing FONT_IN_USE code: the dedicated IMPORTED_FONT_IN_USE code proposed in
+    W1 Part A is not in contracts/errors.py yet (no second-owner sign-off), so there is nothing to raise.
+    """
+
+    def __init__(self, store: Store) -> None:
+        self._s = store
+
+    @staticmethod
+    def _entry(row: Any) -> UserFontEntry:
+        return UserFontEntry(
+            sha256=row["sha256"], family=row["family"], style=row["style"], file_name=row["file_name"],
+            size=row["size"], source_kind=row["source_kind"], imported_at=ser.ts_from_text(row["imported_at"]),
+        )
+
+    def get(self, sha256: str) -> UserFontEntry | None:
+        row = self._s.fetchone("SELECT * FROM user_fonts WHERE sha256 = ?", (sha256,))
+        return None if row is None else self._entry(row)
+
+    def by_family(self, family: str) -> list[UserFontEntry]:
+        rows = self._s.fetchall("SELECT * FROM user_fonts WHERE family = ? ORDER BY style", (family,))
+        return [self._entry(r) for r in rows]
+
+    def families(self) -> list[str]:
+        rows = self._s.fetchall("SELECT DISTINCT family FROM user_fonts ORDER BY family")
+        return [r["family"] for r in rows]
+
+    def add(self, sha256: str, family: str, style: str, file_name: str, size: int,
+            source_kind: Literal["file", "folder", "installed"]) -> None:
+        if style not in ("Regular", "Bold", "Italic", "BoldItalic"):
+            raise ValueError(f"unknown style {style!r}")
+        if source_kind not in ("file", "folder", "installed"):
+            raise ValueError(f"unknown source kind {source_kind!r}")
+        if not sha256 or not family or not file_name:
+            raise ValueError("a user font needs a sha256, a family and a file name")
+        now = ser.ts_to_text(self._s.clock())
+        with self._s.transaction():
+            existing = self.get(sha256)
+            if existing is not None:
+                return  # identical bytes already stored: dedup, nothing to do (plan: "one copy")
+            same_slot = self._s.fetchone(
+                "SELECT sha256 FROM user_fonts WHERE family = ? AND style = ?", (family, style))
+            if same_slot is not None:
+                if self._in_use_by_family(family):
+                    raise ScribeSenseError(ErrorCode.FONT_IN_USE)
+                self._s.execute("DELETE FROM user_fonts WHERE family = ? AND style = ?", (family, style))
+            self._s.execute(
+                "INSERT INTO user_fonts (sha256, family, style, file_name, size, source_kind, imported_at) "
+                "VALUES (?,?,?,?,?,?,?)", (sha256, family, style, file_name, size, source_kind, now))
+
+    def _in_use_by_family(self, family: str) -> bool:
+        """Whether `family` is referenced as a Configuration's `base_family` anywhere this store can see.
+        Reads `active_config` directly, same precedent as FontRegistryRepo.in_use() (K7 rule 3's read-only
+        cross-table checks are not behind K4 Journal — only writes to journal-only tables are)."""
+        s = self._s
+        row = s.fetchone("SELECT config FROM active_config WHERE id = 1")
+        if row is not None and row["config"] is not None and ser.config_from_json(row["config"]).base_family == family:
+            return True
+        for preset in s.presets.list_all():  # built-ins and EVERY saved preset, incl. the custom row
+            if preset.values.base_family == family:
+                return True
+        return False
+
+    def delete_family(self, family: str) -> list[str]:
+        """Removes every stored row for `family`. Returns the sha256 values whose directory the caller
+        must now delete under user_fonts_dir() — the repo never touches the filesystem."""
+        with self._s.transaction():
+            rows = self.by_family(family)
+            if not rows:
+                return []
+            if self._in_use_by_family(family):
+                raise ScribeSenseError(ErrorCode.FONT_IN_USE)
+            self._s.execute("DELETE FROM user_fonts WHERE family = ?", (family,))
+            return [r.sha256 for r in rows]
+
+
+# ---------------------------------------------------------------- built-in presets / adjustment limits
+# (O3, K9 addition — draft amendment to K1/K2, pending O1 sign-off: docs/K1_K2_preset_adjustment_draft.md)
+
+@dataclass(frozen=True)
+class BuiltInPresetEntry:
+    preset_id: str
+    name: str
+    base_family_rule: str
+    letter_em: float
+    word_spacing_em: float
+    reading_line: float
+    ui_line: float
+    text_scale: float
+
+
+@dataclass(frozen=True)
+class PresetAdjustmentLimitEntry:
+    field_name: str
+    min_allowed: float
+    max_allowed: float
+    step: float
+    warn_below: float | None
+    warn_above: float | None
+    why_that_stop: str
+
+
+class BuiltInPresetRepo:
+    """READ-ONLY: the 7-preset catalogue in `built_in_presets` (migration 003). No write path exists —
+    these are immutable reference data, distinct from the existing code-only builtins in
+    `config.presets.BUILTINS` (D3), which this repo never touches."""
+
+    def __init__(self, store: Store) -> None:
+        self._s = store
+
+    @staticmethod
+    def _entry(row: Any) -> BuiltInPresetEntry:
+        return BuiltInPresetEntry(
+            preset_id=row["preset_id"], name=row["name"], base_family_rule=row["base_family_rule"],
+            letter_em=row["letter_em"], word_spacing_em=row["word_spacing_em"],
+            reading_line=row["reading_line"], ui_line=row["ui_line"], text_scale=row["text_scale"],
+        )
+
+    def get(self, preset_id: str) -> BuiltInPresetEntry | None:
+        row = self._s.fetchone("SELECT * FROM built_in_presets WHERE preset_id = ?", (preset_id,))
+        return None if row is None else self._entry(row)
+
+    def list_all(self) -> list[BuiltInPresetEntry]:
+        rows = self._s.fetchall("SELECT * FROM built_in_presets ORDER BY preset_id")
+        return [self._entry(r) for r in rows]
+
+
+class PresetAdjustmentLimitRepo:
+    """READ-ONLY: slider hard-bounds and advisory-warning thresholds in `preset_adjustment_limit`
+    (migration 004), for the 5 fields with a verified value (see the migration file for the other 2
+    claimed-but-unresolved fields — not invented, not inserted)."""
+
+    def __init__(self, store: Store) -> None:
+        self._s = store
+
+    @staticmethod
+    def _entry(row: Any) -> PresetAdjustmentLimitEntry:
+        return PresetAdjustmentLimitEntry(
+            field_name=row["field_name"], min_allowed=row["min_allowed"], max_allowed=row["max_allowed"],
+            step=row["step"], warn_below=row["warn_below"], warn_above=row["warn_above"],
+            why_that_stop=row["why_that_stop"],
+        )
+
+    def get(self, field_name: str) -> PresetAdjustmentLimitEntry | None:
+        row = self._s.fetchone("SELECT * FROM preset_adjustment_limit WHERE field_name = ?", (field_name,))
+        return None if row is None else self._entry(row)
+
+    def list_all(self) -> list[PresetAdjustmentLimitEntry]:
+        rows = self._s.fetchall("SELECT * FROM preset_adjustment_limit ORDER BY field_name")
+        return [self._entry(r) for r in rows]
+
+    def word_spacing_warn_below(self, preset_id: str) -> float | None:
+        """Phase 3's one documented exception: `word_spacing_em`'s lower advisory threshold is the
+        SELECTED preset's own ORIGINAL `word_spacing_em` (never its currently-modified value), looked up
+        from `built_in_presets` — not a static number in `preset_adjustment_limit` (whose row for this
+        field stores `warn_below = NULL` for exactly this reason). Returns None if `preset_id` names no
+        known built-in preset, so a caller falls back to "no lower warning" rather than guessing."""
+        preset = BuiltInPresetRepo(self._s).get(preset_id)
+        return None if preset is None else preset.word_spacing_em
 
 
 # ---------------------------------------------------------------- coverage (read-only)
