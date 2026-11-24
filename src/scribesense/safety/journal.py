@@ -16,7 +16,9 @@ what K4 gives the journal itself:
                      changes of the confirmed style. The service passes `IpcServer.publish_style_changed`.
   Recovery first     `begin("apply")` is refused with `RECOVERY_OBLIGATIONS_REMAIN` while `unfinished()` is
   (A3, O4 2026-10-18) non-empty — checked after taking the lock, which is released again. `begin("revert")` /
-                     `begin("uninstall")` stay allowed (recovery needs them).
+                     `begin("uninstall")` stay allowed (recovery needs them). Relaxed 2026-11-24 (O4, user's
+                     go-ahead): work that only waits for an app to close does not block an Apply
+                     (`safety.watcher.only_waiting_for_apps`; the watcher finishes it when the app closes).
   Threads            `begin()`, the end-of-tx bookkeeping (`set_state` / `keep`) and `prune_history()` run under one
                      `threading.RLock`, so two threads of one process never both get a tx.
   Pruning (K9)       `prune_history()` runs under the apply lock: it uses a lock the caller holds, or takes it for its
@@ -53,6 +55,7 @@ from scribesense.contracts.journal import (
 from scribesense.contracts.states import TERMINAL, TxState
 from scribesense.safety.lock import ApplyLock
 from scribesense.safety.memory_journal import notify_style_changed
+from scribesense.safety.watcher import only_waiting_for_apps
 from scribesense.store import JournalTables, Store
 
 
@@ -102,7 +105,7 @@ class SqliteJournal:
                     raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
                 took_lock = True
             try:
-                if kind == "apply" and self._t.unfinished():  # A3: recovery completes before any new Apply
+                if kind == "apply" and self._blocks_apply(self._t.unfinished()):  # A3 (+ 2026-11-24 relaxation)
                     raise ScribeSenseError(ErrorCode.RECOVERY_OBLIGATIONS_REMAIN)
                 tx = self._t.create_tx(kind, preset_id, reverts)
             except BaseException:
@@ -111,6 +114,17 @@ class SqliteJournal:
                 raise
             self._active_tx, self._release_on_end = tx, took_lock
             return tx
+
+    def _blocks_apply(self, unfinished: list[TxId]) -> bool:
+        if not unfinished:
+            return False
+        return not only_waiting_for_apps(
+            [(self._t.tx_kind(t), self._t.tx_state(t)) for t in unfinished],
+            [r.unresolved for r in self._t.locations()])
+
+    def tx_kind(self, tx: TxId) -> TxKind:
+        """Not in K4: the watcher (safety/watcher.py) tells apply txs from reset / recovery txs."""
+        return self._t.tx_kind(tx)
 
     def _ended(self, tx: TxId, state: TxState) -> None:
         with self._mutex:

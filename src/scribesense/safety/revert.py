@@ -30,12 +30,16 @@ class RevertReport:
     skipped: list[str] = field(default_factory=list)  # drift: changed by someone else, left alone
     failed: list[str] = field(default_factory=list)  # recovery information kept; retry later
     failed_codes: dict[str, str] = field(default_factory=dict)  # location -> ErrorCode value
+    #: location -> the app's display name, for a failure that only waits for that app to close (BROWSER_RUNNING).
+    #: The watcher (safety/watcher.py) finishes these by itself; the UI / CLI name the app (2026-11-24).
+    waiting_apps: dict[str, str] = field(default_factory=dict)
 
     def merge(self, other: RevertReport) -> None:
         self.restored += [x for x in other.restored if x not in self.restored]
         self.skipped += [x for x in other.skipped if x not in self.skipped]
         self.failed += [x for x in other.failed if x not in self.failed]
         self.failed_codes.update(other.failed_codes)
+        self.waiting_apps.update(other.waiting_apps)
 
     @property
     def ok(self) -> bool:
@@ -93,6 +97,8 @@ class Reverter:
             {"reverted": report.restored, "skipped_drift": report.skipped, "failed": report.failed}[outcome].append(loc)
             if code is not None:
                 report.failed_codes[loc] = code.value
+                if code is ErrorCode.BROWSER_RUNNING:
+                    report.waiting_apps[loc] = item.snapshot.target.display_name
         return report
 
     def _revert_one(self, tx: TxId, item: JournalItem) -> tuple[RevertOutcome, ErrorCode | None]:

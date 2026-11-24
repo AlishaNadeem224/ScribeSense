@@ -217,16 +217,24 @@ def _remember_asked(version: str | None, outcome: str) -> None:
     write_durable(path, (json.dumps({"root_asked_for": version, "outcome": outcome}) + "\n").encode(), 0o600)
 
 
-def root_needed(report: SetupReport) -> bool:
-    """A root repair is due: something is missing, a .crx exists, an agent can ask, and this .crx version was not
-    asked for yet (accepted or declined — never a loop)."""
+def root_possible(report: SetupReport) -> bool:
+    """Something is missing, a .crx exists and an agent can show the password dialog."""
     return (bool(report.missing("extension", root=True)) and report.crx is not None
-            and not report.missing("agent") and _asked_version() != report.crx_version)
+            and not report.missing("agent"))
 
 
-def repair_root(report: SetupReport) -> bool:
-    """One polkit prompt to pre-install the extension for every installed browser. True when it ran."""
-    if not root_needed(report):
+def root_needed(report: SetupReport) -> bool:
+    """A root repair is due: possible, and this .crx version was not asked for yet (accepted or declined — never a
+    loop)."""
+    return root_possible(report) and _asked_version() != report.crx_version
+
+
+def repair_root(report: SetupReport, *, user_asked: bool = False) -> bool:
+    """One polkit prompt to pre-install the extension for every installed browser. True when it ran.
+
+    `user_asked`: the user pressed "Install…" in the app's banner (ui/setup_notice.py, 2026-11-24): ask even if this
+    version was asked for before — it is the user's explicit request, so it is not a loop."""
+    if not (root_possible(report) if user_asked else root_needed(report)):
         return False
     argv = ["pkexec", SYSTEM_PYTHON, "-I", str(ROOT_HELPER), "install", str(report.crx)]
     try:

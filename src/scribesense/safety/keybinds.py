@@ -86,6 +86,9 @@ DESCRIPTIONS: dict[str, str] = {
     "reset": "ScribeSense: reset (restore original settings)",
 }
 LOGIN_ARGS: tuple[str, ...] = ("recover", "--login")
+#: After login recovery the login hook starts the background service (K10 `scribesense service`, 2026-11-24), so the
+#: browser extension, the keybinds and the "finish when closed" watcher work before the app is first opened.
+SERVICE_ARGS: tuple[str, ...] = ("service",)
 
 #: Canonical modifier order and the Hyprland modmask bit of each.
 MOD_ORDER: tuple[str, ...] = ("SUPER", "CTRL", "ALT", "SHIFT")
@@ -199,6 +202,12 @@ def shell_command(command: str, args: Sequence[str]) -> str:
     return shlex.join([check_command(command), *args])
 
 
+def login_command(command: str) -> str:
+    """Recovery first (A3), then the service — whatever recovery's exit code (an unfinished tx keeps blocking
+    applies inside the service anyway). One shell line, so the two never run at the same time."""
+    return f"{shell_command(command, LOGIN_ARGS)} ; {shell_command(command, SERVICE_ARGS)}"
+
+
 def lua_string(text: str) -> str:
     """A double-quoted Lua string literal: backslash, quote and control characters escaped (\\ddd)."""
     out = ['"']
@@ -240,14 +249,14 @@ def render_own_file(fmt: Format, binds: Sequence[Keybind], command: str, *, incl
                 f" {{ description = {lua_string(DESCRIPTIONS[b.action])} }})"
             )
         if include_login_hook:
-            login = shell_command(command, LOGIN_ARGS)
+            login = login_command(command)
             lines.append(f'hl.on("hyprland.start", function() hl.exec_cmd({lua_string(login)}) end)')
     elif fmt == "classic":
         lines += [f"# {h}" for h in _HEADER]
         for b in binds:
             lines.append(f"bind = {' '.join(b.mods)}, {b.key}, exec, {shell_command(command, ACTIONS[b.action])}")
         if include_login_hook:
-            lines.append(f"exec-once = {shell_command(command, LOGIN_ARGS)}")
+            lines.append(f"exec-once = {login_command(command)}")
     else:
         raise ValueError("unknown format")
     return ("\n".join(lines) + "\n").encode("utf-8")

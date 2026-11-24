@@ -216,6 +216,22 @@ def test_a_declined_prompt_is_not_repeated_until_a_new_version(sandbox, system: 
     assert len(calls) == 2  # a new version asks again
 
 
+def test_the_banners_install_button_asks_again_after_a_decline(sandbox, system: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    """2026-11-24: "Install…" in the app's setup banner is the user's own request: asked even for a declined version."""
+    brave_user_dir()
+    dev_crx("0.1.2")
+    calls: list[list[str]] = []
+
+    def cancelled(argv: list[str], timeout: float) -> None:
+        calls.append(argv)
+        raise ScribeSenseError(ErrorCode.ADAPTER_COMMAND_FAILED)
+    monkeypatch.setattr(setup, "run_cmd", cancelled)
+    setup.repair_root(setup.check())
+    assert not setup.root_needed(setup.check()) and setup.root_possible(setup.check())
+    setup.repair_root(setup.check(), user_asked=True)
+    assert len(calls) == 2
+
+
 def test_no_polkit_agent_means_no_prompt_and_the_agent_is_reported(sandbox, system: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
     brave_user_dir()
     dev_crx()
@@ -224,6 +240,7 @@ def test_no_polkit_agent_means_no_prompt_and_the_agent_is_reported(sandbox, syst
     report = setup.check()
     assert ("agent", "", "missing") in items(report)
     assert setup.repair_root(report) is False
+    assert setup.repair_root(report, user_asked=True) is False  # the button cannot prompt without an agent either
 
 
 def test_ensure_never_raises(sandbox, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]

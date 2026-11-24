@@ -2,6 +2,8 @@
 
 - reset, recover --login, uninstall, doctor never need the service or GUI (A2) and never return 4.
 - read / preset next start the service if it isn't running; 4 only if that fails.
+- service (amendment 2026-11-24, O2 + O4): starts the background service without a window (login hook);
+  already running -> 0; 4 only if it cannot start.
 - confirm <tx>: fresh process, bypasses single-instance forwarding; only the pending tx (A15).
 - Output is plain readable text; reset ends with one line: restored / skipped / failed counts.
 """
@@ -32,6 +34,7 @@ COMMANDS: dict[str, str] = {
     "scribesense doctor": "user, install",
     "scribesense confirm <tx>": "started by the service after apply (A15)",
     "scribesense quit": "user — stops the background service (A1)",
+    "scribesense service": "login hook — starts the background service, no window (A1)",
 }
 
 #: Commands that must work without the service and without GTK/Adw (A2).

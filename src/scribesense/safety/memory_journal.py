@@ -13,7 +13,8 @@ reaches a terminal state or REVERT_FAILED (the holding operation is over; the tx
 retried by recovery). The real cross-process flock + owner record is safety/lock.py (used by SqliteJournal).
 
 Parity with SqliteJournal: `begin("apply")` is refused with RECOVERY_OBLIGATIONS_REMAIN while `unfinished()` is
-non-empty (A3: recovery completes before any new Apply; revert / uninstall stay allowed), and `begin()`,
+non-empty (A3: recovery completes before any new Apply; revert / uninstall stay allowed; relaxed 2026-11-24 for work
+that only waits for an app to close, see safety/watcher.py), and `begin()`,
 `set_state()`, `keep()` and `prune_history()` run under one `threading.RLock`.
 """
 
@@ -41,6 +42,7 @@ from scribesense.contracts.journal import (
 )
 from scribesense.contracts.states import TERMINAL, UNFINISHED, TxState, can_transition
 from scribesense.log import log
+from scribesense.safety.watcher import only_waiting_for_apps
 
 
 class IllegalTransition(ValueError):
@@ -171,7 +173,10 @@ class InMemoryJournal:
         with self._mutex:
             if self._lock_owner is not None:
                 raise ScribeSenseError(ErrorCode.APPLY_IN_PROGRESS)
-            if kind == "apply" and self.unfinished():  # A3: recovery completes before any new Apply
+            unfinished = self.unfinished()
+            if kind == "apply" and unfinished and not only_waiting_for_apps(  # A3 (+ 2026-11-24 relaxation)
+                    [(self._txs[t].kind, self._txs[t].state) for t in unfinished],
+                    [r.unresolved for r in self.locations()]):
                 raise ScribeSenseError(ErrorCode.RECOVERY_OBLIGATIONS_REMAIN)
             tx = TxId(self._next_tx)
             self._next_tx += 1
@@ -230,6 +235,10 @@ class InMemoryJournal:
 
     def state(self, tx: TxId) -> TxState:
         return self._tx(tx).state
+
+    def tx_kind(self, tx: TxId) -> TxKind:
+        """Not in K4: the watcher (safety/watcher.py) tells apply txs from reset / recovery txs."""
+        return self._tx(tx).kind
 
     def pending_confirmation(self) -> TxId | None:
         pending = [t.id for t in self._txs.values() if t.state is TxState.AWAITING_CONFIRMATION]

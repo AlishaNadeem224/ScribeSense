@@ -150,6 +150,7 @@ def _restore_baseline(
     if adapter is None:
         journal.set_unresolved(loc, ErrorCode.ADAPTER_UNAVAILABLE)
         report.failed.append(loc)
+        report.failed_codes[loc] = ErrorCode.ADAPTER_UNAVAILABLE.value
         return
     try:
         current = adapter.read_state(loc).sha256
@@ -172,3 +173,6 @@ def _restore_baseline(
     except ScribeSenseError as exc:
         journal.set_unresolved(loc, exc.code)  # keeps managed + baseline for a later retry
         report.failed.append(loc)
+        report.failed_codes[loc] = exc.code.value
+        if exc.code is ErrorCode.BROWSER_RUNNING:  # finished by the watcher when the app closes (safety/watcher.py)
+            report.waiting_apps[loc] = record.target.display_name
