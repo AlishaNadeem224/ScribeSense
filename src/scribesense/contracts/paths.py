@@ -34,6 +34,15 @@ def fonts_dir() -> Path:
     return Path(override) if override else home() / ".local" / "share" / "fonts" / "scribesense"
 
 
+def user_fonts_dir() -> Path:
+    """data_dir()/user-fonts — imported font copies (W1, amendment 2026-11-24: O3 proposed, O4 signed off).
+
+    Each file at user_fonts_dir()/<sha256>/<file_name>: <sha256> is 64 lowercase hex characters of the file's content,
+    <file_name> a plain base name (no "/", no NUL, not "." or "..", at most 255 bytes). Directories 0700, files 0600.
+    """
+    return data_dir() / "user-fonts"
+
+
 def config_home() -> Path:
     """$XDG_CONFIG_HOME, else $HOME/.config."""
     override = os.environ.get("XDG_CONFIG_HOME")

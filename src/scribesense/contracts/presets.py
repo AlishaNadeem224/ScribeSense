@@ -7,7 +7,9 @@ Rules:
 - Built-in IDs are fixed (BUILTIN_IDS); user presets use str(uuid4()). Names are display only.
 - Changing the base font keeps `multiplier` word spacing and recalculates `target_em`.
   A manual word-spacing edit switches that field to `multiplier` mode.
-- Base fonts are BUNDLED in the repo (fonts/ + manifest.toml), never taken from the system.
+- Base fonts are BUNDLED in the repo (fonts/ + manifest.toml) or IMPORTED into the font store (copied into
+  K8 user_fonts_dir(), K9 user_fonts) — never read in place from the system (amendment 2026-11-24, W1; O4 signed off,
+  O1 to confirm). An imported font is copied only after the import checks (W1) pass.
 - Built-in values (BUILTINS) live in scribesense.config (M1.2) and must match the K2 table:
     default          Noto Sans · 0.12 em · target ≈ +0.16 em · 1.5× · UI 1.2× · 1.0
     reading          Noto Sans · 0.12 em · 1.5×              · 1.8× · UI 1.2× · 1.0
@@ -66,5 +68,6 @@ class PresetApi(Protocol):
         ...
 
     def base_font_files(self, family: str) -> dict[str, Path]:
-        """style -> bundled file. Raises ScribeSenseError(BUNDLED_FONT_MISSING)."""
+        """style -> bundled or imported file. Raises ScribeSenseError(BUNDLED_FONT_MISSING) for a bundled family,
+        ScribeSenseError(FONT_UNREADABLE) for an imported family whose stored copy is missing (amendment 2026-11-24)."""
         ...

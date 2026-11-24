@@ -13,6 +13,13 @@ Rules:
    NOT_A_NUMBER (amendment 2026-10-14, O1; signed off 2026-10-18 by O4) — a stored value of the wrong type
    (None, str, bool) is reported, never coerced; round_to_steps() passes it through unchanged.
 5. Telling the user a value was rounded is UI feedback, not an Issue.
+6. Imported fonts (W1 amendment 2026-11-24; O4 signed off, O1 to confirm as owner): `base_family` is a SHORTLIST
+   name OR the family name of a font imported into the font store (K9 `user_fonts`). An imported family name is
+   valid only if it is printable (str.isprintable()), has no leading/trailing whitespace, is 1–IMPORTED_FAMILY_MAX_CHARS
+   characters long, and does not equal any SHORTLIST name ignoring case (a bundled name always means the bundled
+   font). validate() learns the imported names ONLY through a provider the composition root registers
+   (scribesense.config: `set_imported_families(provider)`); `scribesense.config` never imports the store. No provider
+   registered -> no imported family is known, so an imported name is UNKNOWN_FONT.
 """
 
 from __future__ import annotations
@@ -26,12 +33,16 @@ from typing import Literal, Protocol
 class Configuration:
     """Always resolved and canonical when used (K2 resolve -> round -> validate)."""
 
-    base_family: str  # one of SHORTLIST, or the display name of an imported family in the font store (K1 amendment 2026-11-24)
+    base_family: str  # one of SHORTLIST, or an imported family name (rule 6, amendment 2026-11-24)
     letter_em: float  # 0.00–0.30, step 0.02
     word_scale: float  # 1.0–3.0 × space width, step 0.25
     reading_line: float  # 1.0–2.0 ×, step 0.1
     ui_line: float  # 1.0–2.0 ×, step 0.1; warning above UI_LINE_RECOMMENDED_MAX
     text_scale: float  # 1.0–2.0, step 0.05
+
+
+#: Rule 6: the longest imported family name accepted (characters).
+IMPORTED_FAMILY_MAX_CHARS = 64
 
 
 @dataclass(frozen=True)

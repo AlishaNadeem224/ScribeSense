@@ -110,8 +110,39 @@ class SampleRepo(Protocol):
     def delete_all(self) -> None: ...
 
 
+@dataclass(frozen=True)
+class UserFontEntry:
+    """One imported font file (W1, amendment 2026-11-24). Stored at K8 user_fonts_dir()/<sha256>/<file_name>."""
+
+    sha256: str  # 64 lowercase hex characters; the primary key (same bytes imported twice -> one row)
+    family: str  # the family name from the font's own name table (K1 rule 6)
+    style: Literal["Regular", "Bold", "Italic", "BoldItalic"]
+    file_name: str  # plain base name (see K8 user_fonts_dir)
+    size: int
+    source_kind: Literal["file", "folder", "installed"]
+    imported_at: datetime  # UTC, timezone-aware
+
+
+class UserFontsRepo(Protocol):
+    """Metadata only: the caller copies / removes the files. Bad sha256 / file_name / style / source_kind ->
+    ValueError. Replacing or deleting a family that the active configuration or any preset names ->
+    ScribeSenseError(IMPORTED_FONT_IN_USE)."""
+
+    def get(self, sha256: str) -> UserFontEntry | None: ...
+
+    def by_family(self, family: str) -> list[UserFontEntry]: ...
+
+    def families(self) -> list[str]: ...
+
+    def add(self, sha256: str, family: str, style: str, file_name: str, size: int,
+            source_kind: Literal["file", "folder", "installed"]) -> None: ...
+
+    def delete_family(self, family: str) -> list[str]: ...  # the sha256 values whose directories the caller removes
+
+
 class Store(Protocol):
     presets: PresetRepo
+    user_fonts: UserFontsRepo  # W1, amendment 2026-11-24
     fonts: FontRegistryRepo
     coverage: CoverageRepo
     settings: SettingsRepo
