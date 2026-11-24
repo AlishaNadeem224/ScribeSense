@@ -311,16 +311,22 @@ class PresetEditorPage(_PageBase):  # type: ignore[misc]
         for side in ("top", "bottom", "start", "end"):
             getattr(outer, f"set_margin_{side}")(24)
 
-        # Preset chooser + save-as
+        # Preset chooser + save-as + restore original
         self.preset_dropdown = Gtk.DropDown()
         self.preset_dropdown.set_hexpand(True)
         self.preset_dropdown.update_property([Gtk.AccessibleProperty.LABEL], ["Preset"])
         self.save_button = Gtk.Button(label="Save as…")
         self.save_button.set_visible(save_preset is not None)
         self.save_button.connect("clicked", self._on_save_clicked)
+        self.restore_button = Gtk.Button(label="Restore original")
+        self.restore_button.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["Restore original settings"]
+        )
+        self.restore_button.connect("clicked", self._on_restore_clicked)
         preset_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         preset_row.append(self.preset_dropdown)
         preset_row.append(self.save_button)
+        preset_row.append(self.restore_button)
         outer.append(self._labeled_section("Preset", preset_row))
 
         # Preview
@@ -495,6 +501,10 @@ class PresetEditorPage(_PageBase):  # type: ignore[misc]
         if self._evaluation.config is None:
             return  # blocked: values do not resolve
         self._on_apply(preset_to_apply(self._selected, self._values))
+
+    def _on_restore_clicked(self, _button: Gtk.Button) -> None:
+        """The always-visible "Restore original" button: same callback as the dropdown."""
+        self._on_original()
 
     def _on_save_clicked(self, _button: Gtk.Button) -> None:
         if self._save_preset is None:
