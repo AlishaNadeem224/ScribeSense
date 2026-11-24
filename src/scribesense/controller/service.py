@@ -19,23 +19,37 @@ Socket requests the service answers (one JSON object per line, same user only):
     open_in_reader  K11: text from the extension -> the app's reader (A17 checked by the native host and here)
     keep / revert   M2.3: from the fresh `scribesense confirm <tx>` process (A15); only the pending tx
     reset           K4 rule 6: `scribesense reset` asks a running service to reset
-    pending         M2.3: which tx is awaiting confirmation (the confirm window checks it is still current)
+    pending         M2.3: which tx is awaiting confirmation (the confirm window checks it is still current); the
+                    reply also names the reading family the window must draw its sample in
+    confirm_ready   M2.3 (W5.1, 2026-11-24): the window shows its sample in the new font and its controls; the 30 s
+                    count starts NOW, not at process start
+    heartbeat       M2.3 (W5.1): one per HEARTBEAT_SECONDS from the window's event loop (never from user input)
 
 Setup (O4 safety/setup.py, wired 2026-11-22 by O4 with the user's go-ahead): `open(setup=...)` runs the given check-
 and-repair once after housekeeping and again after every Keep (a font change), so browsers that are missing the
 extension or its host are fixed without a terminal. Off by default (None): only the real app passes
 `safety.setup.ensure`, so tests never touch the real system or start a password prompt.
 
+Finish when closed (O4 safety/watcher.py, wired 2026-11-24 by O4 for O2's Phase III item, user's go-ahead):
+`open(watch=True)` starts a daemon thread that every WATCH_SECONDS runs one `Watcher` round: a restore refused because
+a browser was open (BROWSER_RUNNING) is finished by itself once that browser is closed. The round never waits: if an
+apply, a confirm window or a reset is running it is skipped. Off by default; only the real app turns it on.
+
 Delete-all (M2.7 / K9 "apply lock -> block applies -> reset -> delete"): `delete_all_data()` holds the service mutex
 and the apply lock while it deletes, so no apply can start between the journal's token and the deletion.
 
 Apply (M2.1) leaves the tx AWAITING_CONFIRMATION; `keep()` / `revert()` finish it. The confirm process is started by
-the UI (it is a GUI process); if it never answers, `confirm_watchdog()` reverts after the confirmation deadline.
+the UI (it is a GUI process) and supervised by `supervise_confirmation()` (W5.1, built 2026-11-24 by O4 for O2 with the
+user's go-ahead): no `confirm_ready` within CONFIRM_STARTUP_SECONDS -> revert, CONFIRM_STARTUP_TIMEOUT; no heartbeat
+for HEARTBEAT_MISSED_SECONDS after readiness -> revert, CONFIRM_HEARTBEAT_LOST; no answer CONFIRM_SECONDS (+ a small
+grace) after readiness -> revert, CONFIRM_TIMEOUT. User inactivity is never a hang: the heartbeat comes from the
+window's event loop. `confirm_watchdog()` stays as the last-resort deadline.
 """
 
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -57,6 +71,18 @@ Message = dict[str, Any]
 CONFIRM_SECONDS = 30
 #: Extra time the watchdog allows the confirm process to start and answer.
 CONFIRM_GRACE_SECONDS = 15
+#: M2.3 / W5.1: the window must report ready (sample + controls shown) within this many seconds of the apply.
+CONFIRM_STARTUP_SECONDS = 20
+#: The window's event loop sends one heartbeat this often…
+HEARTBEAT_SECONDS = 1
+#: …and missing them for this long means the window is frozen or gone (documented threshold, M2.3).
+HEARTBEAT_MISSED_SECONDS = 6
+#: After readiness the user has CONFIRM_SECONDS; the answer may take this much longer to arrive over the socket.
+CONFIRM_ANSWER_GRACE_SECONDS = 5
+#: How often `supervise_confirmation` looks.
+SUPERVISE_POLL_SECONDS = 0.25
+#: O4 watcher (2026-11-24): how often it checks whether a browser it waits for was closed.
+WATCH_SECONDS = 3.0
 
 
 @dataclass(frozen=True)
@@ -65,6 +91,17 @@ class _Pending:
     config: Configuration
     font_key: str
     preset_id: str | None
+    reading_family: str = ""  # the family the confirm window must draw its sample in (M2.3)
+
+
+@dataclass
+class _Confirmation:
+    """Liveness of the confirm window for the pending tx (W5.1). Times are `Service.clock()` seconds."""
+
+    tx: TxId
+    started: float
+    ready: float | None = None
+    beat: float | None = None
 
 
 class Service:
@@ -72,7 +109,10 @@ class Service:
 
     def __init__(self, *, store: Any, lock: Any, journal: Any, server: Any, adapters: list[Adapter],
                  controller: ApplyController, on_reader_text: Callable[[str], None] | None = None,
-                 setup: Callable[[], object] | None = None) -> None:
+                 setup: Callable[[], object] | None = None, clock: Callable[[], float] = time.monotonic) -> None:
+        from scribesense.adapters.registry import by_name
+        from scribesense.safety.watcher import Watcher
+
         self.store = store
         self.lock = lock
         self.journal = journal
@@ -81,14 +121,19 @@ class Service:
         self.controller = controller
         self.on_reader_text = on_reader_text
         self.setup = setup
+        self.clock = clock
         self._pending: _Pending | None = None
+        self._confirmation: _Confirmation | None = None
         self._mutex = threading.RLock()  # one apply / keep / revert / reset at a time inside the service
+        self._watcher = Watcher(journal, by_name(adapters))
+        self._stop = threading.Event()
 
     # ---------------------------------------------------------------- construction
 
     @classmethod
     def open(cls, *, on_reader_text: Callable[[str], None] | None = None, start_server: bool = True,
-             adapters: list[Adapter] | None = None, setup: Callable[[], object] | None = None) -> Service:
+             adapters: list[Adapter] | None = None, setup: Callable[[], object] | None = None,
+             watch: bool = False) -> Service:
         from scribesense.adapters.registry import default_adapters
         from scribesense.config import presets, settings
         from scribesense.fontgen import generator
@@ -115,6 +160,8 @@ class Service:
         service.run_setup()
         if start_server:
             server.start()
+        if watch:
+            service.start_watching()
         return service
 
     def housekeeping(self) -> None:
@@ -142,6 +189,7 @@ class Service:
                 log(code, "service", step=step)
 
     def close(self) -> None:
+        self._stop.set()
         self.server.stop()
         self.store.close()
 
@@ -155,7 +203,9 @@ class Service:
                 from scribesense.config import presets
 
                 config = presets.resolve(preset.values)
-                self._pending = _Pending(report.tx, config, report.fonts.key, preset.id)
+                self._pending = _Pending(report.tx, config, report.fonts.key, preset.id,
+                                         report.fonts.reading_family)
+                self._confirmation = _Confirmation(report.tx, started=self.clock())
             return report
 
     def original(self) -> Any:
@@ -166,6 +216,7 @@ class Service:
 
         with self._mutex:
             pending, self._pending = self._pending, None
+            self._confirmation = None
             if pending is not None:
                 # The pending apply still holds the journal's lock (K4 rule 1): finish it first, or reset's
                 # begin("revert") is refused (APPLY_IN_PROGRESS) and a `reset` / `uninstall` asking us over the socket
@@ -195,6 +246,7 @@ class Service:
                 raise ScribeSenseError(ErrorCode.TX_NOT_PENDING)
             revision = self.journal.keep(tx, ActiveConfig(pending.config, pending.font_key, pending.preset_id, 0))
             self._pending = None
+            self._confirmation = None
         self.run_setup()  # a font change: re-check browsers (outside the mutex; root prompts run in the background)
         return revision
 
@@ -208,7 +260,84 @@ class Service:
             if pending is None or pending.tx != tx:
                 raise ScribeSenseError(ErrorCode.TX_NOT_PENDING)
             self._pending = None
+            self._confirmation = None
             return Reverter(self.journal, by_name(self.adapters)).revert_tx(tx)
+
+    # ---------------------------------------------------------------- finish when closed (O4 watcher)
+
+    def watch_once(self) -> Any:
+        """One watcher round (safety/watcher.py). Skipped (None) while an apply / keep / revert / reset runs here."""
+        if not self._mutex.acquire(blocking=False):
+            return None
+        try:
+            return self._watcher.run_once()
+        except Exception as exc:  # noqa: BLE001 — the watcher must never stop the service
+            from scribesense.log import log
+
+            log(exc.code if isinstance(exc, ScribeSenseError) else ErrorCode.UNEXPECTED_ADAPTER_ERROR, "service",
+                step="watch")
+            return None
+        finally:
+            self._mutex.release()
+
+    def start_watching(self, interval: float = WATCH_SECONDS) -> threading.Thread:
+        def loop() -> None:
+            while not self._stop.wait(interval):
+                self.watch_once()
+
+        thread = threading.Thread(target=loop, name="scribesense-watcher", daemon=True)
+        thread.start()
+        return thread
+
+    # ---------------------------------------------------------------- confirm window liveness (M2.3, W5.1)
+
+    def confirm_ready(self, tx: TxId) -> None:
+        """The window shows its sample in the new font and its controls: the 30 s count starts now."""
+        with self._mutex:
+            state = self._confirmation
+            if state is None or state.tx != tx or self._pending is None or self._pending.tx != tx:
+                raise ScribeSenseError(ErrorCode.TX_NOT_PENDING)
+            state.ready = state.beat = self.clock()
+
+    def heartbeat(self, tx: TxId) -> None:
+        with self._mutex:
+            state = self._confirmation
+            if state is None or state.tx != tx or self._pending is None or self._pending.tx != tx:
+                raise ScribeSenseError(ErrorCode.TX_NOT_PENDING)
+            state.beat = self.clock()
+
+    def confirmation_problem(self, tx: TxId) -> ErrorCode | None:
+        """Why the confirmation of `tx` has failed by now, or None (still running, or already answered)."""
+        with self._mutex:
+            state = self._confirmation
+            if self._pending is None or self._pending.tx != tx or state is None or state.tx != tx:
+                return None
+            now = self.clock()
+            if state.ready is None:
+                return ErrorCode.CONFIRM_STARTUP_TIMEOUT if now - state.started > CONFIRM_STARTUP_SECONDS else None
+            if state.beat is not None and now - state.beat > HEARTBEAT_MISSED_SECONDS:
+                return ErrorCode.CONFIRM_HEARTBEAT_LOST
+            if now - state.ready > CONFIRM_SECONDS + CONFIRM_ANSWER_GRACE_SECONDS:
+                return ErrorCode.CONFIRM_TIMEOUT
+            return None
+
+    def supervise_confirmation(self, tx: TxId, *, sleep: Callable[[float], None] = time.sleep) -> ErrorCode | None:
+        """Wait until `tx` is answered, or revert it as soon as the window fails (W5.1). Returns the failure code
+        it reverted for, or None when the window answered. Runs on a worker thread, never on the GTK thread."""
+        from scribesense.log import log
+
+        while True:
+            if self.pending_tx != tx:
+                return None  # kept or reverted by the window's answer
+            problem = self.confirmation_problem(tx)
+            if problem is not None:
+                log(problem, "confirm", step="supervise")
+                try:
+                    self.revert(tx)
+                except ScribeSenseError:
+                    return None  # answered at the same moment
+                return problem
+            sleep(SUPERVISE_POLL_SECONDS)
 
     def confirm_watchdog(self, tx: TxId) -> bool:
         """Revert `tx` if it is still pending after the confirmation deadline (A15). True if it reverted."""
@@ -278,7 +407,18 @@ class Service:
             report = self.revert(TxId(tx))
             return {"v": PROTOCOL_VERSION, "ok": True, "failed": len(report.failed)}
         if kind == "pending":
-            return {"v": PROTOCOL_VERSION, "ok": True, "tx": self.pending_tx}
+            with self._mutex:
+                family = self._pending.reading_family if self._pending is not None else ""
+            return {"v": PROTOCOL_VERSION, "ok": True, "tx": self.pending_tx, "family": family}
+        if kind in ("confirm_ready", "heartbeat"):
+            tx = message.get("tx")
+            if type(tx) is not int:
+                raise ScribeSenseError(ErrorCode.BAD_MESSAGE)
+            if kind == "confirm_ready":
+                self.confirm_ready(TxId(tx))
+                return {"v": PROTOCOL_VERSION, "ok": True, "seconds": CONFIRM_SECONDS}
+            self.heartbeat(TxId(tx))
+            return {"v": PROTOCOL_VERSION, "ok": True}
         if kind == "reset":
             report = self.original()
             return {"v": PROTOCOL_VERSION, "ok": True, "restored": len(report.restored),

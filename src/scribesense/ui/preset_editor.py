@@ -511,6 +511,7 @@ class PresetEditorPage(_PageBase):  # type: ignore[misc]
             return
         entry = Gtk.Entry()
         entry.set_placeholder_text("Preset name")
+        entry.update_property([Gtk.AccessibleProperty.LABEL], ["Preset name"])  # a placeholder is not a label
         entry.set_activates_default(True)
         dialog = Adw.AlertDialog.new("Save preset", "Save the current values as a preset.")
         dialog.set_extra_child(entry)

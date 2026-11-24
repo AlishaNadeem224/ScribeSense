@@ -2,6 +2,7 @@
 
 Layout:
     Adw.Banner          start-up problem + recovery info (hidden unless the service failed to start)
+    Adw.Banner          setup notice (ui/setup_notice.py): browser extension missing / no polkit agent, one button
     Adw.ToastOverlay    short messages (apply results, capture errors, settings outcomes)
       Adw.NavigationView
         PresetEditorPage (M2.5)   header: Reader · Last apply · Settings
@@ -112,11 +113,18 @@ class ScribeSenseWindow(Adw.ApplicationWindow):
 
         self.banner = Adw.Banner()
         self.banner.set_revealed(False)
+        self.setup_banner = Adw.Banner()  # Phase III 2026-11-24: what automatic setup could not do, one action
+        self.setup_banner.set_revealed(False)
+        if hasattr(self.setup_banner, "set_use_markup"):  # libadwaita >= 1.4: browser names are plain text
+            self.setup_banner.set_use_markup(False)
+        self.setup_banner.connect("button-clicked", self._on_setup_banner_clicked)
+        self._setup_action: tuple[str, Callable[[str], None]] | None = None
         self.toasts = Adw.ToastOverlay()
         self.nav = Adw.NavigationView()
         self.toasts.set_child(self.nav)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.append(self.banner)
+        box.append(self.setup_banner)
         self.toasts.set_vexpand(True)
         box.append(self.toasts)
         self.set_content(box)
@@ -164,6 +172,24 @@ class ScribeSenseWindow(Adw.ApplicationWindow):
         """M2.4: a start-up error shows a message and the recovery info — never a blank window."""
         self.banner.set_title(f"{text} {recovery_text(self._service)}")
         self.banner.set_revealed(True)
+
+    def show_setup_notice(self, notice: Any, on_action: Callable[[str], None]) -> None:
+        """Show (or hide, for None) the setup banner. The button runs `on_action(notice.action)`."""
+        if notice is None:
+            self.setup_banner.set_revealed(False)
+            self._setup_action = None
+            return
+        self.setup_banner.set_title(notice.text)
+        self.setup_banner.set_button_label(notice.button)  # None hides the button
+        self._setup_action = (notice.action, on_action) if notice.action else None
+        self.setup_banner.set_revealed(True)
+
+    def _on_setup_banner_clicked(self, _banner: Adw.Banner) -> None:
+        if self._setup_action is None:
+            return
+        action, on_action = self._setup_action
+        self.setup_banner.set_revealed(False)  # re-shown by the next check if still needed
+        on_action(action)
 
     # ---------------------------------------------------------------- presets (M2.5 via M3.1)
 

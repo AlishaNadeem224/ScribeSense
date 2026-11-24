@@ -159,13 +159,15 @@ def test_confirm_uses_its_own_non_unique_application() -> None:
     (["preset", "next"], ("preset-next", None)),
     (["read", "--selection"], ("read", "selection")),
     (["read", "--clipboard"], ("read", "clipboard")),
+    (["service"], ("service", None)),  # K10 amendment 2026-11-24: login hook
 ])
 def test_parse_command(app_mod: Any, rest: list[str], expected: tuple[str, str | None]) -> None:
     assert app_mod.parse_command(rest) == expected
 
 
 @pytest.mark.parametrize("rest", [["apply"], ["apply", "a", "b"], ["preset"], ["preset", "prev"],
-                                  ["read"], ["read", "--both"], ["quit", "now"], ["bogus"]])
+                                  ["read"], ["read", "--both"], ["quit", "now"], ["bogus"],
+                                  ["service", "--now"]])
 def test_parse_command_usage_errors(app_mod: Any, rest: list[str]) -> None:
     with pytest.raises(app_mod.UsageError):
         app_mod.parse_command(rest)
@@ -348,6 +350,10 @@ class _FakeService:
         self.calls.append(("apply", preset.id))
         return self.report
 
+    def supervise_confirmation(self, tx: Any) -> Any:
+        self.calls.append(("supervise", tx))
+        return None
+
     def confirm_watchdog(self, tx: int) -> bool:
         self.calls.append(("watchdog", tx))
         return False
@@ -365,7 +371,7 @@ def test_apply_worker_starts_fresh_confirm_process_then_watchdog(app_mod: Any, m
     from scribesense.config.presets import BUILTINS
     from scribesense.contracts import paths
     from scribesense.contracts.states import TxState
-    from scribesense.controller.service import CONFIRM_GRACE_SECONDS, CONFIRM_SECONDS
+    from scribesense.controller.service import CONFIRM_GRACE_SECONDS, CONFIRM_SECONDS, CONFIRM_STARTUP_SECONDS
 
     launched: list[tuple[list[str], float]] = []
 
@@ -377,8 +383,9 @@ def test_apply_worker_starts_fresh_confirm_process_then_watchdog(app_mod: Any, m
     service = _FakeService(_report("awaiting_confirmation"), TxState.COMPLETED)
     report, state = app_mod.ScribeSenseApp._apply_worker(service, BUILTINS[1])
     assert launched == [([sys.executable, "-m", "scribesense.cli", "confirm", "9"],
-                         CONFIRM_SECONDS + CONFIRM_GRACE_SECONDS)]
-    assert service.calls == [("apply", "reading"), ("watchdog", 9)]
+                         CONFIRM_STARTUP_SECONDS + CONFIRM_SECONDS + CONFIRM_GRACE_SECONDS)]
+    # W5.1: the window runs in parallel while the service supervises it; the watchdog stays the last resort
+    assert service.calls == [("apply", "reading"), ("supervise", 9), ("watchdog", 9)]
     assert state == TxState.COMPLETED and report.tx == 9
 
 
@@ -894,3 +901,56 @@ def test_delete_flow_unreadable_journal_counts_as_records_kept(settings_mod: Any
 def test_error_text_never_contains_exception_text(settings_mod: Any) -> None:
     assert settings_mod.error_text(ScribeSenseError(ErrorCode.STORE_BUSY)) == "Something went wrong (STORE_BUSY)."
     assert "secret" not in settings_mod.error_text(RuntimeError("/home/user/secret.txt"))
+
+# ---------------------------------------------------------------- confirm window liveness (M2.3, W5.1, 2026-11-24)
+
+def test_fetch_pending_returns_the_family_the_sample_must_use() -> None:
+    from scribesense.ui.confirm import fetch_pending
+    assert fetch_pending(5, _request({"v": 1, "ok": True, "tx": 5, "family": "AccessSans-abc"})) == (None, "AccessSans-abc")
+    assert fetch_pending(5, _request({"v": 1, "ok": True, "tx": 5})) == (None, "")  # an older service: no family
+    assert fetch_pending(5, _request({"v": 1, "ok": True, "tx": 6, "family": "x"})) == (ErrorCode.TX_NOT_PENDING, "")
+
+
+def test_family_matches_only_the_requested_family() -> None:
+    from scribesense.ui.confirm import family_matches
+    assert family_matches("AccessSans-abc", "AccessSans-abc")
+    assert family_matches("AccessSans-abc", "accesssans-ABC")  # fontconfig family names compare case-insensitively
+    assert not family_matches("AccessSans-abc", "DejaVu Sans")  # a fallback never counts as the new font
+    assert not family_matches("AccessSans-abc", "")
+    assert family_matches("", "DejaVu Sans")  # unknown family: not checked
+
+
+def test_ready_and_heartbeat_messages_and_granted_seconds() -> None:
+    from scribesense.controller.service import CONFIRM_SECONDS
+    from scribesense.ui.confirm import heartbeat_message, ready_message, ready_seconds
+    assert ready_message(7) == {"type": "confirm_ready", "tx": 7}
+    assert heartbeat_message(7) == {"type": "heartbeat", "tx": 7}
+    assert ready_seconds({"ok": True, "seconds": 30}) == 30
+    for bad in ({"ok": True}, {"ok": True, "seconds": True}, {"ok": True, "seconds": 0}, {"ok": True, "seconds": 9999}):
+        assert ready_seconds(bad) == CONFIRM_SECONDS
+
+
+# ================================================================ waiting for a browser (O2 Phase III, 2026-11-24)
+
+def test_reset_text_names_the_open_browser_and_says_it_finishes_by_itself(app_mod: Any) -> None:
+    from scribesense.safety.revert import RevertReport
+
+    report = RevertReport(restored=["a"], failed=["z"], failed_codes={"z": "BROWSER_RUNNING"},
+                          waiting_apps={"z": "Zen"})
+    text = app_mod.reset_text(report)
+    assert "Zen is open: this finishes by itself when you close it." in text
+    assert "failed" not in text and "BROWSER_RUNNING" not in text  # waiting is not a failure
+
+
+def test_reset_text_keeps_real_failures_apart_from_waits(app_mod: Any) -> None:
+    from scribesense.safety.revert import RevertReport
+
+    report = RevertReport(failed=["z", "b", "c"], failed_codes={"z": "BROWSER_RUNNING", "b": "STORE_IO_ERROR"},
+                          waiting_apps={"z": "Zen", "c": "Brave (Default)"})
+    text = app_mod.reset_text(report)
+    assert "failed 1" in text and "STORE_IO_ERROR" in text and "BROWSER_RUNNING" not in text
+    assert "Brave (Default) and Zen are open: this finishes by itself when you close them." in text
+
+
+def test_waiting_text_is_empty_when_nothing_waits(app_mod: Any) -> None:
+    assert app_mod.waiting_text({}) == ""

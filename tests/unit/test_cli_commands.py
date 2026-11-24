@@ -614,3 +614,26 @@ def test_doctor_runs_without_gui(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_recovery_usage_errors_exit_2_without_gui(rest: list[str], adapter: FakeAdapter) -> None:
     assert cli.main(["scribesense", *rest]) == int(ExitCode.USAGE)
     assert adapter.calls == []
+
+
+def test_reset_output_names_an_open_browser_instead_of_a_failure(capsys: pytest.CaptureFixture[str]) -> None:
+    """O2 Phase III (2026-11-24): a restore waiting for a browser is not listed as "could not restore"."""
+    from scribesense.safety.revert import RevertReport
+
+    cli._print_revert_report(RevertReport(restored=["a"], failed=["z"], failed_codes={"z": "BROWSER_RUNNING"},
+                                          waiting_apps={"z": "Zen"}))
+    out = capsys.readouterr().out
+    assert "Could not restore" not in out
+    assert "Zen is open: close it and this finishes by itself" in out
+    assert out.rstrip().endswith("restored 1 · skipped 0 · failed 1")  # K10: the counts line is unchanged
+
+
+def test_service_takes_no_arguments_and_is_forwarded_to_the_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    """K10 amendment 2026-11-24: `scribesense service` (login hook) goes to the GTK app; failing to start -> 4."""
+    assert cli._parse(["service"]) == ("service", {})
+    with pytest.raises(cli._UsageError):
+        cli._parse(["service", "now"])
+    seen: list[str] = []
+    monkeypatch.setattr(cli, "_cmd_app", lambda command, argv: seen.append(command) or 0)
+    assert cli.main(["scribesense", "service"]) == 0 and seen == ["service"]
+    assert "service" in cli._SERVICE_STARTERS

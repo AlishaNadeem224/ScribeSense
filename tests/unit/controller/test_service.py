@@ -17,7 +17,7 @@ from scribesense.contracts.fonts import FontBuildResult
 from scribesense.contracts.journal import NoRecoveryObligations
 from scribesense.contracts.presets import PresetValues, WordSpacing
 from scribesense.contracts.states import TxState
-from scribesense.controller.service import Service
+from scribesense.controller.service import CONFIRM_SECONDS, Service
 from scribesense.safety import ipc
 from scribesense.safety.lock import ApplyLock
 from scribesense.safety.testing import fake_fontset
@@ -53,7 +53,9 @@ def test_apply_then_keep_over_the_socket_pushes_and_serves_the_confirmed_style(s
     report = service.apply(BUILTINS[1])
     assert report.status == "awaiting_confirmation" and service.pending_tx == report.tx
     assert world.state(FILE).data != b"orig"
-    assert ipc.request({"type": "pending"}, timeout=2) == {"v": 1, "ok": True, "tx": report.tx}
+    pending = ipc.request({"type": "pending"}, timeout=2)
+    assert pending["tx"] == report.tx and pending["ok"] is True
+    assert pending["family"].startswith("AccessSans-")  # the confirm window draws its sample in this family (W5.1)
     assert ipc.request({"type": "get_style"}, timeout=2)["active"] is False  # not confirmed yet (K11)
     assert ipc.request({"type": "keep", "tx": report.tx}, timeout=2) == {"v": 1, "ok": True, "revision": 1}
     assert next(pushes) == 1  # K11 push after Keep
@@ -269,3 +271,123 @@ def _catch(call):  # type: ignore[no-untyped-def]
         return call()
     except ScribeSenseError as exc:
         return exc
+
+
+
+# ---------------------------------------------------------------- confirm window liveness (M2.3, W5.1)
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def timed(world: FakeWorld):  # type: ignore[no-untyped-def]
+    clock = FakeClock()
+    svc = Service.open(adapters=[FakeAdapter(world, {"fc": [FILE]}, name="fontconfig")], start_server=False)
+    svc.clock = clock
+    svc.controller._generator = lambda c: FontBuildResult("built", fake_fontset(c), None)
+    yield svc, clock
+    svc.close()
+
+
+def _sleeper(clock: FakeClock):  # type: ignore[no-untyped-def]
+    def sleep(seconds: float) -> None:
+        clock.now += seconds
+    return sleep
+
+
+def test_a_window_that_never_becomes_ready_is_reverted_with_startup_timeout(timed, world) -> None:  # type: ignore[no-untyped-def]
+    svc, clock = timed
+    tx = svc.apply(BUILTINS[1]).tx
+    assert svc.supervise_confirmation(tx, sleep=_sleeper(clock)) is ErrorCode.CONFIRM_STARTUP_TIMEOUT
+    assert svc.journal.state(tx) is TxState.REVERTED and world.state(FILE).data == b"orig"
+
+
+def test_a_frozen_window_is_reverted_with_heartbeat_lost(timed) -> None:  # type: ignore[no-untyped-def]
+    svc, clock = timed
+    tx = svc.apply(BUILTINS[1]).tx
+    svc.handle({"type": "confirm_ready", "tx": tx})
+    assert svc.supervise_confirmation(tx, sleep=_sleeper(clock)) is ErrorCode.CONFIRM_HEARTBEAT_LOST
+    assert svc.journal.state(tx) is TxState.REVERTED
+
+
+def test_a_live_window_without_an_answer_times_out_30s_after_readiness_not_at_start(timed) -> None:  # type: ignore[no-untyped-def]
+    svc, clock = timed
+    tx = svc.apply(BUILTINS[1]).tx
+    clock.now += 15  # slow start, still inside the startup deadline
+    svc.handle({"type": "confirm_ready", "tx": tx})
+    ready = clock.now
+
+    def beating_sleep(seconds: float) -> None:  # the window's event loop keeps beating; the user does nothing
+        clock.now += seconds
+        svc.handle({"type": "heartbeat", "tx": tx})
+    assert svc.supervise_confirmation(tx, sleep=beating_sleep) is ErrorCode.CONFIRM_TIMEOUT
+    assert clock.now - ready > CONFIRM_SECONDS  # counted from readiness (M2.3), never from process start
+
+
+def test_an_answered_window_ends_supervision_quietly(timed) -> None:  # type: ignore[no-untyped-def]
+    svc, clock = timed
+    tx = svc.apply(BUILTINS[1]).tx
+    svc.handle({"type": "confirm_ready", "tx": tx})
+
+    def answer_then_sleep(seconds: float) -> None:
+        clock.now += seconds
+        if svc.pending_tx == tx:
+            svc.keep(tx)
+    assert svc.supervise_confirmation(tx, sleep=answer_then_sleep) is None
+    assert svc.journal.state(tx) is TxState.COMPLETED
+
+
+def test_ready_and_heartbeat_for_another_tx_are_refused(timed) -> None:  # type: ignore[no-untyped-def]
+    svc, _ = timed
+    tx = svc.apply(BUILTINS[1]).tx
+    for kind in ("confirm_ready", "heartbeat"):
+        with pytest.raises(ScribeSenseError) as exc:
+            svc.handle({"type": kind, "tx": tx + 99})
+        assert exc.value.code is ErrorCode.TX_NOT_PENDING
+        with pytest.raises(ScribeSenseError) as exc:
+            svc.handle({"type": kind, "tx": "1"})
+        assert exc.value.code is ErrorCode.BAD_MESSAGE
+
+
+# ---------------------------------------------------------------- finish when closed (O4 watcher, 2026-11-24)
+
+ZEN = "/fake/zen/prefs.js"
+
+
+def test_the_service_watcher_finishes_a_restore_once_the_browser_closes(world) -> None:  # type: ignore[no-untyped-def]
+    world.set_file(ZEN, b"orig-zen")
+    zen = FakeAdapter(world, {"zen": [ZEN]}, name="zen")
+    svc = Service.open(adapters=[FakeAdapter(world, {"fc": [FILE]}, name="fontconfig"), zen])
+    svc.controller._generator = lambda c: FontBuildResult("built", fake_fontset(c), None)
+    try:
+        svc.keep(svc.apply(BUILTINS[1]).tx)
+        zen._running, zen.fail_on = frozenset({"zen"}), {"revert": ErrorCode.BROWSER_RUNNING}
+        assert svc.original().failed == [ZEN]
+        assert svc.apply(BUILTINS[2]).status == "awaiting_confirmation"  # A3 no longer blocks this wait
+        svc.revert(svc.pending_tx)
+        assert svc.watch_once() is None  # still open
+        zen._running, zen.fail_on = frozenset(), {}
+        holder = threading.Thread(target=svc._mutex.acquire)
+        holder.start(); holder.join()  # another thread is in an apply / reset: the round is skipped, never waits
+        assert svc.watch_once() is None and world.state(ZEN).data != b"orig-zen"
+        svc._mutex = threading.RLock()
+        assert svc.watch_once().restored == [ZEN]
+        assert world.state(ZEN).data == b"orig-zen" and svc.journal.unfinished() == []
+    finally:
+        svc.close()
+
+
+def test_open_with_watch_runs_rounds_until_close(world, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    rounds = threading.Event()
+    svc = Service.open(adapters=[FakeAdapter(world, {"fc": [FILE]}, name="fontconfig")])
+    monkeypatch.setattr(svc, "watch_once", rounds.set)
+    thread = svc.start_watching(interval=0.01)
+    assert rounds.wait(2)
+    svc.close()
+    thread.join(2)
+    assert not thread.is_alive()

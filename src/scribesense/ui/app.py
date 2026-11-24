@@ -33,9 +33,10 @@ it runs as a fresh process (ui/confirm.py). This app STARTS that process after a
 
 Apply flow (window Apply, `apply <id>`, `preset next`), never on the GTK thread:
   worker 1  service.apply(preset)                     -> ApplyReport (tx AWAITING_CONFIRMATION)
-  worker 1  run_cmd([python, -m, scribesense.cli, confirm, tx], timeout=CONFIRM_SECONDS + GRACE)
-            (the confirm window answers keep/revert over the socket; its exit status is ignored)
-  worker 1  service.confirm_watchdog(tx)              -> reverts if still pending (A15)
+  thread    run_cmd([python, -m, scribesense.cli, confirm, tx]) — the fresh confirm window (A15); it answers
+            keep/revert over the socket, sends confirm_ready + heartbeats; its exit status is ignored
+  worker 1  service.supervise_confirmation(tx)        -> reverts at once if the window is not ready in time,
+            stops beating or runs out of time (W5.1, 2026-11-24); confirm_watchdog(tx) stays the last resort
   GTK       kept -> push the M2.6 coverage report (with the M2.2 restart notice); otherwise the reason
             in plain words. A forwarded command line gets its exit status now.
 The pure helpers below (preset lookup, next-preset cycling, wording, exit codes, reader font choice) have
@@ -65,7 +66,12 @@ from scribesense.contracts.fonts import FontSet  # noqa: E402
 from scribesense.contracts.journal import ActiveConfig  # noqa: E402
 from scribesense.contracts.presets import ORIGINAL, Preset  # noqa: E402
 from scribesense.contracts.states import TxState  # noqa: E402
-from scribesense.controller.service import CONFIRM_GRACE_SECONDS, CONFIRM_SECONDS, Service  # noqa: E402
+from scribesense.controller.service import (  # noqa: E402
+    CONFIRM_GRACE_SECONDS,
+    CONFIRM_SECONDS,
+    CONFIRM_STARTUP_SECONDS,
+    Service,
+)
 from scribesense.log import log  # noqa: E402
 from scribesense.ui import APP_ID  # noqa: E402
 from scribesense.ui.settings_page import error_text, run_async  # noqa: E402
@@ -93,6 +99,8 @@ def parse_command(rest: Sequence[str]) -> tuple[str, str | None]:
     command, tail = args[0], args[1:]
     if command == "quit" and not tail:
         return "quit", None
+    if command == "service" and not tail:  # K10 amendment 2026-11-24: the login hook starts the service, no window
+        return "service", None
     if command in _FRESH_PROCESS:
         return "confirm", None
     if command == "apply" and len(tail) == 1 and tail[0]:
@@ -197,15 +205,32 @@ def outcome_text(state: TxState | None) -> str:
     return "The change was not confirmed."
 
 
+def waiting_text(waiting_apps: dict[str, str]) -> str:
+    """"Zen is open: this finishes by itself when you close it." (O2 Phase III, 2026-11-24). Empty if nothing waits."""
+    apps = sorted(set(waiting_apps.values()))
+    if not apps:
+        return ""
+    names = apps[0] if len(apps) == 1 else ", ".join(apps[:-1]) + " and " + apps[-1]
+    verb, it = ("is", "it") if len(apps) == 1 else ("are", "them")
+    return f"{names} {verb} open: this finishes by itself when you close {it}."
+
+
 def reset_text(report: Any) -> str:
-    """Summary of service.original() / reset (RevertReport counts + failed codes)."""
-    restored, skipped, failed = (len(getattr(report, k, ())) for k in ("restored", "skipped", "failed"))
+    """Summary of service.original() / reset (RevertReport counts + failed codes + apps it waits for)."""
+    restored, skipped = (len(getattr(report, k, ())) for k in ("restored", "skipped"))
+    waiting = dict(getattr(report, "waiting_apps", {}) or {})
+    failed = [loc for loc in getattr(report, "failed", ()) if loc not in waiting]
     codes = getattr(report, "failed_codes", {}) or {}
-    code_list = ", ".join(sorted(set(codes.values()))) if codes else ""
+    code_list = ", ".join(sorted({c for loc, c in codes.items() if loc not in waiting}))
+    note = waiting_text(waiting)
     if failed:
         suffix = f" Codes: {code_list}." if code_list else ""
-        return (f"Original: restored {restored}, skipped {skipped}, failed {failed}.{suffix} "
-                "Failed items are retried at your next login.")
+        text = (f"Original: restored {restored}, skipped {skipped}, failed {len(failed)}.{suffix} "
+                "Press Original again to retry.")
+        return f"{text} {note}" if note else text
+    if note:
+        left = f" {skipped} setting(s) changed by another program were left alone." if skipped else ""
+        return f"Original: restored {restored}.{left} {note}"
     if skipped:
         return (f"Original: restored {restored}. {skipped} setting(s) were changed by another program and "
                 "were left alone.")
@@ -418,7 +443,8 @@ class ScribeSenseApp(Adw.Application):
             try:
                 from scribesense.safety.setup import ensure as setup_ensure  # O4 automatic setup (2026-11-22)
 
-                self.service = Service.open(on_reader_text=self._reader_text_from_service, setup=setup_ensure)
+                self.service = Service.open(on_reader_text=self._reader_text_from_service, setup=setup_ensure,
+                                            watch=True)  # finish restores when a browser closes (O4 watcher)
             except ScribeSenseError as exc:
                 log(exc.code, "ui", step="startup")
                 self._startup_problem = startup_text(exc.code)
@@ -479,8 +505,51 @@ class ScribeSenseApp(Adw.Application):
                 self._window.show_startup_error(self._startup_problem)
         return self._window
 
+    # ---------------------------------------------------------------- setup banner (Phase III, 2026-11-24)
+
+    def refresh_setup_notice(self) -> None:
+        """Re-check automatic setup off the GTK thread and show / hide the window's setup banner. Only when the
+        service runs the real setup (tests open it without one, so nothing here reads the real system)."""
+        service = self.service
+        if service is None or service.setup is None or self._window is None:
+            return
+
+        def work() -> None:
+            from scribesense.safety import setup
+            from scribesense.ui.setup_notice import setup_notice
+
+            try:
+                report = setup.check()
+                notice = setup_notice(report, prompt_due=setup.root_needed(report))
+            except Exception:  # noqa: BLE001 — a failed check shows nothing; setup logs its own problems
+                log(ErrorCode.UNEXPECTED_ADAPTER_ERROR, "ui", step="setup-check")
+                return
+            GLib.idle_add(self._show_setup_notice, notice)
+
+        threading.Thread(target=work, name="scribesense-setup-check", daemon=True).start()
+
+    def _show_setup_notice(self, notice: Any) -> bool:
+        if self._window is not None:
+            self._window.show_setup_notice(notice, self.setup_action)
+        return False  # one-shot GLib.idle_add callback
+
+    def setup_action(self, action: str) -> None:
+        """The banner's button: "install" -> one password prompt (user-initiated); "check" -> look again."""
+        def work() -> None:
+            from scribesense.safety import setup
+
+            if action == "install":
+                try:
+                    setup.repair_root(setup.check(), user_asked=True)
+                except Exception:  # noqa: BLE001
+                    log(ErrorCode.UNEXPECTED_ADAPTER_ERROR, "ui", step="setup-install")
+            self.refresh_setup_notice()
+
+        threading.Thread(target=work, name="scribesense-setup-action", daemon=True).start()
+
     def do_activate(self) -> None:
         self._ensure_window().present()
+        self.refresh_setup_notice()
 
     def notify(self, text: str, *, present: bool = False) -> None:
         """Show a message in the window (toast). `present` brings the window up so it is seen."""
@@ -511,6 +580,11 @@ class ScribeSenseApp(Adw.Application):
             return self._finish(command_line, *self.request_quit())  # never opens the Service
 
         self._ensure_service()
+        if kind == "service":  # login: the service runs in the background (A1 hold); no window is opened
+            if self.service is None:
+                return self._finish(command_line, ExitCode.SERVICE_UNAVAILABLE,
+                                    "scribesense: the background service could not start")
+            return self._finish(command_line, ExitCode.OK)
         if kind == "open":
             self.activate()
             return self._finish(command_line, ExitCode.OK)
@@ -612,12 +686,18 @@ class ScribeSenseApp(Adw.Application):
                 in_call.clear()
         if report.status != "awaiting_confirmation" or report.tx is None:
             return report, None
-        try:
-            paths.run_cmd([sys.executable, "-m", "scribesense.cli", "confirm", str(report.tx)],
-                          timeout=CONFIRM_SECONDS + CONFIRM_GRACE_SECONDS)
-        except (ScribeSenseError, OSError):
-            pass  # its exit status is ignored: the watchdog below decides
-        service.confirm_watchdog(report.tx)  # reverts if nobody answered (A15)
+        def window() -> None:
+            try:
+                paths.run_cmd([sys.executable, "-m", "scribesense.cli", "confirm", str(report.tx)],
+                              timeout=CONFIRM_STARTUP_SECONDS + CONFIRM_SECONDS + CONFIRM_GRACE_SECONDS)
+            except (ScribeSenseError, OSError):
+                pass  # its exit status is ignored: the supervision below decides
+
+        confirm = threading.Thread(target=window, name="scribesense-confirm-window", daemon=True)
+        confirm.start()
+        service.supervise_confirmation(report.tx)  # W5.1: ready in time, heartbeat alive, answered in time
+        service.confirm_watchdog(report.tx)  # last resort (A15): reverts if it is somehow still pending
+        confirm.join(timeout=CONFIRM_GRACE_SECONDS)
         try:
             state: TxState | None = service.journal.state(report.tx)
         except ScribeSenseError as exc:

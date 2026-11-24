@@ -46,7 +46,8 @@ _STATUS_LABELS: dict[CoverageStatus, tuple[str, str]] = {
 _DETAIL_PHRASES: dict[str, str] = {
     "OK": "",  # covered — no detail to show
     ErrorCode.BROWSER_RUNNING.value: (
-        "The browser must be closed before the change can be applied."
+        "The browser is open: close it, then press Apply again. With the ScribeSense browser extension "
+        "installed it is styled while open."
     ),
     ErrorCode.ADAPTER_TIMEOUT.value: "The application did not respond in time.",
     ErrorCode.ADAPTER_COMMAND_FAILED.value: "A required system command failed.",

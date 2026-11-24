@@ -181,6 +181,7 @@ class SettingsPage(Adw.NavigationPage):
         self.delete_row.set_subtitle("Offers a reset first, then asks before deleting anything.")
         self.delete_btn = Gtk.Button(label="Delete…")
         self.delete_btn.add_css_class("destructive-action")
+        self.delete_btn.update_property([Gtk.AccessibleProperty.LABEL], ["Delete all ScribeSense data"])
         self.delete_btn.set_valign(Gtk.Align.CENTER)
         self.delete_btn.connect("clicked", self._on_delete_clicked)
         self.delete_row.add_suffix(self.delete_btn)

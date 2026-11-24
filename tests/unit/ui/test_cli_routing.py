@@ -96,6 +96,7 @@ APP_START_FAILURE = [
     (["scribesense", "read", "--selection"], ExitCode.SERVICE_UNAVAILABLE),  # keybind Super+Alt+R
     (["scribesense", "read", "--clipboard"], ExitCode.SERVICE_UNAVAILABLE),
     (["scribesense", "preset", "next"], ExitCode.SERVICE_UNAVAILABLE),  # keybind Super+Alt+P
+    (["scribesense", "service"], ExitCode.SERVICE_UNAVAILABLE),  # login hook (K10 amendment 2026-11-24)
     (["scribesense", "apply", "builtin.default"], ExitCode.FAILED),
     (["scribesense"], ExitCode.FAILED),
     (["scribesense", "quit"], ExitCode.FAILED),

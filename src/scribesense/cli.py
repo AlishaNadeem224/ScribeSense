@@ -50,11 +50,11 @@ if TYPE_CHECKING:  # typing only: never imported at run time here (A2)
 _BUSY_CODES: frozenset[ErrorCode] = frozenset({ErrorCode.LOCK_TIMEOUT, ErrorCode.APPLY_IN_PROGRESS})
 
 #: First words that go to the GTK application ("" = open / focus the app).
-_APP_COMMANDS: frozenset[str] = frozenset({"", "apply", "preset", "read", "quit"})
+_APP_COMMANDS: frozenset[str] = frozenset({"", "apply", "preset", "read", "quit", "service"})
 
 #: K10: `read` / `preset next` start the service if it isn't running, and exit 4 only if that fails. Other app
 #: commands that cannot start the app exit 1 (K10 asks 4 of these two only).
-_SERVICE_STARTERS: frozenset[str] = frozenset({"read", "preset"})
+_SERVICE_STARTERS: frozenset[str] = frozenset({"read", "preset", "service"})  # `service`: K10 amendment 2026-11-24
 
 
 class _UsageError(Exception):
@@ -92,7 +92,7 @@ def _parse(rest: list[str]) -> tuple[str, dict[str, object]]:
         if args not in (["--selection"], ["--clipboard"]):
             raise _UsageError("read needs exactly one of --selection or --clipboard")
         return command, {"source": args[0][2:]}
-    if command in ("reset", "doctor", "quit"):
+    if command in ("reset", "doctor", "quit", "service"):
         if args:
             raise _UsageError(f"{command} takes no arguments")
         return command, {}
@@ -150,11 +150,16 @@ def _print_revert_report(report: RevertReport) -> None:
         print("Left alone (changed by someone else after ScribeSense):")
         for loc in report.skipped:
             print(f"  {loc}")
-    if report.failed:
+    waiting = report.waiting_apps
+    failed = [loc for loc in report.failed if loc not in waiting]
+    if failed:
         print("Could not restore (recovery information kept; run `scribesense reset` again):")
-        for loc in report.failed:
+        for loc in failed:
             code = report.failed_codes.get(loc)
             print(f"  {loc}" + (f"  [{code}]" if code else ""))
+    for app in sorted(set(waiting.values())):  # O2 Phase III (2026-11-24): name the app, say what happens next
+        print(f"{app} is open: close it and this finishes by itself while ScribeSense runs "
+              "(or run `scribesense reset` again).")
     print(f"restored {len(report.restored)} · skipped {len(report.skipped)} · failed {len(report.failed)}")
 
 def _run_recovery(command: str, role: LockRole, operation: Callable[..., RevertReport]) -> int:

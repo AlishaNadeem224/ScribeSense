@@ -129,6 +129,7 @@ class ReaderWindow(Adw.ApplicationWindow):
         self.text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.text_view.set_editable(False)
         self.text_view.set_cursor_visible(False)
+        self.text_view.update_property([Gtk.AccessibleProperty.LABEL], ["Reader text"])
         self.text_view.set_margin_top(24)
         self.text_view.set_margin_bottom(24)
         self.text_view.set_margin_start(24)
@@ -154,6 +155,10 @@ class ReaderWindow(Adw.ApplicationWindow):
         toolbar.set_content(scroller)
         self.set_content(toolbar)
         self.connect("close-request", self._on_close_request)
+        escape = Gtk.ShortcutController()  # Escape closes the reader (audit 2026-11-24)
+        escape.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("Escape"),
+                                             Gtk.CallbackAction.new(lambda *_a: self.close() or True)))
+        self.add_controller(escape)
 
     def _on_close_request(self, _window: Gtk.Window) -> bool:
         """The session ends: drop the text from memory. Returning False lets the window close."""
