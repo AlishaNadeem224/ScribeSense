@@ -1567,6 +1567,9 @@ that exact ID in `allowed_origins`. **No private signing key is ever committed t
 > adapters with the same `target_id` overwrite each other (latent — real ids are adapter-prefixed; the in-memory double appends);
 > (4) the `-wal` file is created 0644 (DB is 0600); (5) unverified: a failed `COMMIT` may leave the transaction open.
 
+
+> **Fixes 2026-11-24 (O4 for O3, user's go-ahead; recorded in PLAN_v2):** (1) `tests/integration/test_store_concurrency.py` compared the schema version with a hard-coded 1; O3's migrations 002–004 made it 4, so GitHub's integration job failed on O3 since 2026-11-22 (and on `main` after the merge). It now compares with `store.core.latest_version()`. (2) O3's commits `5e4b1f0` ("list() drops the custom row", D3 step 2) and `669d85b1` (K9 draft note) from 2026-10-18 were in no branch any more; re-applied to `store/repos.py`, `tests/unit/test_store_repos.py`, `docs/K9_draft.md`. Callers checked: the font clean-up and `FontRegistryRepo.in_use` read `list_all()`; the UI's two `list()` calls want the catalogue.
+
 #### M3.2 Retention
 | Field | Spec |
 |---|---|
