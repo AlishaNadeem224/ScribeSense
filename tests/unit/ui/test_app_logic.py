@@ -382,7 +382,7 @@ def test_apply_worker_starts_fresh_confirm_process_then_watchdog(app_mod: Any, m
     monkeypatch.setattr(paths, "run_cmd", fake_run_cmd)
     service = _FakeService(_report("awaiting_confirmation"), TxState.COMPLETED)
     report, state = app_mod.ScribeSenseApp._apply_worker(service, BUILTINS[1])
-    assert launched == [([sys.executable, "-m", "scribesense.cli", "confirm", "9"],
+    assert launched == [([sys.executable, "-P", "-m", "scribesense.cli", "confirm", "9"],
                          CONFIRM_STARTUP_SECONDS + CONFIRM_SECONDS + CONFIRM_GRACE_SECONDS)]
     # W5.1: the window runs in parallel while the service supervises it; the watchdog stays the last resort
     assert service.calls == [("apply", "reading"), ("supervise", 9), ("watchdog", 9)]

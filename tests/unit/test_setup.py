@@ -350,3 +350,16 @@ def test_every_test_sees_only_sandboxed_system_folders(sandbox) -> None:  # type
 ])
 def test_polkit_agent_names(comm: str, exe: str, expected: bool) -> None:
     assert setup.is_agent_process(comm, exe) is expected
+
+
+def test_an_old_launcher_without_dash_p_is_rewritten(sandbox, system: Path) -> None:  # type: ignore[no-untyped-def]
+    """2026-11-24: the launcher runs Python with -P (the browser's working folder never shadows a module); an older
+    launcher without it counts as missing, so setup rewrites it silently."""
+    import sys
+
+    from scribesense.safety import native_host_install as nhi
+
+    path = nhi.write_launcher(sys.executable)
+    assert setup._launcher_ok(path)
+    path.write_text(nhi.launcher_script(sys.executable).decode().replace(" -P -m", " -m"))
+    assert not setup._launcher_ok(path)

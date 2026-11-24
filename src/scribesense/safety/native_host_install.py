@@ -57,7 +57,8 @@ HOSTS_DIR_MODE = 0o700
 LAUNCHER_DIR = "native-host"
 LAUNCHER_NAME = "scribesense-native-host"
 LAUNCHER_MODE = 0o700
-DEFAULT_EXTENSION_MANIFEST = extension_host.DEFAULT_EXTENSION_MANIFEST
+#: None: `extension_host.extension_manifest()` (searched at call time, 2026-11-24 packaging fix). Tests may set a path.
+DEFAULT_EXTENSION_MANIFEST: Path | None = None
 
 Outcome = Literal["written", "replaced", "unchanged", "removed", "absent", "left_foreign", "unsupported", "failed"]
 
@@ -105,7 +106,7 @@ def _read(path: Path) -> bytes | None:
 
 def extension_id_from_manifest(manifest_path: Path | None = None) -> str:
     """The pinned extension ID (adapters.extension_host); default: this module's DEFAULT_EXTENSION_MANIFEST."""
-    return extension_host.extension_id_from_manifest(DEFAULT_EXTENSION_MANIFEST if manifest_path is None else manifest_path)
+    return extension_host.extension_id_from_manifest(manifest_path or DEFAULT_EXTENSION_MANIFEST)
 
 
 def launcher_path() -> Path:
@@ -114,7 +115,7 @@ def launcher_path() -> Path:
 
 def launcher_script(python: str) -> bytes:
     return (f"#!/bin/sh\n# ScribeSense native-messaging host (development launcher)\n"
-            f"exec {shlex.quote(python)} -m scribesense.safety.native_host \"$@\"\n").encode("utf-8")
+            f"exec {shlex.quote(python)} -P -m scribesense.safety.native_host \"$@\"\n").encode("utf-8")
 
 
 def write_launcher(python: str = sys.executable) -> Path:

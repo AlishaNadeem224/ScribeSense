@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Literal
 
 from scribesense.adapters.chromium import BROWSERS, user_data_dir
-from scribesense.adapters.extension_host import extension_id_from_manifest
+from scribesense.adapters.extension_host import _repo_extension_dir, extension_id_from_manifest
 from scribesense.adapters.fontconfig import write_durable
 from scribesense.contracts.errors import ErrorCode, ScribeSenseError
 from scribesense.contracts.paths import data_dir, run_cmd
@@ -41,8 +41,11 @@ from scribesense.log import log
 from scribesense.safety import native_host_install as nhi
 from scribesense.safety import root_helper
 
-REPO = Path(__file__).resolve().parents[3]
-DEV_CRX = REPO / "extension" / "dist" / "scribesense.crx"
+#: None: the CHECKOUT's `extension/dist/scribesense.crx` (development only). Deliberately NOT the searched
+#: `extension_dir()`: this file is handed to root (pkexec), and a searched XDG_DATA_DIRS entry can be user-writable
+#: (e.g. ~/.local/share/flatpak/exports/share) — root would then pre-install whatever .crx is there for every user
+#: (found by the 2026-11-24 review). A packaged install has the .crx at root_helper.CRX_TARGET. Tests may set a path.
+DEV_CRX: Path | None = None
 ROOT_HELPER = Path(root_helper.__file__).resolve()
 SYSTEM_PYTHON = "/usr/bin/python3"
 PKEXEC_TIMEOUT_S = 300.0
@@ -80,7 +83,7 @@ class SetupReport:
 
 def find_crx() -> tuple[Path | None, str | None]:
     """The signed extension to pre-install, and its version (installed copy first, then the development build)."""
-    for path in (root_helper.CRX_TARGET, DEV_CRX):
+    for path in (root_helper.CRX_TARGET, DEV_CRX or _repo_extension_dir() / "dist" / "scribesense.crx"):
         try:
             _, version = root_helper.crx_info(path.read_bytes())
         except (OSError, root_helper.HelperError):
@@ -118,8 +121,9 @@ def _launcher_ok(host: Path) -> bool:
         return False
     if host != nhi.launcher_path():
         return True
-    match = re.search(r"^exec '?([^' ]+)'? -m scribesense\.safety\.native_host", host.read_text(), re.M)
-    return bool(match) and os.access(match.group(1), os.X_OK)
+    # `-P` required (2026-11-24): an older launcher without it counts as missing and is rewritten silently.
+    match = re.search(r"^exec (?:'([^']+)'|(\S+)) -P -m scribesense\.safety\.native_host", host.read_text(), re.M)
+    return bool(match) and os.access(match.group(1) or match.group(2), os.X_OK)
 
 
 def _extension_status(key: str, ext_id: str, version: str) -> Status:

@@ -137,7 +137,7 @@ def candidate_roots() -> tuple[Path, ...]:
     candidates = [
         Path(part).joinpath(*_PACKAGE_DATA_SUBDIR)
         for part in data_dirs.split(os.pathsep)
-        if part
+        if part and os.path.isabs(part)  # XDG: relative entries are invalid (2026-11-24, O4 for O1)
     ]
     candidates.append(_repo_fonts_root())
     return tuple(candidates)

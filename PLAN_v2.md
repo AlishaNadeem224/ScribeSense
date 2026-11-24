@@ -2235,3 +2235,24 @@ Headless GTK (Broadway): importing through the page adds and selects the family,
 (the preview fonts themselves build in 0.3 s) — check on the real desktop. OTF/CFF imports are covered by O1's
 existing CFF tests through the same eligibility check, but no CFF font was imported end to end. Manual: try a real
 downloaded family (e.g. a Google Fonts zip unpacked to a folder).
+
+## O4: extension files found when installed + review fixes (2026-11-24, O4, user's go-ahead)
+
+**Fixed:** the extension's files were found three folders above the module — the Python library folder once installed
+(the W2.1 bug O1 fixed for fonts). Now searched like the fonts (see the note before the M4.10 card). Cross-owner,
+for review: `tests/conftest.py`, `harness/sandbox.py` (O3: pin `SCRIBESENSE_EXTENSION_DIR`), `config/bundled.py`
+(O1: relative XDG entries ignored), `uninstall.py` (O3: `-P`), `ui/app.py` (O2: `-P`).
+
+**Reviewed by a workflow** (2 review lenses + 2 repo sweeps, every finding adversarially verified: 17 found, 6
+confirmed). Fixed: (1) **security regression in the first version of this fix** — the `.crx` given to root could come
+from a user-writable XDG data dir; now never from the search; (2) relative `XDG_DATA_DIRS` entries ignored (extension
+and fonts); (3) tests now use a different key in the installed copy, so they prove the searched manifest is read, and
+that a planted `.crx` is never offered to root; (4) `-P` for child Pythons started with `-m` (a module in the current
+folder could shadow ours; pre-existing).
+
+**Confirmed but not code bugs — packaging (W2, O3 + O4), still open:** nothing yet installs `fonts/` and `extension/`
+to `<datadir>/scribesense/` (no spec; the wheel ships only `scribesense/`); the signed `.crx` is git-ignored, so the
+RPM needs it as a separate release source and must place it at `root_helper.CRX_TARGET`; the root helper is safe only
+when installed root-owned (a checkout's helper is user-editable, as documented in `safety/setup.py`).
+
+Tests: unit **2592 passed, 0 failed** · integration **35 passed** · extension JS **45 passed**.

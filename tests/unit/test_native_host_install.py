@@ -145,7 +145,7 @@ def test_the_development_launcher_is_private_and_starts_the_host_module(sandbox)
     assert path == nhi.launcher_path() and path.is_absolute()
     text = path.read_text()
     assert text.startswith("#!/bin/sh\n")
-    assert "exec '/opt/py env/bin/python3' -m scribesense.safety.native_host \"$@\"" in text  # quoted path
+    assert "exec '/opt/py env/bin/python3' -P -m scribesense.safety.native_host \"$@\"" in text  # quoted path
     assert stat.S_IMODE(path.stat().st_mode) == 0o700
     with pytest.raises(ValueError):
         nhi.write_launcher("python3")

@@ -688,7 +688,7 @@ class ScribeSenseApp(Adw.Application):
             return report, None
         def window() -> None:
             try:
-                paths.run_cmd([sys.executable, "-m", "scribesense.cli", "confirm", str(report.tx)],
+                paths.run_cmd([sys.executable, "-P", "-m", "scribesense.cli", "confirm", str(report.tx)],
                               timeout=CONFIRM_STARTUP_SECONDS + CONFIRM_SECONDS + CONFIRM_GRACE_SECONDS)
             except (ScribeSenseError, OSError):
                 pass  # its exit status is ignored: the supervision below decides

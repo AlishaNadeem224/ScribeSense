@@ -71,6 +71,7 @@ def build_argv(command: list[str], *, repo: Path, site_packages: tuple[Path, ...
         # The repo's bundled fonts, never an installed /usr/share/scribesense/fonts (O1's override,
         # config/bundled.py; added 2026-11-22 by O4 with the user's go-ahead).
         "SCRIBESENSE_BUNDLED_FONTS": f"{WORK}/fonts",
+        "SCRIBESENSE_EXTENSION_DIR": f"{WORK}/extension",  # same for the extension's files (O4, 2026-11-24)
         "FONTCONFIG_FILE": f"{SANDBOX_HOME}/fonts.conf",  # private; a test writes it (includes /etc/fonts/fonts.conf)
         "GSETTINGS_BACKEND": "keyfile",
         "PYTHONPATH": ":".join(pythonpath),

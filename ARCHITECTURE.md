@@ -2201,6 +2201,15 @@ Helper rules apply to cards marked **helper: yes** (see §8).
 
 > **Done 2026-11-22 (O4): automatic setup and repair** — `safety/setup.py` checks THIS machine (installed Chromium-family browsers by their system install marker; Flatpak ones → unsupported; a leftover `~/.config` folder of an uninstalled browser is ignored), silently installs/refreshes our host manifests and the development launcher (also after a venv rebuild), and asks ONCE per extension version through `pkexec` (polkit's graphical prompt, never a terminal) to pre-install the signed `.crx` for every installed browser via `safety/root_helper.py` — standalone, standard library only, run as `pkexec /usr/bin/python3 -I`, two commands (`install <crx>` / `remove`), validates the CRX3 and derives ID and version from it, writes only fixed paths (`/usr/share/scribesense/scribesense.crx`, each browser's documented extensions folder), removes only its own pointer files. No polkit agent → no prompt, reported instead (the dev machine has none: Hyprland needs e.g. `hyprpolkitagent`). Signed `.crx` = release artifact (`extension/dist/scribesense.crx`, or the installed copy). Tests: `tests/unit/test_setup.py` (23). Real check on the dev machine: Brave host ok, extension ok.
 
+> **Packaging fix (2026-11-24, O4): finding the extension's files.** `adapters/extension_host.extension_dir()` searches
+> like O1's fonts: `$SCRIBESENSE_EXTENSION_DIR` (only candidate when set; both sandboxes pin the repo copy) → each
+> ABSOLUTE `$XDG_DATA_DIRS` entry + `/scribesense/extension` → `<repo>/extension`; marker `manifest.json`. The search
+> supplies only the manifest's public key (the extension ID in the user's own host manifests). **The `.crx` handed to
+> root is never taken from the search** — an XDG data dir can be user-writable (Flatpak exports in ~/.local/share), and
+> root would pre-install it for every user: setup uses `root_helper.CRX_TARGET`, else the checkout's
+> `extension/dist/scribesense.crx`. Child Pythons started with `-m` now use `-P` (confirm window, uninstall's quit,
+> native-host launcher; an older launcher without `-P` is rewritten by setup).
+
 #### M4.10 Journal
 | Field | Spec |
 |---|---|
